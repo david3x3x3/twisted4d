@@ -49,7 +49,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         gamepadInput = GamepadInputHandler(renderer) { face, prime ->
-            glSurfaceView.queueEvent { renderer.requestTwist(face, prime) }
+            glSurfaceView.queueEvent { renderer.requestScreenRelativeTwist(face, prime) }
         }
         inputManager = getSystemService(Context.INPUT_SERVICE) as InputManager
         inputManager.registerInputDeviceListener(gamepadInput, null)
@@ -116,12 +116,16 @@ class MainActivity : AppCompatActivity() {
         setContentView(root)
     }
 
-    /** Tap = clockwise twist, long-press = prime (counter-clockwise). */
+    /**
+     * Tap = clockwise twist, long-press = prime (counter-clockwise). [face] names a screen
+     * direction (e.g. R = screen-right), not a fixed native face -- see
+     * [CubeRenderer.requestScreenRelativeTwist].
+     */
     private fun twistButton(face: Face): Button = Button(this).apply {
         text = face.label
-        setOnClickListener { glSurfaceView.queueEvent { renderer.requestTwist(face, false) } }
+        setOnClickListener { glSurfaceView.queueEvent { renderer.requestScreenRelativeTwist(face, false) } }
         setOnLongClickListener {
-            glSurfaceView.queueEvent { renderer.requestTwist(face, true) }
+            glSurfaceView.queueEvent { renderer.requestScreenRelativeTwist(face, true) }
             true
         }
     }

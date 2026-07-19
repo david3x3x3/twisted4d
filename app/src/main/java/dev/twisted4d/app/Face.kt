@@ -31,4 +31,19 @@ enum class Face(
         F -> z == 1
         B -> z == -1
     }
+
+    /**
+     * This face's outward-facing normal in native puzzle space. Unlike [axisX]/[axisY]/[axisZ]
+     * (the twist rotation axis, which U and D share), this is unique per face and is what
+     * [CubeRenderer.requestScreenRelativeTwist] uses to figure out which face currently sits
+     * at a given screen direction.
+     */
+    fun outwardNormal(): Triple<Float, Float, Float> = when (this) {
+        U -> Triple(0f, 1f, 0f)
+        D -> Triple(0f, -1f, 0f)
+        L -> Triple(-1f, 0f, 0f)
+        R -> Triple(1f, 0f, 0f)
+        F -> Triple(0f, 0f, 1f)
+        B -> Triple(0f, 0f, -1f)
+    }
 }

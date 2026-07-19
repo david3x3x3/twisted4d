@@ -27,6 +27,10 @@ import kotlin.math.roundToInt
  * keeps spinning the puzzle indefinitely, and a given drag direction always moves whatever's
  * currently facing the camera in that same screen direction, regardless of prior orientation.
  *
+ * Twist buttons/gamepad face buttons go through [requestScreenRelativeTwist] rather than
+ * [requestTwist] directly: since the puzzle can be rotated to any angle, "R" needs to mean
+ * "twist whatever's at screen-right *right now*", not always the native R face.
+ *
  * All public methods here are meant to be called via `GLSurfaceView.queueEvent` (i.e. on the
  * GL thread), except [stickX]/[stickY]/[addDragDelta]/[zoomBy] which are safe to call from the
  * UI thread.
@@ -154,7 +158,7 @@ class CubeRenderer : GLSurfaceView.Renderer {
         currentTransforms = NativeLib.cubeGetTransforms()
 
         Matrix.setIdentityM(cubeOrientation, 0)
-        applyScreenRelativeRotation(-35f, 25f) // a pleasant default 3/4 view
+        applyScreenRelativeRotation(INITIAL_YAW_DEG, INITIAL_PITCH_DEG) // a pleasant default 3/4 view
     }
 
     override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
@@ -200,6 +204,65 @@ class CubeRenderer : GLSurfaceView.Renderer {
         Matrix.multiplyMM(deltaCombined, 0, deltaRotY, 0, deltaRotX, 0)
         Matrix.multiplyMM(newOrientation, 0, deltaCombined, 0, cubeOrientation, 0)
         System.arraycopy(newOrientation, 0, cubeOrientation, 0, 16)
+    }
+
+    /**
+     * Button-driven twist: [buttonFace]'s meaning is a fixed *screen direction*, namely wherever
+     * that face appeared in the app's initial 3/4-view tilt (its [Face.outwardNormal] as seen
+     * through [INITIAL_ORIENTATION]) -- not a fixed native face. Since the puzzle can be freely
+     * rotated, this first snaps the view to whichever of the 24 cube symmetries of that initial
+     * tilt is closest to the current view (see [snapToNearestCardinalOrientation]) -- preserving
+     * the nice corner-on look instead of flattening to a single dead-on face -- then twists
+     * whichever native face has ended up at the requested screen direction, which may not be
+     * [buttonFace] itself.
+     */
+    fun requestScreenRelativeTwist(buttonFace: Face, prime: Boolean) {
+        if (animating) return
+        snapToNearestCardinalOrientation()
+
+        val (nx0, ny0, nz0) = buttonFace.outwardNormal()
+        val tx = nx0 * INITIAL_ORIENTATION[0] + ny0 * INITIAL_ORIENTATION[4] + nz0 * INITIAL_ORIENTATION[8]
+        val ty = nx0 * INITIAL_ORIENTATION[1] + ny0 * INITIAL_ORIENTATION[5] + nz0 * INITIAL_ORIENTATION[9]
+        val tz = nx0 * INITIAL_ORIENTATION[2] + ny0 * INITIAL_ORIENTATION[6] + nz0 * INITIAL_ORIENTATION[10]
+
+        var resolvedFace = buttonFace
+        var bestDistSq = Float.POSITIVE_INFINITY
+        for (candidate in Face.entries) {
+            val (nx, ny, nz) = candidate.outwardNormal()
+            val wx = nx * cubeOrientation[0] + ny * cubeOrientation[4] + nz * cubeOrientation[8]
+            val wy = nx * cubeOrientation[1] + ny * cubeOrientation[5] + nz * cubeOrientation[9]
+            val wz = nx * cubeOrientation[2] + ny * cubeOrientation[6] + nz * cubeOrientation[10]
+            val dx = wx - tx; val dy = wy - ty; val dz = wz - tz
+            val distSq = dx * dx + dy * dy + dz * dz
+            if (distSq < bestDistSq) {
+                bestDistSq = distSq
+                resolvedFace = candidate
+            }
+        }
+        requestTwist(resolvedFace, prime)
+    }
+
+    /**
+     * Snaps [cubeOrientation] to whichever of the 24 symmetries of [INITIAL_ORIENTATION] (see
+     * [CARDINAL_TARGETS]) requires the smallest rotation from the current one -- i.e. the one
+     * maximizing trace(C^T * cubeOrientation), which for two rotation matrices is proportional
+     * to cos(angle between them). This is a plain elementwise dot product of the two 3x3 parts,
+     * not a matrix multiply, since trace(C^T * R) = sum of elementwise products of C and R.
+     */
+    private fun snapToNearestCardinalOrientation() {
+        var best = CARDINAL_TARGETS[0]
+        var bestScore = Float.NEGATIVE_INFINITY
+        for (candidate in CARDINAL_TARGETS) {
+            var score = 0f
+            for (idx in ROTATION_PART_INDICES) {
+                score += candidate[idx] * cubeOrientation[idx]
+            }
+            if (score > bestScore) {
+                bestScore = score
+                best = candidate
+            }
+        }
+        System.arraycopy(best, 0, cubeOrientation, 0, 16)
     }
 
     /**
@@ -360,5 +423,70 @@ class CubeRenderer : GLSurfaceView.Renderer {
         private const val ANIM_DURATION_NANOS = 220_000_000L // 220ms
         private const val MIN_DISTANCE = 2.5f
         private const val MAX_DISTANCE = 15f
+        private const val INITIAL_YAW_DEG = -35f
+        private const val INITIAL_PITCH_DEG = 25f
+
+        /** Column-major indices of the 3x3 rotation part within a 4x4 GL matrix (see [buildModelMatrix]). */
+        private val ROTATION_PART_INDICES = intArrayOf(0, 1, 2, 4, 5, 6, 8, 9, 10)
+
+        /** The app's default startup tilt, matching the [applyScreenRelativeRotation] call in
+         * [onSurfaceCreated] -- the fixed reference frame for [requestScreenRelativeTwist]. */
+        private val INITIAL_ORIENTATION: FloatArray = run {
+            val rotX = FloatArray(16)
+            val rotY = FloatArray(16)
+            val combined = FloatArray(16)
+            Matrix.setRotateM(rotX, 0, INITIAL_PITCH_DEG, 1f, 0f, 0f)
+            Matrix.setRotateM(rotY, 0, INITIAL_YAW_DEG, 0f, 1f, 0f)
+            Matrix.multiplyMM(combined, 0, rotY, 0, rotX, 0)
+            combined
+        }
+
+        /**
+         * The 24 orientation-preserving symmetries of a cube -- every signed permutation matrix
+         * (one +-1 entry per row/column) with determinant +1 -- as 4x4 GL matrices. Used by
+         * [snapToNearestCardinalOrientation] to find the closest axis-aligned view.
+         */
+        private val CARDINAL_ROTATIONS: List<FloatArray> = buildList {
+            val permutations = listOf(
+                intArrayOf(0, 1, 2), intArrayOf(0, 2, 1),
+                intArrayOf(1, 0, 2), intArrayOf(1, 2, 0),
+                intArrayOf(2, 0, 1), intArrayOf(2, 1, 0),
+            )
+            for (perm in permutations) {
+                for (sx in intArrayOf(-1, 1)) {
+                    for (sy in intArrayOf(-1, 1)) {
+                        for (sz in intArrayOf(-1, 1)) {
+                            val signs = intArrayOf(sx, sy, sz)
+                            val m = Array(3) { FloatArray(3) }
+                            for (row in 0..2) {
+                                m[row][perm[row]] = signs[row].toFloat()
+                            }
+                            val det = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) -
+                                m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) +
+                                m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0])
+                            if (det > 0f) {
+                                val out = FloatArray(16)
+                                out[0] = m[0][0]; out[1] = m[1][0]; out[2] = m[2][0]; out[3] = 0f
+                                out[4] = m[0][1]; out[5] = m[1][1]; out[6] = m[2][1]; out[7] = 0f
+                                out[8] = m[0][2]; out[9] = m[1][2]; out[10] = m[2][2]; out[11] = 0f
+                                out[12] = 0f; out[13] = 0f; out[14] = 0f; out[15] = 1f
+                                add(out)
+                            }
+                        }
+                    }
+                }
+            }
+        }.also { check(it.size == 24) { "expected 24 cardinal rotations, got ${it.size}" } }
+
+        /**
+         * Each [CARDINAL_ROTATIONS] symmetry re-expressed relative to [INITIAL_ORIENTATION]
+         * (i.e. INITIAL_ORIENTATION * C), so snapping preserves the app's nice corner-on tilt
+         * instead of flattening to a single face viewed dead-on.
+         */
+        private val CARDINAL_TARGETS: List<FloatArray> = CARDINAL_ROTATIONS.map { c ->
+            val out = FloatArray(16)
+            Matrix.multiplyMM(out, 0, INITIAL_ORIENTATION, 0, c, 0)
+            out
+        }
     }
 }
