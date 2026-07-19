@@ -17,21 +17,24 @@ import kotlin.math.roundToInt
  * a smooth 90-degree rotation of just the affected layer, interpolated from a before/after
  * transform snapshot -- see [requestTwist].
  *
- * The camera itself never moves (fixed eye/center/up); instead the whole puzzle's orientation
- * is a single accumulated rotation matrix, [cubeOrientation]. Touch drags and the gamepad stick
- * both feed [addDragDelta]/[stickX]/[stickY], which are applied as small rotations about the
- * *screen's current* horizontal/vertical axes and left-multiplied onto [cubeOrientation] (see
+ * The camera's eye/center/up never change, only its distance from the origin ([zoomBy], via
+ * pinch-to-zoom); instead the whole puzzle's orientation is a single accumulated rotation
+ * matrix, [cubeOrientation]. Touch drags and the gamepad stick both feed
+ * [addDragDelta]/[stickX]/[stickY], which are applied as small rotations about the *screen's
+ * current* horizontal/vertical axes and left-multiplied onto [cubeOrientation] (see
  * [applyScreenRelativeRotation]). Because the axes used are always the fixed screen/camera axes
  * rather than a re-derived yaw/pitch pair, this has no gimbal-lock pole -- holding a direction
  * keeps spinning the puzzle indefinitely, and a given drag direction always moves whatever's
  * currently facing the camera in that same screen direction, regardless of prior orientation.
  *
  * All public methods here are meant to be called via `GLSurfaceView.queueEvent` (i.e. on the
- * GL thread), except [stickX]/[stickY]/[addDragDelta] which are safe to call from the UI thread.
+ * GL thread), except [stickX]/[stickY]/[addDragDelta]/[zoomBy] which are safe to call from the
+ * UI thread.
  */
 class CubeRenderer : GLSurfaceView.Renderer {
 
-    private val distance = 6.0f
+    // Camera distance from the origin; pinch-to-zoom adjusts this from the UI thread.
+    @Volatile private var distance = 6.0f
 
     // Left-stick deflection (-1..1), updated from the UI thread by GamepadInputHandler and
     // applied continuously here every frame -- unlike touch drags, a held stick keeps
@@ -150,10 +153,6 @@ class CubeRenderer : GLSurfaceView.Renderer {
         NativeLib.cubeReset()
         currentTransforms = NativeLib.cubeGetTransforms()
 
-        // Fixed camera: it never moves. What looks like "camera orbit" is actually rotating
-        // the puzzle itself via cubeOrientation, so this only needs computing once.
-        Matrix.setLookAtM(viewMatrix, 0, 0f, 0f, distance, 0f, 0f, 0f, 0f, 1f, 0f)
-
         Matrix.setIdentityM(cubeOrientation, 0)
         applyScreenRelativeRotation(-35f, 25f) // a pleasant default 3/4 view
     }
@@ -162,7 +161,14 @@ class CubeRenderer : GLSurfaceView.Renderer {
         GLES30.glViewport(0, 0, width, height)
         val aspect = width.toFloat() / height.toFloat()
         Matrix.perspectiveM(projMatrix, 0, 45f, aspect, 0.1f, 100f)
-        Matrix.multiplyMM(viewProjMatrix, 0, projMatrix, 0, viewMatrix, 0)
+    }
+
+    /**
+     * Multiplies the camera distance by [factor] (>1 zooms in, <1 zooms out), clamped so the
+     * puzzle can't be zoomed inside the near plane or shrunk to a speck.
+     */
+    fun zoomBy(factor: Float) {
+        distance = (distance / factor).coerceIn(MIN_DISTANCE, MAX_DISTANCE)
     }
 
     /** Accumulates a touch-drag delta (in degrees) to be applied on the next drawn frame. */
@@ -257,6 +263,9 @@ class CubeRenderer : GLSurfaceView.Renderer {
             applyScreenRelativeRotation(dYaw, dPitch)
         }
 
+        Matrix.setLookAtM(viewMatrix, 0, 0f, 0f, distance, 0f, 0f, 0f, 0f, 1f, 0f)
+        Matrix.multiplyMM(viewProjMatrix, 0, projMatrix, 0, viewMatrix, 0)
+
         var animT = 0f
         var animDone = false
         if (animating) {
@@ -349,5 +358,7 @@ class CubeRenderer : GLSurfaceView.Renderer {
     companion object {
         private const val STICK_DEG_PER_FRAME = 1.2f
         private const val ANIM_DURATION_NANOS = 220_000_000L // 220ms
+        private const val MIN_DISTANCE = 2.5f
+        private const val MAX_DISTANCE = 15f
     }
 }

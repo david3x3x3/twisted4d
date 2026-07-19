@@ -8,6 +8,7 @@ import android.util.Log
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.MotionEvent
+import android.view.ScaleGestureDetector
 import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.LinearLayout
@@ -21,6 +22,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var gamepadInput: GamepadInputHandler
     private lateinit var inputManager: InputManager
     private lateinit var statusText: TextView
+    private lateinit var scaleGestureDetector: ScaleGestureDetector
 
     private var lastTouchX = 0f
     private var lastTouchY = 0f
@@ -31,6 +33,15 @@ class MainActivity : AppCompatActivity() {
         Log.i(TAG, "puzzle-core version: ${NativeLib.coreVersion()}")
 
         renderer = CubeRenderer()
+        scaleGestureDetector = ScaleGestureDetector(
+            this,
+            object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+                override fun onScale(detector: ScaleGestureDetector): Boolean {
+                    renderer.zoomBy(detector.scaleFactor)
+                    return true
+                }
+            },
+        )
         glSurfaceView = GLSurfaceView(this).apply {
             setEGLContextClientVersion(3)
             setRenderer(renderer)
@@ -116,8 +127,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun handleCameraDrag(event: MotionEvent): Boolean {
-        when (event.action) {
-            MotionEvent.ACTION_DOWN -> {
+        scaleGestureDetector.onTouchEvent(event)
+
+        when (event.actionMasked) {
+            // A second finger landing/lifting shifts which pointer event.x/y tracks, so treat
+            // it like a fresh touch-down to avoid a jump when the drag resumes afterward.
+            MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_UP -> {
                 lastTouchX = event.x
                 lastTouchY = event.y
             }
@@ -127,10 +142,13 @@ class MainActivity : AppCompatActivity() {
                 lastTouchX = event.x
                 lastTouchY = event.y
 
-                // Screen-relative: dragging right/up should move whatever's currently facing
-                // the camera to the right/up on screen -- see CubeRenderer's class doc.
-                renderer.addDragDelta(dx * DRAG_SENSITIVITY, dy * DRAG_SENSITIVITY)
-                glSurfaceView.requestRender()
+                // Ignore drag while pinch-zooming with a second finger down.
+                if (!scaleGestureDetector.isInProgress) {
+                    // Screen-relative: dragging right/up should move whatever's currently
+                    // facing the camera to the right/up on screen -- see CubeRenderer's doc.
+                    renderer.addDragDelta(dx * DRAG_SENSITIVITY, dy * DRAG_SENSITIVITY)
+                    glSurfaceView.requestRender()
+                }
             }
         }
         return true
