@@ -24,10 +24,14 @@ import kotlin.math.sin
  * -- the actual "4D camera" control). Both are left-multiplied on, so -- exactly as in
  * [CubeRenderer] -- there's no gimbal-lock pole in either pair of planes.
  *
- * Each piece renders as a simple 3D cube (see [HypercubeGeometry]); its 4D position is rotated
- * by [cubeOrientation4] and perspective-projected to 3D by scaling based on its resulting W
- * coordinate ([W_PROJECTION_DIST]) -- pieces nearer in the 4th dimension render bigger/closer,
- * the same illusion an ordinary 3D perspective camera gives for depth along Z.
+ * Each piece renders as a simple 3D cube (see [HypercubeGeometry]) showing up to 6 U/D/L/R/F/B
+ * stickers; its 4D position is rotated by [cubeOrientation4] and perspective-projected to 3D by
+ * scaling based on its resulting W coordinate ([W_PROJECTION_DIST]) -- pieces nearer in the 4th
+ * dimension render bigger/closer, the same illusion an ordinary 3D perspective camera gives for
+ * depth along Z. A piece whose home position also touches the I or O cell additionally renders
+ * a small marker cube-let for that sticker, offset from it in whichever direction its (possibly
+ * twisted) orientation currently points its home W-axis -- see the marker-drawing block in
+ * [onDrawFrame].
  */
 class HypercubeRenderer : GLSurfaceView.Renderer {
 
@@ -61,6 +65,8 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
 
     private var indexBufferId = 0
     private lateinit var pieceVertexBufferIds: IntArray
+    private var iMarkerVboId = 0
+    private var oMarkerVboId = 0
 
     private val projMatrix = FloatArray(16)
     private val viewMatrix = FloatArray(16)
@@ -80,6 +86,7 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
     private val worldPos4 = FloatArray(4)
 
     private val modelMatrix = FloatArray(16)
+    private val markerModelMatrix = FloatArray(16)
     private val mvpMatrix = FloatArray(16)
 
     // Current (settled) per-piece transforms, refreshed after every twist/scramble/reset.
@@ -155,11 +162,35 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
             )
         }
 
+        val markerVboIds = IntArray(2)
+        GLES30.glGenBuffers(2, markerVboIds, 0)
+        iMarkerVboId = markerVboIds[0]
+        oMarkerVboId = markerVboIds[1]
+        uploadMarkerMesh(iMarkerVboId, HypercubeGeometry.COLOR_I)
+        uploadMarkerMesh(oMarkerVboId, HypercubeGeometry.COLOR_O)
+
         NativeLib.cube4Reset()
         currentTransforms = NativeLib.cube4GetTransforms()
 
         setIdentity4(cubeOrientation4)
         applyOrdinaryRotation(INITIAL_YAW_DEG, INITIAL_PITCH_DEG) // a pleasant default 3/4 view
+        // Without some initial 4D-specific rotation, W has no visible 3D component yet, so the
+        // I/O markers would sit with zero offset -- perfectly hidden inside their own piece --
+        // until the user discovers the 4D drag control. Nudge it by default so all 8 cells are
+        // visible immediately.
+        apply4DRotation(INITIAL_4D_X_DEG, INITIAL_4D_Y_DEG)
+    }
+
+    private fun uploadMarkerMesh(vboId: Int, color: FloatArray) {
+        val vertices = HypercubeGeometry.buildMarkerVertices(color)
+        val buffer: FloatBuffer = ByteBuffer
+            .allocateDirect(vertices.size * 4)
+            .order(ByteOrder.nativeOrder())
+            .asFloatBuffer()
+            .apply { put(vertices); position(0) }
+
+        GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, vboId)
+        GLES30.glBufferData(GLES30.GL_ARRAY_BUFFER, vertices.size * 4, buffer, GLES30.GL_STATIC_DRAW)
     }
 
     override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
@@ -336,6 +367,34 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
             GLES30.glVertexAttribPointer(0, 3, GLES30.GL_FLOAT, false, stride, 0)
             GLES30.glVertexAttribPointer(1, 3, GLES30.GL_FLOAT, false, stride, 12)
             GLES30.glDrawElements(GLES30.GL_TRIANGLES, HypercubeGeometry.INDICES.size, GLES30.GL_UNSIGNED_SHORT, 0)
+
+            // This piece also touches the I or O cell (home w != 0): draw its marker cube-let,
+            // offset from the piece in whatever direction its current (possibly twisted)
+            // orientation points its home W-axis -- worldOrient4's W column is exactly that
+            // direction, since matrix * (0,0,0,homeWSign) picks out that column, scaled.
+            val homeW = HypercubeGeometry.HOME_POSITIONS[i].w
+            if (homeW != 0) {
+                var mx = worldOrient4[3] * homeW
+                var my = worldOrient4[7] * homeW
+                var mz = worldOrient4[11] * homeW
+                val len = kotlin.math.sqrt(mx * mx + my * my + mz * mz).coerceAtLeast(1e-5f)
+                mx /= len; my /= len; mz /= len
+
+                buildMarkerModelMatrix(
+                    markerModelMatrix,
+                    modelMatrix[12] + mx * MARKER_OFFSET * scale,
+                    modelMatrix[13] + my * MARKER_OFFSET * scale,
+                    modelMatrix[14] + mz * MARKER_OFFSET * scale,
+                    scale,
+                )
+                Matrix.multiplyMM(mvpMatrix, 0, viewProjMatrix, 0, markerModelMatrix, 0)
+                GLES30.glUniformMatrix4fv(uMvpLoc, 1, false, mvpMatrix, 0)
+
+                GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, if (homeW > 0) oMarkerVboId else iMarkerVboId)
+                GLES30.glVertexAttribPointer(0, 3, GLES30.GL_FLOAT, false, stride, 0)
+                GLES30.glVertexAttribPointer(1, 3, GLES30.GL_FLOAT, false, stride, 12)
+                GLES30.glDrawElements(GLES30.GL_TRIANGLES, HypercubeGeometry.INDICES.size, GLES30.GL_UNSIGNED_SHORT, 0)
+            }
         }
 
         GLES30.glDisableVertexAttribArray(0)
@@ -363,6 +422,15 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         out[4] = orient[1] * scale; out[5] = orient[5] * scale; out[6] = orient[9] * scale; out[7] = 0f
         out[8] = orient[2] * scale; out[9] = orient[6] * scale; out[10] = orient[10] * scale; out[11] = 0f
         out[12] = pos[0] * scale; out[13] = pos[1] * scale; out[14] = pos[2] * scale; out[15] = 1f
+    }
+
+    /** Fills [out] with a marker cube-let at ([x],[y],[z]), scaled uniformly by [scale] (a
+     * solid-colored cube looks the same regardless of rotation, so no rotation is needed). */
+    private fun buildMarkerModelMatrix(out: FloatArray, x: Float, y: Float, z: Float, scale: Float) {
+        out[0] = scale; out[1] = 0f; out[2] = 0f; out[3] = 0f
+        out[4] = 0f; out[5] = scale; out[6] = 0f; out[7] = 0f
+        out[8] = 0f; out[9] = 0f; out[10] = scale; out[11] = 0f
+        out[12] = x; out[13] = y; out[14] = z; out[15] = 1f
     }
 
     private fun buildProgram(vertexSrc: String, fragmentSrc: String): Int {
@@ -400,9 +468,14 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         private const val ANIM_DURATION_NANOS = 220_000_000L // 220ms
         private const val INITIAL_YAW_DEG = -35f
         private const val INITIAL_PITCH_DEG = 25f
+        private const val INITIAL_4D_X_DEG = 25f
+        private const val INITIAL_4D_Y_DEG = 18f
 
         /** How dramatic the 4th-dimension perspective effect is; smaller = more dramatic. */
         private const val W_PROJECTION_DIST = 3.0f
+
+        /** How far the I/O marker cube-let sits from its piece's center, before W-perspective scale. */
+        private const val MARKER_OFFSET = 0.75f
 
         private const val AXIS_X = 0
         private const val AXIS_Y = 1

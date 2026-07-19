@@ -4,17 +4,19 @@ package dev.twisted4d.app
 data class Vec4i(val x: Int, val y: Int, val z: Int, val w: Int)
 
 /**
- * Builds the static per-piece mesh data for a 3^4 hypercube: vertex positions/colors and a
- * shared index buffer, mirroring [CubeGeometry] but for 80 pieces in 4D. Each piece still
- * renders as a simple 3D cube (colored by its X/Y/Z-extremity, same palette as [CubeGeometry])
- * -- the W axis isn't given its own sticker color; instead [HypercubeRenderer] conveys it via
- * perspective scale (pieces closer in W render bigger/closer, like a real 4D camera), except
- * for the 2 pieces with no X/Y/Z extremity at all (pure I/O pieces), which get a solid W color
- * so they aren't just plain dark cubes.
+ * Builds the static per-piece mesh data for a 3^4 hypercube, mirroring [CubeGeometry] but for
+ * 80 pieces in 4D and 8 cells (not 6): each piece shows one sticker per cell it belongs to
+ * (1 to 4 of them), matching MagicCube4D/Hyperspeedcube's model. The U/D/L/R/F/B stickers (X/Y/Z
+ * extremity) render as colored faces on the piece's main cube, same as [CubeGeometry]. The I/O
+ * stickers (W extremity) can't reuse a cube face slot the same way -- a cube only has 6 faces,
+ * and W is a genuinely separate axis, not a relabeling of one of the other three -- so they
+ * render as a small separate marker cube-let, offset from the piece in whichever direction its
+ * (possibly twisted) orientation currently points its home W-axis; see [HypercubeRenderer].
  */
 object HypercubeGeometry {
 
     const val PIECE_HALF = 0.475f
+    const val MARKER_HALF = 0.2f
     const val FLOATS_PER_VERTEX = 6 // x, y, z, r, g, b
     const val VERTICES_PER_PIECE = 24 // 4 per face x 6 faces
 
@@ -33,17 +35,18 @@ object HypercubeGeometry {
         }
     }
 
-    private val COLOR_PLUS_X = floatArrayOf(0.80f, 0.15f, 0.15f)
-    private val COLOR_MINUS_X = floatArrayOf(0.90f, 0.45f, 0.05f)
-    private val COLOR_PLUS_Y = floatArrayOf(0.92f, 0.92f, 0.92f)
-    private val COLOR_MINUS_Y = floatArrayOf(0.95f, 0.85f, 0.10f)
-    private val COLOR_PLUS_Z = floatArrayOf(0.10f, 0.60f, 0.20f)
-    private val COLOR_MINUS_Z = floatArrayOf(0.10f, 0.35f, 0.80f)
-    private val COLOR_PLUS_W = floatArrayOf(0.75f, 0.20f, 0.75f) // O: magenta
-    private val COLOR_MINUS_W = floatArrayOf(0.85f, 0.65f, 0.85f) // I: pale magenta
+    // 8 cell colors, matching Cell4's U/D/L/R/F/B/I/O.
+    private val COLOR_U = floatArrayOf(0.92f, 0.92f, 0.92f)
+    private val COLOR_D = floatArrayOf(0.95f, 0.85f, 0.10f)
+    private val COLOR_L = floatArrayOf(0.90f, 0.45f, 0.05f)
+    private val COLOR_R = floatArrayOf(0.80f, 0.15f, 0.15f)
+    private val COLOR_F = floatArrayOf(0.10f, 0.60f, 0.20f)
+    private val COLOR_B = floatArrayOf(0.10f, 0.35f, 0.80f)
+    val COLOR_I = floatArrayOf(0.05f, 0.80f, 0.80f)
+    val COLOR_O = floatArrayOf(0.65f, 0.10f, 0.85f)
     private val COLOR_INTERIOR = floatArrayOf(0.08f, 0.08f, 0.09f)
 
-    /** Shared index buffer: 6 faces x 2 triangles x 3 indices, reused by every piece. */
+    /** Shared index buffer: 6 faces x 2 triangles x 3 indices, reused by every piece/marker. */
     val INDICES: ShortArray = ShortArray(36).also { idx ->
         for (face in 0 until 6) {
             val v0 = (face * 4).toShort()
@@ -57,11 +60,11 @@ object HypercubeGeometry {
         }
     }
 
-    /** Interleaved [x,y,z,r,g,b] x 24 vertices for the piece whose home position is given. */
+    /** Interleaved [x,y,z,r,g,b] x 24 vertices for the piece whose home position is given --
+     * the main cube body, showing U/D/L/R/F/B stickers only (I/O render separately). */
     fun buildPieceVertices(home: Vec4i): FloatArray {
         val h = PIECE_HALF
-        val (hx, hy, hz, hw) = home
-        val pureWPiece = hx == 0 && hy == 0 && hz == 0
+        val (hx, hy, hz, _) = home
 
         val out = FloatArray(VERTICES_PER_PIECE * FLOATS_PER_VERTEX)
         var o = 0
@@ -73,43 +76,61 @@ object HypercubeGeometry {
             }
         }
 
-        fun colorFor(extremityColor: FloatArray, isExtreme: Boolean): FloatArray = when {
-            isExtreme -> extremityColor
-            pureWPiece && hw == 1 -> COLOR_PLUS_W
-            pureWPiece && hw == -1 -> COLOR_MINUS_W
-            else -> COLOR_INTERIOR
-        }
+        fun colorFor(stickerColor: FloatArray, isExtreme: Boolean) = if (isExtreme) stickerColor else COLOR_INTERIOR
 
-        // +X
+        // +X (R)
         face(
-            colorFor(COLOR_PLUS_X, hx == 1),
+            colorFor(COLOR_R, hx == 1),
             floatArrayOf(h, -h, -h), floatArrayOf(h, h, -h), floatArrayOf(h, h, h), floatArrayOf(h, -h, h),
         )
-        // -X
+        // -X (L)
         face(
-            colorFor(COLOR_MINUS_X, hx == -1),
+            colorFor(COLOR_L, hx == -1),
             floatArrayOf(-h, -h, h), floatArrayOf(-h, h, h), floatArrayOf(-h, h, -h), floatArrayOf(-h, -h, -h),
         )
-        // +Y
+        // +Y (U)
         face(
-            colorFor(COLOR_PLUS_Y, hy == 1),
+            colorFor(COLOR_U, hy == 1),
             floatArrayOf(-h, h, -h), floatArrayOf(-h, h, h), floatArrayOf(h, h, h), floatArrayOf(h, h, -h),
         )
-        // -Y
+        // -Y (D)
         face(
-            colorFor(COLOR_MINUS_Y, hy == -1),
+            colorFor(COLOR_D, hy == -1),
             floatArrayOf(-h, -h, h), floatArrayOf(-h, -h, -h), floatArrayOf(h, -h, -h), floatArrayOf(h, -h, h),
         )
-        // +Z
+        // +Z (F)
         face(
-            colorFor(COLOR_PLUS_Z, hz == 1),
+            colorFor(COLOR_F, hz == 1),
             floatArrayOf(-h, -h, h), floatArrayOf(h, -h, h), floatArrayOf(h, h, h), floatArrayOf(-h, h, h),
         )
-        // -Z
+        // -Z (B)
         face(
-            colorFor(COLOR_MINUS_Z, hz == -1),
+            colorFor(COLOR_B, hz == -1),
             floatArrayOf(h, -h, -h), floatArrayOf(-h, -h, -h), floatArrayOf(-h, h, -h), floatArrayOf(h, h, -h),
         )
+
+        return out
+    }
+
+    /** Interleaved [x,y,z,r,g,b] x 24 vertices for a small solid-colored I/O marker cube-let. */
+    fun buildMarkerVertices(color: FloatArray): FloatArray {
+        val h = MARKER_HALF
+        val out = FloatArray(VERTICES_PER_PIECE * FLOATS_PER_VERTEX)
+        var o = 0
+
+        fun face(vararg corners: FloatArray) {
+            for (c in corners) {
+                out[o++] = c[0]; out[o++] = c[1]; out[o++] = c[2]
+                out[o++] = color[0]; out[o++] = color[1]; out[o++] = color[2]
+            }
+        }
+
+        face(floatArrayOf(h, -h, -h), floatArrayOf(h, h, -h), floatArrayOf(h, h, h), floatArrayOf(h, -h, h))
+        face(floatArrayOf(-h, -h, h), floatArrayOf(-h, h, h), floatArrayOf(-h, h, -h), floatArrayOf(-h, -h, -h))
+        face(floatArrayOf(-h, h, -h), floatArrayOf(-h, h, h), floatArrayOf(h, h, h), floatArrayOf(h, h, -h))
+        face(floatArrayOf(-h, -h, h), floatArrayOf(-h, -h, -h), floatArrayOf(h, -h, -h), floatArrayOf(h, -h, h))
+        face(floatArrayOf(-h, -h, h), floatArrayOf(h, -h, h), floatArrayOf(h, h, h), floatArrayOf(-h, h, h))
+        face(floatArrayOf(h, -h, -h), floatArrayOf(-h, -h, -h), floatArrayOf(-h, h, -h), floatArrayOf(h, h, -h))
 
         return out
     }
