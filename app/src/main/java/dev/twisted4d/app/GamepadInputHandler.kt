@@ -8,11 +8,19 @@ import android.view.MotionEvent
 import kotlin.math.abs
 
 /**
- * Milestone 3: detect connected gamepads, log button/axis events, and map the left stick
- * to camera rotation as a first test. Button-to-twist mapping is a later milestone --
- * [handleKeyEvent] only logs for now and never consumes the event.
+ * Detects connected gamepads, logs button/axis events, maps the left stick to camera
+ * rotation, and maps face/shoulder buttons to cube twists.
+ *
+ * Default mapping (placeholder until the in-app remapping screen exists, per the spec's
+ * milestone 6): Y=U, A=D, X=L, B=R, L1=F, R1=B, with L2 held as the "prime" (inverse)
+ * modifier. D-pad and sticks stay reserved for camera control per the spec.
  */
-class GamepadInputHandler(private val renderer: CubeRenderer) : InputManager.InputDeviceListener {
+class GamepadInputHandler(
+    private val renderer: CubeRenderer,
+    private val onTwistRequested: (Face, Boolean) -> Unit,
+) : InputManager.InputDeviceListener {
+
+    @Volatile private var invertHeld = false
 
     private fun isGamepadSource(sources: Int): Boolean =
         (sources and InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD ||
@@ -55,16 +63,27 @@ class GamepadInputHandler(private val renderer: CubeRenderer) : InputManager.Inp
         return true
     }
 
-    /** Logs gamepad button presses; never consumes so system buttons (e.g. Back) still work. */
+    /** Logs gamepad button presses and triggers the mapped twist, if any; never consumes the
+     * event so system buttons (e.g. Back) keep working. */
     fun handleKeyEvent(event: KeyEvent) {
         if (!isGamepadSource(event.source)) return
-        if (event.repeatCount > 0) return // don't spam the log while a button is held
+
+        if (event.keyCode == KeyEvent.KEYCODE_BUTTON_L2) {
+            invertHeld = event.action == KeyEvent.ACTION_DOWN
+        }
+
+        if (event.repeatCount > 0) return // don't spam the log/twists while a button is held
 
         val label = KeyEvent.keyCodeToString(event.keyCode)
         when (event.action) {
             KeyEvent.ACTION_DOWN -> Log.i(TAG, "Button down: $label (device=${event.device?.name})")
             KeyEvent.ACTION_UP -> Log.i(TAG, "Button up: $label (device=${event.device?.name})")
         }
+
+        if (event.action != KeyEvent.ACTION_DOWN) return
+        val face = FACE_BUTTON_MAP[event.keyCode] ?: return
+        Log.i(TAG, "Twist requested: ${face.label}${if (invertHeld) "'" else ""} (gamepad)")
+        onTwistRequested(face, invertHeld)
     }
 
     private fun applyDeadzone(v: Float): Float = if (abs(v) < DEADZONE) 0f else v
@@ -72,5 +91,14 @@ class GamepadInputHandler(private val renderer: CubeRenderer) : InputManager.Inp
     companion object {
         private const val TAG = "Twisted4DGamepad"
         private const val DEADZONE = 0.15f
+
+        private val FACE_BUTTON_MAP = mapOf(
+            KeyEvent.KEYCODE_BUTTON_Y to Face.U,
+            KeyEvent.KEYCODE_BUTTON_A to Face.D,
+            KeyEvent.KEYCODE_BUTTON_X to Face.L,
+            KeyEvent.KEYCODE_BUTTON_B to Face.R,
+            KeyEvent.KEYCODE_BUTTON_L1 to Face.F,
+            KeyEvent.KEYCODE_BUTTON_R1 to Face.B,
+        )
     }
 }

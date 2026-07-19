@@ -10,6 +10,8 @@ import android.view.KeyEvent
 import android.view.MotionEvent
 import android.widget.Button
 import android.widget.FrameLayout
+import android.widget.LinearLayout
+import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 
 class MainActivity : AppCompatActivity() {
@@ -18,6 +20,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var renderer: CubeRenderer
     private lateinit var gamepadInput: GamepadInputHandler
     private lateinit var inputManager: InputManager
+    private lateinit var statusText: TextView
 
     private var lastTouchX = 0f
     private var lastTouchY = 0f
@@ -34,30 +37,82 @@ class MainActivity : AppCompatActivity() {
             setOnTouchListener { _, event -> handleCameraDrag(event) }
         }
 
-        gamepadInput = GamepadInputHandler(renderer)
+        gamepadInput = GamepadInputHandler(renderer) { face, prime ->
+            glSurfaceView.queueEvent { renderer.requestTwist(face, prime) }
+        }
         inputManager = getSystemService(Context.INPUT_SERVICE) as InputManager
         inputManager.registerInputDeviceListener(gamepadInput, null)
         gamepadInput.logAlreadyConnectedDevices()
 
-        val twistButton = Button(this).apply {
-            text = "Twist U"
-            setOnClickListener {
-                glSurfaceView.queueEvent { NativeLib.cubeTwistU() }
-            }
+        statusText = TextView(this).apply {
+            text = SOLVED_LABEL
+            textSize = 18f
+            setPadding(24, 16, 24, 16)
+        }
+
+        renderer.onStateChanged = { solved ->
+            runOnUiThread { statusText.text = if (solved) SOLVED_LABEL else "" }
+        }
+
+        val twistRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            Face.entries.forEach { face -> addView(twistButton(face)) }
+        }
+
+        val utilityRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            addView(
+                Button(this@MainActivity).apply {
+                    text = "Scramble"
+                    setOnClickListener { glSurfaceView.queueEvent { renderer.requestScramble(SCRAMBLE_MOVE_COUNT) } }
+                },
+            )
+            addView(
+                Button(this@MainActivity).apply {
+                    text = "Reset"
+                    setOnClickListener { glSurfaceView.queueEvent { renderer.requestReset() } }
+                },
+            )
         }
 
         val root = FrameLayout(this).apply {
             addView(glSurfaceView)
             addView(
-                twistButton,
+                statusText,
+                FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.WRAP_CONTENT,
+                    FrameLayout.LayoutParams.WRAP_CONTENT,
+                    Gravity.TOP or Gravity.CENTER_HORIZONTAL,
+                ).apply { topMargin = 24 },
+            )
+            addView(
+                twistRow,
                 FrameLayout.LayoutParams(
                     FrameLayout.LayoutParams.WRAP_CONTENT,
                     FrameLayout.LayoutParams.WRAP_CONTENT,
                     Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL,
                 ).apply { bottomMargin = 48 },
             )
+            addView(
+                utilityRow,
+                FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.WRAP_CONTENT,
+                    FrameLayout.LayoutParams.WRAP_CONTENT,
+                    Gravity.TOP or Gravity.END,
+                ).apply { topMargin = 24; rightMargin = 24 },
+            )
         }
         setContentView(root)
+    }
+
+    /** Tap = clockwise twist, long-press = prime (counter-clockwise). */
+    private fun twistButton(face: Face): Button = Button(this).apply {
+        text = face.label
+        setOnClickListener { glSurfaceView.queueEvent { renderer.requestTwist(face, false) } }
+        setOnLongClickListener {
+            glSurfaceView.queueEvent { renderer.requestTwist(face, true) }
+            true
+        }
     }
 
     private fun handleCameraDrag(event: MotionEvent): Boolean {
@@ -110,5 +165,7 @@ class MainActivity : AppCompatActivity() {
         private const val TAG = "Twisted4D"
         private const val DRAG_SENSITIVITY = 0.4f
         private const val PITCH_LIMIT_DEG = 85f
+        private const val SCRAMBLE_MOVE_COUNT = 25
+        private const val SOLVED_LABEL = "SOLVED"
     }
 }

@@ -12,7 +12,9 @@ object NativeLib {
     external fun coreVersion(): String
 
     external fun cubeReset()
-    external fun cubeTwistU()
+    external fun cubeTwist(face: Int, prime: Boolean)
+    external fun cubeIsSolved(): Boolean
+    external fun cubeScramble(moveCount: Int)
 
     /**
      * 26 cubies x 12 floats: [px, py, pz, m00, m01, m02, m10, m11, m12, m20, m21, m22].

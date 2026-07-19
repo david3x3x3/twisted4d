@@ -10,12 +10,19 @@ import java.nio.ShortBuffer
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
 import kotlin.math.cos
+import kotlin.math.roundToInt
 import kotlin.math.sin
 
 /**
- * Renders a static 3x3x3 cube from the native puzzle-core cubie transforms. Camera is a
- * touch-drag/gamepad-stick orbit (yaw/pitch/distance); twists are applied instantly (no
- * interpolation -- smooth twist animation is a later milestone).
+ * Renders a 3x3x3 cube from the native puzzle-core cubie transforms. Camera is a
+ * touch-drag/gamepad-stick orbit (yaw/pitch/distance). Twists are applied to native state
+ * instantly (so [NativeLib.cubeIsSolved] is correct right away) but rendered as a smooth
+ * 90-degree rotation of just the affected layer, interpolated from a before/after transform
+ * snapshot -- see [requestTwist].
+ *
+ * All public methods here are meant to be called via `GLSurfaceView.queueEvent` (i.e. on the
+ * GL thread), except [yawDeg]/[pitchDeg]/[stickX]/[stickY] which are intentionally `@Volatile`
+ * for cross-thread camera input.
  */
 class CubeRenderer : GLSurfaceView.Renderer {
 
@@ -29,6 +36,9 @@ class CubeRenderer : GLSurfaceView.Renderer {
     // rotating the camera even if no new motion event arrives while it's steady.
     @Volatile var stickX: Float = 0f
     @Volatile var stickY: Float = 0f
+
+    /** Called (on the GL thread) right after a twist/scramble/reset with the new solved state. */
+    @Volatile var onStateChanged: ((Boolean) -> Unit)? = null
 
     private var program = 0
     private var uMvpLoc = 0
@@ -46,7 +56,20 @@ class CubeRenderer : GLSurfaceView.Renderer {
     private val viewMatrix = FloatArray(16)
     private val viewProjMatrix = FloatArray(16)
     private val modelMatrix = FloatArray(16)
+    private val rotMatrix = FloatArray(16)
     private val mvpMatrix = FloatArray(16)
+
+    // Current (settled) per-cubie transforms, refreshed after every twist/scramble/reset.
+    private var currentTransforms: FloatArray = FloatArray(CubeGeometry.HOME_POSITIONS.size * 12)
+
+    // In-flight twist animation state.
+    private var animating = false
+    private var animStartNanos = 0L
+    private var animFace: Face? = null
+    private var animAngleDeg = 0f
+    private var animBefore: FloatArray? = null
+    private var animAfter: FloatArray? = null
+    private var animAffected: BooleanArray? = null
 
     private val vertexShaderSrc = """
         #version 300 es
@@ -109,12 +132,59 @@ class CubeRenderer : GLSurfaceView.Renderer {
         }
 
         NativeLib.cubeReset()
+        currentTransforms = NativeLib.cubeGetTransforms()
     }
 
     override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
         GLES30.glViewport(0, 0, width, height)
         val aspect = width.toFloat() / height.toFloat()
         Matrix.perspectiveM(projMatrix, 0, 45f, aspect, 0.1f, 100f)
+    }
+
+    /**
+     * Applies [face]/[prime] to native puzzle state immediately, then animates the affected
+     * layer's cubies from their pre-twist transforms to the new ones over [ANIM_DURATION_NANOS].
+     * Ignored if another twist is still animating.
+     */
+    fun requestTwist(face: Face, prime: Boolean) {
+        if (animating) return
+
+        val before = currentTransforms
+        NativeLib.cubeTwist(face.nativeIndex, prime)
+        val after = NativeLib.cubeGetTransforms()
+
+        animAffected = BooleanArray(CubeGeometry.HOME_POSITIONS.size) { i ->
+            val base = i * 12
+            face.selects(
+                before[base].roundToInt(),
+                before[base + 1].roundToInt(),
+                before[base + 2].roundToInt(),
+            )
+        }
+        animBefore = before
+        animAfter = after
+        animFace = face
+        animAngleDeg = if (prime) -face.clockwiseDeg else face.clockwiseDeg
+        animStartNanos = System.nanoTime()
+        animating = true
+
+        onStateChanged?.invoke(NativeLib.cubeIsSolved())
+    }
+
+    /** Instantly re-randomizes the cube (no animation) and refreshes solved state. */
+    fun requestScramble(moveCount: Int) {
+        if (animating) return
+        NativeLib.cubeScramble(moveCount)
+        currentTransforms = NativeLib.cubeGetTransforms()
+        onStateChanged?.invoke(NativeLib.cubeIsSolved())
+    }
+
+    /** Instantly resets to solved (no animation) and refreshes solved state. */
+    fun requestReset() {
+        if (animating) return
+        NativeLib.cubeReset()
+        currentTransforms = NativeLib.cubeGetTransforms()
+        onStateChanged?.invoke(NativeLib.cubeIsSolved())
     }
 
     override fun onDrawFrame(gl: GL10?) {
@@ -134,21 +204,28 @@ class CubeRenderer : GLSurfaceView.Renderer {
         Matrix.setLookAtM(viewMatrix, 0, eyeX, eyeY, eyeZ, 0f, 0f, 0f, 0f, 1f, 0f)
         Matrix.multiplyMM(viewProjMatrix, 0, projMatrix, 0, viewMatrix, 0)
 
-        val transforms = NativeLib.cubeGetTransforms()
+        var animT = 0f
+        var animDone = false
+        if (animating) {
+            animT = ((System.nanoTime() - animStartNanos).toFloat() / ANIM_DURATION_NANOS).coerceIn(0f, 1f)
+            animDone = animT >= 1f
+        }
 
         GLES30.glEnableVertexAttribArray(0)
         GLES30.glEnableVertexAttribArray(1)
         GLES30.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER, indexBufferId)
 
         val stride = CubeGeometry.FLOATS_PER_VERTEX * 4
+        val after = animAfter
         for (i in CubeGeometry.HOME_POSITIONS.indices) {
-            val base = i * 12
-            buildModelMatrix(
-                px = transforms[base], py = transforms[base + 1], pz = transforms[base + 2],
-                m00 = transforms[base + 3], m01 = transforms[base + 4], m02 = transforms[base + 5],
-                m10 = transforms[base + 6], m11 = transforms[base + 7], m12 = transforms[base + 8],
-                m20 = transforms[base + 9], m21 = transforms[base + 10], m22 = transforms[base + 11],
-            )
+            if (animating && animAffected!![i]) {
+                buildModelMatrix(modelMatrix, animBefore!!, i)
+                Matrix.setRotateM(rotMatrix, 0, animAngleDeg * animT, animFace!!.axisX, animFace!!.axisY, animFace!!.axisZ)
+                Matrix.multiplyMM(mvpMatrix, 0, rotMatrix, 0, modelMatrix, 0)
+                System.arraycopy(mvpMatrix, 0, modelMatrix, 0, 16)
+            } else {
+                buildModelMatrix(modelMatrix, if (animating) after!! else currentTransforms, i)
+            }
             Matrix.multiplyMM(mvpMatrix, 0, viewProjMatrix, 0, modelMatrix, 0)
             GLES30.glUniformMatrix4fv(uMvpLoc, 1, false, mvpMatrix, 0)
 
@@ -160,19 +237,29 @@ class CubeRenderer : GLSurfaceView.Renderer {
 
         GLES30.glDisableVertexAttribArray(0)
         GLES30.glDisableVertexAttribArray(1)
+
+        if (animDone) {
+            currentTransforms = after!!
+            animating = false
+            animBefore = null
+            animAfter = null
+            animAffected = null
+            animFace = null
+        }
     }
 
-    /** Fills [modelMatrix] (column-major, OpenGL layout) from a position + 3x3 rotation. */
-    private fun buildModelMatrix(
-        px: Float, py: Float, pz: Float,
-        m00: Float, m01: Float, m02: Float,
-        m10: Float, m11: Float, m12: Float,
-        m20: Float, m21: Float, m22: Float,
-    ) {
-        modelMatrix[0] = m00; modelMatrix[1] = m10; modelMatrix[2] = m20; modelMatrix[3] = 0f
-        modelMatrix[4] = m01; modelMatrix[5] = m11; modelMatrix[6] = m21; modelMatrix[7] = 0f
-        modelMatrix[8] = m02; modelMatrix[9] = m12; modelMatrix[10] = m22; modelMatrix[11] = 0f
-        modelMatrix[12] = px; modelMatrix[13] = py; modelMatrix[14] = pz; modelMatrix[15] = 1f
+    /** Fills [out] (column-major, OpenGL layout) from the position + 3x3 rotation at cubie [i]. */
+    private fun buildModelMatrix(out: FloatArray, transforms: FloatArray, i: Int) {
+        val base = i * 12
+        val px = transforms[base]; val py = transforms[base + 1]; val pz = transforms[base + 2]
+        val m00 = transforms[base + 3]; val m01 = transforms[base + 4]; val m02 = transforms[base + 5]
+        val m10 = transforms[base + 6]; val m11 = transforms[base + 7]; val m12 = transforms[base + 8]
+        val m20 = transforms[base + 9]; val m21 = transforms[base + 10]; val m22 = transforms[base + 11]
+
+        out[0] = m00; out[1] = m10; out[2] = m20; out[3] = 0f
+        out[4] = m01; out[5] = m11; out[6] = m21; out[7] = 0f
+        out[8] = m02; out[9] = m12; out[10] = m22; out[11] = 0f
+        out[12] = px; out[13] = py; out[14] = pz; out[15] = 1f
     }
 
     private fun buildProgram(vertexSrc: String, fragmentSrc: String): Int {
@@ -208,5 +295,6 @@ class CubeRenderer : GLSurfaceView.Renderer {
     companion object {
         private const val STICK_DEG_PER_FRAME = 1.2f
         private const val PITCH_LIMIT_DEG = 85f
+        private const val ANIM_DURATION_NANOS = 220_000_000L // 220ms
     }
 }

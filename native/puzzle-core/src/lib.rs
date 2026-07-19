@@ -5,9 +5,9 @@ mod cube3;
 
 use std::sync::{Mutex, OnceLock};
 
-use cube3::Cube3;
+use cube3::{Cube3, Face};
 use jni::objects::JClass;
-use jni::sys::{jfloatArray, jstring};
+use jni::sys::{jboolean, jfloatArray, jint, jstring};
 use jni::JNIEnv;
 
 const CORE_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -36,11 +36,36 @@ pub extern "system" fn Java_dev_twisted4d_app_NativeLib_cubeReset<'local>(
 }
 
 #[no_mangle]
-pub extern "system" fn Java_dev_twisted4d_app_NativeLib_cubeTwistU<'local>(
+pub extern "system" fn Java_dev_twisted4d_app_NativeLib_cubeTwist<'local>(
     _env: JNIEnv<'local>,
     _class: JClass<'local>,
+    face: jint,
+    prime: jboolean,
 ) {
-    cube().lock().unwrap().twist_u();
+    if let Some(face) = Face::from_index(face) {
+        cube().lock().unwrap().twist(face, prime != 0);
+    }
+}
+
+#[no_mangle]
+pub extern "system" fn Java_dev_twisted4d_app_NativeLib_cubeIsSolved<'local>(
+    _env: JNIEnv<'local>,
+    _class: JClass<'local>,
+) -> jboolean {
+    if cube().lock().unwrap().is_solved() {
+        1
+    } else {
+        0
+    }
+}
+
+#[no_mangle]
+pub extern "system" fn Java_dev_twisted4d_app_NativeLib_cubeScramble<'local>(
+    _env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    move_count: jint,
+) {
+    cube().lock().unwrap().scramble(move_count.max(0) as u32);
 }
 
 #[no_mangle]

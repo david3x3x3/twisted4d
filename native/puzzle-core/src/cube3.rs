@@ -1,15 +1,68 @@
 // 3x3x3 cubie model: piece-based representation (position + orientation per cubie),
 // generalizes cleanly to NxNxN and later to 4D by swapping the position/rotation types.
 
+use rand::Rng;
+
 pub type Vec3i = (i32, i32, i32);
 pub type Mat3i = [[i32; 3]; 3];
 
 const IDENTITY: Mat3i = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
 
-/// Clockwise (viewed from the +Y looking toward the origin) 90-degree rotation about Y,
-/// used for the U-layer twist.
-const ROT_U: Mat3i = [[0, 0, 1], [0, 1, 0], [-1, 0, 0]];
+/// One of the 6 faces of a 3x3x3. Rotation matrices below are each a 90-degree turn of that
+/// face, clockwise as viewed from outside the face looking at the cube (standard cube
+/// notation). `nativeIndex` in the Kotlin `Face` enum must stay in this same U/D/L/R/F/B
+/// order, since it's passed across JNI as a plain int.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Face {
+    U = 0,
+    D = 1,
+    L = 2,
+    R = 3,
+    F = 4,
+    B = 5,
+}
 
+impl Face {
+    pub const ALL: [Face; 6] = [Face::U, Face::D, Face::L, Face::R, Face::F, Face::B];
+
+    pub fn from_index(i: i32) -> Option<Face> {
+        match i {
+            0 => Some(Face::U),
+            1 => Some(Face::D),
+            2 => Some(Face::L),
+            3 => Some(Face::R),
+            4 => Some(Face::F),
+            5 => Some(Face::B),
+            _ => None,
+        }
+    }
+
+    /// A clockwise-from-outside 90-degree turn about the +Y/+X/+Z axis is a NEGATIVE angle
+    /// (right-hand rule), so the two faces sharing an axis get opposite-signed matrices.
+    fn clockwise_matrix(self) -> Mat3i {
+        match self {
+            Face::U => [[0, 0, -1], [0, 1, 0], [1, 0, 0]],
+            Face::D => [[0, 0, 1], [0, 1, 0], [-1, 0, 0]],
+            Face::L => [[1, 0, 0], [0, 0, -1], [0, 1, 0]],
+            Face::R => [[1, 0, 0], [0, 0, 1], [0, -1, 0]],
+            Face::F => [[0, 1, 0], [-1, 0, 0], [0, 0, 1]],
+            Face::B => [[0, -1, 0], [1, 0, 0], [0, 0, 1]],
+        }
+    }
+
+    fn selects(self, p: Vec3i) -> bool {
+        match self {
+            Face::U => p.1 == 1,
+            Face::D => p.1 == -1,
+            Face::L => p.0 == -1,
+            Face::R => p.0 == 1,
+            Face::F => p.2 == 1,
+            Face::B => p.2 == -1,
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq)]
 pub struct Cubie {
     pub pos: Vec3i,
     pub orient: Mat3i,
@@ -34,6 +87,16 @@ fn mat_mat_mul(a: &Mat3i, b: &Mat3i) -> Mat3i {
         for col in 0..3 {
             out[row][col] =
                 a[row][0] * b[0][col] + a[row][1] * b[1][col] + a[row][2] * b[2][col];
+        }
+    }
+    out
+}
+
+fn transpose(m: &Mat3i) -> Mat3i {
+    let mut out = [[0; 3]; 3];
+    for r in 0..3 {
+        for c in 0..3 {
+            out[r][c] = m[c][r];
         }
     }
     out
@@ -71,9 +134,44 @@ impl Cube3 {
         }
     }
 
-    /// The single twist milestone 2 needs: rotate the top (y = 1) layer clockwise.
-    pub fn twist_u(&mut self) {
-        self.twist_layer(&ROT_U, |p| p.1 == 1);
+    /// Turns `face` 90 degrees; `prime` reverses the direction (counter-clockwise).
+    pub fn twist(&mut self, face: Face, prime: bool) {
+        let rot = if prime {
+            transpose(&face.clockwise_matrix())
+        } else {
+            face.clockwise_matrix()
+        };
+        self.twist_layer(&rot, |p| face.selects(p));
+    }
+
+    pub fn is_solved(&self) -> bool {
+        let solved = Cube3::solved();
+        self.cubies
+            .iter()
+            .zip(solved.cubies.iter())
+            .all(|(a, b)| a.pos == b.pos && a.orient == b.orient)
+    }
+
+    /// Applies `move_count` random quarter turns (never repeating the immediately preceding
+    /// face, to avoid trivially-cancelling moves) and returns the moves applied.
+    pub fn scramble(&mut self, move_count: u32) -> Vec<(Face, bool)> {
+        let mut rng = rand::thread_rng();
+        let mut moves = Vec::with_capacity(move_count as usize);
+        let mut last_face: Option<Face> = None;
+        for _ in 0..move_count {
+            let mut face;
+            loop {
+                face = Face::ALL[rng.gen_range(0..6)];
+                if Some(face) != last_face {
+                    break;
+                }
+            }
+            let prime = rng.gen_bool(0.5);
+            self.twist(face, prime);
+            moves.push((face, prime));
+            last_face = Some(face);
+        }
+        moves
     }
 
     /// Flattened per-cubie transforms in solved-order: [px, py, pz, m00, m01, m02, m10, m11,
@@ -104,20 +202,39 @@ mod tests {
     }
 
     #[test]
-    fn four_u_twists_return_to_solved() {
-        let mut cube = Cube3::solved();
-        let before = cube.transforms();
-        for _ in 0..4 {
-            cube.twist_u();
+    fn every_face_four_turns_returns_to_solved() {
+        for &face in Face::ALL.iter() {
+            let mut cube = Cube3::solved();
+            for _ in 0..4 {
+                cube.twist(face, false);
+            }
+            assert!(cube.is_solved(), "{face:?} x4 should return to solved");
         }
-        assert_eq!(cube.transforms(), before);
+    }
+
+    #[test]
+    fn every_face_prime_cancels_clockwise() {
+        for &face in Face::ALL.iter() {
+            let mut cube = Cube3::solved();
+            cube.twist(face, false);
+            cube.twist(face, true);
+            assert!(cube.is_solved(), "{face:?} then {face:?}' should cancel");
+        }
+    }
+
+    #[test]
+    fn is_solved_detects_unsolved_state() {
+        let mut cube = Cube3::solved();
+        assert!(cube.is_solved());
+        cube.twist(Face::U, false);
+        assert!(!cube.is_solved());
     }
 
     #[test]
     fn one_u_twist_only_moves_top_layer() {
         let before = Cube3::solved();
         let mut after = Cube3::solved();
-        after.twist_u();
+        after.twist(Face::U, false);
 
         // 9 cubies make up the top layer: 4 corners, 4 edges, 1 face center.
         assert_eq!(after.cubies.iter().filter(|c| c.pos.1 == 1).count(), 9);
@@ -125,15 +242,27 @@ mod tests {
         for (b, a) in before.cubies.iter().zip(after.cubies.iter()) {
             if b.pos.1 == 1 {
                 assert_eq!(a.pos.1, 1, "top-layer cubie should stay in the top layer");
-                assert_ne!(
-                    (b.pos, b.orient),
-                    (a.pos, a.orient),
-                    "top-layer cubie should have rotated"
-                );
+                assert_ne!((b.pos, b.orient), (a.pos, a.orient), "top-layer cubie should have rotated");
             } else {
                 assert_eq!(b.pos, a.pos, "non-top-layer cubie should be untouched");
                 assert_eq!(b.orient, a.orient, "non-top-layer cubie should be untouched");
             }
+        }
+    }
+
+    #[test]
+    fn scramble_changes_state_with_nonzero_moves() {
+        let mut cube = Cube3::solved();
+        cube.scramble(25);
+        assert!(!cube.is_solved());
+    }
+
+    #[test]
+    fn scramble_never_repeats_the_same_face_twice_in_a_row() {
+        let mut cube = Cube3::solved();
+        let moves = cube.scramble(50);
+        for pair in moves.windows(2) {
+            assert_ne!(pair[0].0, pair[1].0);
         }
     }
 }
