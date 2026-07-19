@@ -31,6 +31,15 @@ import kotlin.math.sin
  * drawn at is resolved fresh every frame from `cubeOrientation4 * pieceOrientation * homeDir`,
  * so stickers visually relocate as the camera is rotated in 90-degree steps or the piece itself
  * is twisted.
+ *
+ * [cubeOrientation4] only ever changes in exact 90-degree steps (via [requestCameraRotate90]),
+ * so it never needs to move continuously. The *continuous* touch-drag/left-stick "look around
+ * the room" feel is a separate, ordinary 3D rotation, [viewOrientation3], applied uniformly to
+ * the whole assembled room (both each sticker's position and its mesh, exactly like
+ * [CubeRenderer.cubeOrientation]) after room-local positions are resolved. Keeping these two
+ * rotations separate matters: composing continuous rotation into [cubeOrientation4] would (a)
+ * make the discrete "which wall is this sticker on" threshold below flip abruptly mid-drag, and
+ * (b) never rotate the sticker meshes themselves, since only their positions depended on it.
  */
 class HypercubeRenderer : GLSurfaceView.Renderer {
 
@@ -46,8 +55,14 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
     /** Called (on the GL thread) right after a twist/scramble/reset with the new solved state. */
     @Volatile var onStateChanged: ((Boolean) -> Unit)? = null
 
+    /** Which [Cell4] to render brightened, e.g. while the gamepad left stick that selects it
+     * for the next twist is actively deflected (see `todo-controller-input.md`); null shows no
+     * highlight. Safe to set from the UI thread. */
+    @Volatile var highlightedCell: Cell4? = null
+
     private var program = 0
     private var uMvpLoc = 0
+    private var uHighlightLoc = 0
 
     private val indexBuffer: ShortBuffer = ByteBuffer
         .allocateDirect(HypercubeGeometry.INDICES.size * 2)
@@ -64,12 +79,11 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
 
     // Row-major 4x4 matrices for pure 4D math (distinct from GL's column-major convention,
     // used only for the final per-sticker model matrix). cubeOrientation4 is kept to exact
-    // 90-degree-step rotations, so transforming a native axis vector through it always lands
-    // exactly on another axis vector -- no nearest-match/snapping needed, unlike CubeRenderer.
+    // 90-degree-step rotations (only ever changed by requestCameraRotate90), so transforming a
+    // native axis vector through it always lands exactly on another axis vector -- no
+    // nearest-match/snapping needed, unlike CubeRenderer.
     private val cubeOrientation4 = FloatArray(16)
     private val deltaRot4A = FloatArray(16)
-    private val deltaRot4B = FloatArray(16)
-    private val deltaCombined4 = FloatArray(16)
     private val newOrientation4 = FloatArray(16)
     private val pieceOrient4 = FloatArray(16)
     private val animRot4 = FloatArray(16)
@@ -82,7 +96,16 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
     private val cameraDir4 = FloatArray(4)
     private val screenPos = FloatArray(3)
 
+    // Column-major (GL layout) continuous "look around the room" rotation -- see class doc.
+    // Rebuilt only by drag/stick input, applied uniformly to every sticker's position and mesh.
+    private val viewOrientation3 = FloatArray(16)
+    private val deltaRotX3 = FloatArray(16)
+    private val deltaRotY3 = FloatArray(16)
+    private val deltaCombined3 = FloatArray(16)
+    private val newOrientation3 = FloatArray(16)
+
     private val stickerModelMatrix = FloatArray(16)
+    private val worldModelMatrix = FloatArray(16)
     private val mvpMatrix = FloatArray(16)
 
     // Current (settled) per-piece transforms, refreshed after every twist/scramble/reset.
@@ -114,9 +137,11 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         #version 300 es
         precision mediump float;
         in vec3 vColor;
+        uniform float uHighlight;
         out vec4 fragColor;
         void main() {
-            fragColor = vec4(vColor, 1.0);
+            vec3 c = mix(vColor, vec3(1.0), uHighlight * 0.35);
+            fragColor = vec4(c, 1.0);
         }
     """.trimIndent()
 
@@ -126,6 +151,7 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
 
         program = buildProgram(vertexShaderSrc, fragmentShaderSrc)
         uMvpLoc = GLES30.glGetUniformLocation(program, "uMVP")
+        uHighlightLoc = GLES30.glGetUniformLocation(program, "uHighlight")
 
         val ibo = IntArray(1)
         GLES30.glGenBuffers(1, ibo, 0)
@@ -157,7 +183,8 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         currentTransforms = NativeLib.cube4GetTransforms()
 
         setIdentity4(cubeOrientation4)
-        applyOrdinaryRotation(INITIAL_YAW_DEG, INITIAL_PITCH_DEG) // a pleasant default 3/4 view
+        Matrix.setIdentityM(viewOrientation3, 0)
+        applyScreenRelativeRotation(INITIAL_YAW_DEG, INITIAL_PITCH_DEG) // a pleasant default 3/4 view
     }
 
     override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
@@ -183,13 +210,20 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         }
     }
 
-    /** Rotates [cubeOrientation4] in the XZ (yaw) / YZ (pitch) planes -- the familiar 3D feel. */
-    private fun applyOrdinaryRotation(dYawDeg: Float, dPitchDeg: Float) {
-        setPlaneRotation4(deltaRot4A, AXIS_Z, AXIS_Y, dPitchDeg)
-        setPlaneRotation4(deltaRot4B, AXIS_X, AXIS_Z, dYawDeg)
-        mat4MatMul(deltaCombined4, deltaRot4B, deltaRot4A)
-        mat4MatMul(newOrientation4, deltaCombined4, cubeOrientation4)
-        System.arraycopy(newOrientation4, 0, cubeOrientation4, 0, 16)
+    /**
+     * Rotates [viewOrientation3] by [dYawDeg]/[dPitchDeg] about the *screen's current* vertical/
+     * horizontal axes -- the plain 3D "orbit the room" feel, composed on the left exactly like
+     * [CubeRenderer.applyScreenRelativeRotation] so it has no gimbal-lock pole. This never
+     * touches [cubeOrientation4]: which native cell sits on which wall is a separate, purely
+     * discrete concern (see class doc), so dragging can never trigger the wall-reassignment
+     * jump that would happen if the two were the same matrix.
+     */
+    private fun applyScreenRelativeRotation(dYawDeg: Float, dPitchDeg: Float) {
+        Matrix.setRotateM(deltaRotX3, 0, dPitchDeg, 1f, 0f, 0f)
+        Matrix.setRotateM(deltaRotY3, 0, dYawDeg, 0f, 1f, 0f)
+        Matrix.multiplyMM(deltaCombined3, 0, deltaRotY3, 0, deltaRotX3, 0)
+        Matrix.multiplyMM(newOrientation3, 0, deltaCombined3, 0, viewOrientation3, 0)
+        System.arraycopy(newOrientation3, 0, viewOrientation3, 0, 16)
     }
 
     /**
@@ -260,7 +294,7 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
             dYaw += stickX * STICK_DEG_PER_FRAME
             dPitch += stickY * STICK_DEG_PER_FRAME
         }
-        if (dYaw != 0f || dPitch != 0f) applyOrdinaryRotation(dYaw, dPitch)
+        if (dYaw != 0f || dPitch != 0f) applyScreenRelativeRotation(dYaw, dPitch)
 
         Matrix.setLookAtM(viewMatrix, 0, 0f, 0f, distance, 0f, 0f, 0f, 0f, 1f, 0f)
         Matrix.multiplyMM(viewProjMatrix, 0, projMatrix, 0, viewMatrix, 0)
@@ -338,10 +372,12 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
                 }
 
                 buildStickerModelMatrix(stickerModelMatrix, screenPos[0], screenPos[1], screenPos[2])
-                Matrix.multiplyMM(mvpMatrix, 0, viewProjMatrix, 0, stickerModelMatrix, 0)
+                Matrix.multiplyMM(worldModelMatrix, 0, viewOrientation3, 0, stickerModelMatrix, 0)
+                Matrix.multiplyMM(mvpMatrix, 0, viewProjMatrix, 0, worldModelMatrix, 0)
                 GLES30.glUniformMatrix4fv(uMvpLoc, 1, false, mvpMatrix, 0)
 
                 val cell = cellFor(axisIdx, homeCoord)
+                GLES30.glUniform1f(uHighlightLoc, if (cell == highlightedCell) 1f else 0f)
                 GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, stickerVboIds[cell.ordinal])
                 GLES30.glVertexAttribPointer(0, 3, GLES30.GL_FLOAT, false, stride, 0)
                 GLES30.glVertexAttribPointer(1, 3, GLES30.GL_FLOAT, false, stride, 12)
@@ -369,8 +405,9 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         else -> if (homeCoord > 0) Cell4.O else Cell4.I
     }
 
-    /** Fills [out] (column-major GL layout) with a sticker cube at ([x],[y],[z]); no rotation
-     * needed since a solid-colored cube looks the same regardless of orientation. */
+    /** Fills [out] (column-major GL layout) with a sticker cube at ([x],[y],[z]) in room-local
+     * space; the shared [viewOrientation3] rotation is applied on top of this in [onDrawFrame],
+     * so no per-sticker rotation is needed here. */
     private fun buildStickerModelMatrix(out: FloatArray, x: Float, y: Float, z: Float) {
         out[0] = 1f; out[1] = 0f; out[2] = 0f; out[3] = 0f
         out[4] = 0f; out[5] = 1f; out[6] = 0f; out[7] = 0f

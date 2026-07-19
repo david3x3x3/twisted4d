@@ -14,6 +14,7 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import kotlin.math.atan2
 
 class MainActivity : AppCompatActivity() {
 
@@ -24,8 +25,14 @@ class MainActivity : AppCompatActivity() {
     private var glSurfaceView: GLSurfaceView? = null
     private var is4DMode = false
 
-    // Which of the 3 valid axes is used as fixAxis2 for the next 4D cell twist.
+    // Which of the 3 valid axes is used as fixAxis2 for the next 4D cell twist (on-screen UI
+    // only -- the gamepad scheme resolves fixAxis2 itself, see handleCell4StickInput).
     private var selectedAxis4 = Axis4.W
+
+    // Which cell the gamepad's left stick currently has selected for the next 4D twist -- see
+    // handleCell4StickInput and todo-controller-input.md. Persists across stick releases so a
+    // twist button can be pressed right after releasing the stick.
+    private var selectedCell4 = Cell4.U
 
     private var lastTouchX = 0f
     private var lastTouchY = 0f
@@ -150,14 +157,18 @@ class MainActivity : AppCompatActivity() {
         surfaceView.setOnTouchListener { _, event -> handle4DDrag(surfaceView, renderer, event) }
 
         gamepadInput = GamepadInputHandler(
-            onLeftStick = { x, y -> renderer.stickX = x; renderer.stickY = y },
-            onRightStick = { _, _ -> },
-            onFaceButton = { index, invert ->
-                surfaceView.queueEvent { renderer.requestTwist(Cell4.entries[index], selectedAxis4, invert) }
+            onLeftStick = { x, y -> handleCell4StickInput(renderer, x, y) },
+            onRightStick = { x, y -> renderer.stickX = x; renderer.stickY = y },
+            onFaceButton = { _, _ -> },
+            on4DRotationButton = { button ->
+                val cell = selectedCell4
+                val fixAxis2 = if (button.literalAxis == cell.axis) Axis4.W else button.literalAxis
+                surfaceView.queueEvent { renderer.requestTwist(cell, fixAxis2, button.primaryPrime) }
             },
         )
         inputManager.registerInputDeviceListener(gamepadInput, null)
         gamepadInput.logAlreadyConnectedDevices()
+        renderer.highlightedCell = null
 
         val statusText = statusTextView()
         renderer.onStateChanged = { solved ->
@@ -254,6 +265,36 @@ class MainActivity : AppCompatActivity() {
             }
         }
         return true
+    }
+
+    /**
+     * Left-stick cell selection for 4D mode (see `todo-controller-input.md`): an 8-way compass
+     * read off the stick's angle picks one of [Cell4]'s 8 cells, cardinals first (up=U, down=D,
+     * left=I, right=O) then diagonals (up-left/down-right=L/R, up-right/down-left=F/B -- the
+     * doc leaves this exact diagonal assignment flexible). [x]/[y] are already deadzoned by
+     * [GamepadInputHandler]; (0,0) means the stick is centered, which leaves [selectedCell4] as
+     * it was (so a rotation button can still be pressed right after releasing the stick) but
+     * clears the highlight, since the doc only wants it shown "while held".
+     */
+    private fun handleCell4StickInput(renderer: HypercubeRenderer, x: Float, y: Float) {
+        if (x == 0f && y == 0f) {
+            renderer.highlightedCell = null
+            return
+        }
+        // AXIS_Y is negative when pushed up, so negate it to get a standard math angle (0 deg
+        // = right, 90 deg = up, increasing counterclockwise).
+        val deg = (Math.toDegrees(atan2(-y.toDouble(), x.toDouble())) + 360.0) % 360.0
+        selectedCell4 = when {
+            deg < 22.5 || deg >= 337.5 -> Cell4.O // right
+            deg < 67.5 -> Cell4.F // up-right
+            deg < 112.5 -> Cell4.U // up
+            deg < 157.5 -> Cell4.L // up-left
+            deg < 202.5 -> Cell4.I // left
+            deg < 247.5 -> Cell4.B // down-left
+            deg < 292.5 -> Cell4.D // down
+            else -> Cell4.R // down-right
+        }
+        renderer.highlightedCell = selectedCell4
     }
 
     // --- shared UI helpers -------------------------------------------------------------------

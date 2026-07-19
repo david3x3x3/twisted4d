@@ -8,21 +8,50 @@ import android.view.MotionEvent
 import kotlin.math.abs
 
 /**
+ * One of the 6 physical buttons the 4D rotation scheme uses (see [GamepadInputHandler]'s class
+ * doc and `todo-controller-input.md`): [literalAxis] is the axis this button's pair is *named*
+ * for (Left/Right="Y-axis", Up/Down="X-axis", bumper/trigger="Z-axis"), and [primaryPrime] is
+ * the `prime` flag to twist with when the resolved `fixAxis2` ends up being [literalAxis]
+ * itself -- i.e. these two constants alone reproduce the doc's three concrete examples (e.g.
+ * RIGHT sends +X toward -Z) via [HypercubeRenderer.requestTwist]'s existing animation math,
+ * with no per-button special-casing needed. When [literalAxis] collides with the selected
+ * cell's own axis (an invalid twist), callers resolve `fixAxis2` to [Axis4.W] instead -- which,
+ * because the *other two* spatial axes end up rotating in that case, happens to reproduce the
+ * exact same physical rotation anyway (see [MainActivity]'s gamepad wiring).
+ */
+enum class RotationButton(val literalAxis: Axis4, val primaryPrime: Boolean) {
+    RIGHT(Axis4.Y, true),
+    LEFT(Axis4.Y, false),
+    UP(Axis4.X, false),
+    DOWN(Axis4.X, true),
+    TRIGGER_R(Axis4.Z, false),
+    BUMPER_R(Axis4.Z, true),
+}
+
+/**
  * Detects connected gamepads, logs button/axis events, and reports left-stick/right-stick/
- * face-button input via callbacks -- deliberately renderer-agnostic (a plain button index,
- * 0-5 matching U/D/L/R/F/B in both [Face] and [Cell4]'s enum order) so the same handler
- * drives either [CubeRenderer] (3D mode) or [HypercubeRenderer] (4D mode); [MainActivity]
- * decides what the callbacks actually do.
+ * button input via callbacks -- deliberately renderer-agnostic so the same handler drives
+ * either [CubeRenderer] (3D mode) or [HypercubeRenderer] (4D mode); [MainActivity] decides what
+ * the callbacks actually do.
  *
- * Default mapping (placeholder until the in-app remapping screen exists, per the spec's
- * milestone 6): Y=U, A=D, X=L, B=R, L1=F, R1=B, with L2 held as the "prime" (inverse)
- * modifier. Left stick = ordinary camera rotation, right stick = 4D-specific rotation in 4D
+ * Two separate button callbacks exist because 3D and 4D modes use the physical buttons for
+ * unrelated purposes (see `todo-controller-input.md`): [onFaceButton] is 3D mode's scheme --
+ * a plain button index, 0-5 matching U/D/L/R/F/B in both [Face] and [Cell4]'s enum order,
+ * mapped Y=U, A=D, X=L, B=R, L1=F, R1=B, with L2 held as the "prime" (inverse) modifier.
+ * [on4DRotationButton] is 4D mode's scheme -- Y/A/X/B are UP/DOWN/LEFT/RIGHT and R1/R2 are
+ * BUMPER_R/TRIGGER_R (see [RotationButton]), twisting whichever cell the left stick currently
+ * has selected; direction is which button was pressed, not a held modifier. Both fire for any
+ * relevant physical press regardless of which callback the active mode actually wires up.
+ *
+ * Left stick = ordinary camera rotation in 3D mode, cell selection in 4D mode (per
+ * `todo-controller-input.md`); right stick = 4D-specific rotation, i.e. camera orbit, in 4D
  * mode (ignored in 3D mode). D-pad stays reserved for camera control per the spec.
  */
 class GamepadInputHandler(
     private val onLeftStick: (x: Float, y: Float) -> Unit,
     private val onRightStick: (x: Float, y: Float) -> Unit,
     private val onFaceButton: (index: Int, invert: Boolean) -> Unit,
+    private val on4DRotationButton: (RotationButton) -> Unit = {},
 ) : InputManager.InputDeviceListener {
 
     @Volatile private var invertHeld = false
@@ -86,9 +115,15 @@ class GamepadInputHandler(
         }
 
         if (event.action != KeyEvent.ACTION_DOWN) return
-        val index = FACE_BUTTON_INDEX_MAP[event.keyCode] ?: return
-        Log.i(TAG, "Twist requested: index=$index invert=$invertHeld (gamepad)")
-        onFaceButton(index, invertHeld)
+
+        FACE_BUTTON_INDEX_MAP[event.keyCode]?.let { index ->
+            Log.i(TAG, "Twist requested: index=$index invert=$invertHeld (gamepad)")
+            onFaceButton(index, invertHeld)
+        }
+        ROTATION_BUTTON_MAP[event.keyCode]?.let { button ->
+            Log.i(TAG, "4D rotation button: $button (gamepad)")
+            on4DRotationButton(button)
+        }
     }
 
     private fun applyDeadzone(v: Float): Float = if (abs(v) < DEADZONE) 0f else v
@@ -101,7 +136,8 @@ class GamepadInputHandler(
             (sources and InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD ||
                 (sources and InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK
 
-        /** Index matches U/D/L/R/F/B's position (0-5) in both [Face] and [Cell4]'s enum order. */
+        /** Index matches U/D/L/R/F/B's position (0-5) in both [Face] and [Cell4]'s enum order.
+         * 3D mode only -- see [onFaceButton]. */
         private val FACE_BUTTON_INDEX_MAP = mapOf(
             KeyEvent.KEYCODE_BUTTON_Y to 0,
             KeyEvent.KEYCODE_BUTTON_A to 1,
@@ -109,6 +145,18 @@ class GamepadInputHandler(
             KeyEvent.KEYCODE_BUTTON_B to 3,
             KeyEvent.KEYCODE_BUTTON_L1 to 4,
             KeyEvent.KEYCODE_BUTTON_R1 to 5,
+        )
+
+        /** Physical layout matches [FACE_BUTTON_INDEX_MAP]'s Y/A/X/B (top/bottom/left/right on
+         * an Xbox-style pad); R1/R2 are the right bumper/trigger. 4D mode only -- see
+         * [on4DRotationButton]. */
+        private val ROTATION_BUTTON_MAP = mapOf(
+            KeyEvent.KEYCODE_BUTTON_Y to RotationButton.UP,
+            KeyEvent.KEYCODE_BUTTON_A to RotationButton.DOWN,
+            KeyEvent.KEYCODE_BUTTON_X to RotationButton.LEFT,
+            KeyEvent.KEYCODE_BUTTON_B to RotationButton.RIGHT,
+            KeyEvent.KEYCODE_BUTTON_R1 to RotationButton.BUMPER_R,
+            KeyEvent.KEYCODE_BUTTON_R2 to RotationButton.TRIGGER_R,
         )
     }
 }
