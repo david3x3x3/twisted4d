@@ -9,47 +9,39 @@ import java.nio.FloatBuffer
 import java.nio.ShortBuffer
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
+import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.roundToInt
 import kotlin.math.sin
 
 /**
- * Renders a 3^4 hypercube (80 pieces) from the native puzzle-core piece transforms.
+ * Renders a 3^4 hypercube using the same "unfolded" layout MagicCube4D/Hyperspeedcube default
+ * to: 6 of the cells (U/D/L/R/F/B) sit as separate, non-overlapping 3x3x3 blocks arranged like
+ * the walls of a room, a 7th (I) is a 3x3x3 block floating at the center, and the 8th (O) is
+ * never rendered at all -- from this viewpoint it's the "outside of everything," which has no
+ * meaningful position to draw. Ordinary 3D rotation (touch-drag/left-stick) orbits the whole
+ * room so you can see each wall in turn, same feel as [CubeRenderer]. Which native cell
+ * currently occupies which of these 8 fixed positions is controlled by [cubeOrientation4], a
+ * 4D rotation kept restricted to exact 90-degree increments via [requestCameraRotate90] (a full
+ * continuous 4D trackball is both hard to use and unnecessary here) -- e.g. rotating the Z-W
+ * plane cycles F->I->B->O->F, matching Hyperspeedcube's "send this cell to the center" shortcut.
  *
- * The puzzle's orientation lives in a single accumulated 4x4 rotation matrix, [cubeOrientation4]
- * (row-major, distinct from the column-major GL convention used only for the final per-piece
- * model matrix). Two independent screen-relative rotations feed it every frame: the "ordinary"
- * 3D-feeling one (touch-drag/left-stick, rotating the XZ/YZ planes -- same feel as [CubeRenderer])
- * and the 4D-specific one (a dedicated on-screen drag area/right-stick, rotating the XW/ZW planes
- * -- the actual "4D camera" control). Both are left-multiplied on, so -- exactly as in
- * [CubeRenderer] -- there's no gimbal-lock pole in either pair of planes.
- *
- * Each piece renders as a simple 3D cube (see [HypercubeGeometry]) showing up to 6 U/D/L/R/F/B
- * stickers; its 4D position is rotated by [cubeOrientation4] and perspective-projected to 3D by
- * scaling based on its resulting W coordinate ([W_PROJECTION_DIST]) -- pieces nearer in the 4th
- * dimension render bigger/closer, the same illusion an ordinary 3D perspective camera gives for
- * depth along Z. A piece whose home position also touches the I or O cell additionally renders
- * a small marker cube-let for that sticker, offset from it in whichever direction its (possibly
- * twisted) orientation currently points its home W-axis -- see the marker-drawing block in
- * [onDrawFrame].
+ * Every one of a piece's 1-4 stickers is rendered independently (see [onDrawFrame]): its color
+ * is fixed (the cell that sticker was originally part of), but which of the 8 positions it's
+ * drawn at is resolved fresh every frame from `cubeOrientation4 * pieceOrientation * homeDir`,
+ * so stickers visually relocate as the camera is rotated in 90-degree steps or the piece itself
+ * is twisted.
  */
 class HypercubeRenderer : GLSurfaceView.Renderer {
 
-    @Volatile private var distance = 7.5f
+    @Volatile private var distance = 13.0f
 
-    // "Ordinary" 3D-feeling rotation input (touch-drag / left stick) -> XZ/YZ planes.
+    // Ordinary 3D-feeling rotation input (touch-drag / left stick) -> XZ/YZ planes.
     @Volatile var stickX: Float = 0f
     @Volatile var stickY: Float = 0f
     private val dragLock = Any()
     private var pendingDragYawDeg = 0f
     private var pendingDragPitchDeg = 0f
-
-    // 4D-specific rotation input (dedicated drag area / right stick) -> XW/ZW planes.
-    @Volatile var stick4DX: Float = 0f
-    @Volatile var stick4DY: Float = 0f
-    private val drag4DLock = Any()
-    private var pendingDrag4DXDeg = 0f
-    private var pendingDrag4DYDeg = 0f
 
     /** Called (on the GL thread) right after a twist/scramble/reset with the new solved state. */
     @Volatile var onStateChanged: ((Boolean) -> Unit)? = null
@@ -64,29 +56,33 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         .apply { put(HypercubeGeometry.INDICES); position(0) }
 
     private var indexBufferId = 0
-    private lateinit var pieceVertexBufferIds: IntArray
-    private var iMarkerVboId = 0
-    private var oMarkerVboId = 0
+    private lateinit var stickerVboIds: IntArray // one shared mesh per Cell4 color
 
     private val projMatrix = FloatArray(16)
     private val viewMatrix = FloatArray(16)
     private val viewProjMatrix = FloatArray(16)
 
     // Row-major 4x4 matrices for pure 4D math (distinct from GL's column-major convention,
-    // used only for the final 3D model matrix -- see class doc).
+    // used only for the final per-sticker model matrix). cubeOrientation4 is kept to exact
+    // 90-degree-step rotations, so transforming a native axis vector through it always lands
+    // exactly on another axis vector -- no nearest-match/snapping needed, unlike CubeRenderer.
     private val cubeOrientation4 = FloatArray(16)
     private val deltaRot4A = FloatArray(16)
     private val deltaRot4B = FloatArray(16)
     private val deltaCombined4 = FloatArray(16)
     private val newOrientation4 = FloatArray(16)
     private val pieceOrient4 = FloatArray(16)
-    private val worldOrient4 = FloatArray(16)
     private val animRot4 = FloatArray(16)
+    private val animatedPos4 = FloatArray(4)
+    private val animatedOrient4 = FloatArray(16)
     private val pos4 = FloatArray(4)
-    private val worldPos4 = FloatArray(4)
+    private val cameraPos4 = FloatArray(4)
+    private val homeDir4 = FloatArray(4)
+    private val currentDir4 = FloatArray(4)
+    private val cameraDir4 = FloatArray(4)
+    private val screenPos = FloatArray(3)
 
-    private val modelMatrix = FloatArray(16)
-    private val markerModelMatrix = FloatArray(16)
+    private val stickerModelMatrix = FloatArray(16)
     private val mvpMatrix = FloatArray(16)
 
     // Current (settled) per-piece transforms, refreshed after every twist/scramble/reset.
@@ -142,61 +138,32 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
             GLES30.GL_STATIC_DRAW,
         )
 
-        val vboIds = IntArray(HypercubeGeometry.HOME_POSITIONS.size)
+        val vboIds = IntArray(Cell4.entries.size)
         GLES30.glGenBuffers(vboIds.size, vboIds, 0)
-        pieceVertexBufferIds = vboIds
-        HypercubeGeometry.HOME_POSITIONS.forEachIndexed { i, home ->
-            val vertices = HypercubeGeometry.buildPieceVertices(home)
+        stickerVboIds = vboIds
+        Cell4.entries.forEach { cell ->
+            val vertices = HypercubeGeometry.buildStickerVertices(HypercubeGeometry.CELL_COLORS[cell.ordinal])
             val buffer: FloatBuffer = ByteBuffer
                 .allocateDirect(vertices.size * 4)
                 .order(ByteOrder.nativeOrder())
                 .asFloatBuffer()
                 .apply { put(vertices); position(0) }
 
-            GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, vboIds[i])
-            GLES30.glBufferData(
-                GLES30.GL_ARRAY_BUFFER,
-                vertices.size * 4,
-                buffer,
-                GLES30.GL_STATIC_DRAW,
-            )
+            GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, vboIds[cell.ordinal])
+            GLES30.glBufferData(GLES30.GL_ARRAY_BUFFER, vertices.size * 4, buffer, GLES30.GL_STATIC_DRAW)
         }
-
-        val markerVboIds = IntArray(2)
-        GLES30.glGenBuffers(2, markerVboIds, 0)
-        iMarkerVboId = markerVboIds[0]
-        oMarkerVboId = markerVboIds[1]
-        uploadMarkerMesh(iMarkerVboId, HypercubeGeometry.COLOR_I)
-        uploadMarkerMesh(oMarkerVboId, HypercubeGeometry.COLOR_O)
 
         NativeLib.cube4Reset()
         currentTransforms = NativeLib.cube4GetTransforms()
 
         setIdentity4(cubeOrientation4)
         applyOrdinaryRotation(INITIAL_YAW_DEG, INITIAL_PITCH_DEG) // a pleasant default 3/4 view
-        // Without some initial 4D-specific rotation, W has no visible 3D component yet, so the
-        // I/O markers would sit with zero offset -- perfectly hidden inside their own piece --
-        // until the user discovers the 4D drag control. Nudge it by default so all 8 cells are
-        // visible immediately.
-        apply4DRotation(INITIAL_4D_X_DEG, INITIAL_4D_Y_DEG)
-    }
-
-    private fun uploadMarkerMesh(vboId: Int, color: FloatArray) {
-        val vertices = HypercubeGeometry.buildMarkerVertices(color)
-        val buffer: FloatBuffer = ByteBuffer
-            .allocateDirect(vertices.size * 4)
-            .order(ByteOrder.nativeOrder())
-            .asFloatBuffer()
-            .apply { put(vertices); position(0) }
-
-        GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, vboId)
-        GLES30.glBufferData(GLES30.GL_ARRAY_BUFFER, vertices.size * 4, buffer, GLES30.GL_STATIC_DRAW)
     }
 
     override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
         GLES30.glViewport(0, 0, width, height)
         val aspect = width.toFloat() / height.toFloat()
-        Matrix.perspectiveM(projMatrix, 0, 45f, aspect, 0.1f, 100f)
+        Matrix.perspectiveM(projMatrix, 0, 40f, aspect, 0.1f, 100f)
     }
 
     /** Accumulates an "ordinary" 3D-feeling touch-drag delta (degrees), applied next frame. */
@@ -207,28 +174,11 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         }
     }
 
-    /** Accumulates a 4D-specific rotation delta (degrees) from the dedicated drag area. */
-    fun addDrag4DDelta(dXDeg: Float, dYDeg: Float) {
-        synchronized(drag4DLock) {
-            pendingDrag4DXDeg += dXDeg
-            pendingDrag4DYDeg += dYDeg
-        }
-    }
-
     private fun drainDragDelta(): Pair<Float, Float> {
         synchronized(dragLock) {
             val delta = pendingDragYawDeg to pendingDragPitchDeg
             pendingDragYawDeg = 0f
             pendingDragPitchDeg = 0f
-            return delta
-        }
-    }
-
-    private fun drainDrag4DDelta(): Pair<Float, Float> {
-        synchronized(drag4DLock) {
-            val delta = pendingDrag4DXDeg to pendingDrag4DYDeg
-            pendingDrag4DXDeg = 0f
-            pendingDrag4DYDeg = 0f
             return delta
         }
     }
@@ -242,12 +192,15 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         System.arraycopy(newOrientation4, 0, cubeOrientation4, 0, 16)
     }
 
-    /** Rotates [cubeOrientation4] in the XW / ZW planes -- the actual "4D camera" control. */
-    private fun apply4DRotation(dXDeg: Float, dYDeg: Float) {
-        setPlaneRotation4(deltaRot4A, AXIS_Z, AXIS_W, dYDeg)
-        setPlaneRotation4(deltaRot4B, AXIS_X, AXIS_W, dXDeg)
-        mat4MatMul(deltaCombined4, deltaRot4B, deltaRot4A)
-        mat4MatMul(newOrientation4, deltaCombined4, cubeOrientation4)
+    /**
+     * The actual "4D camera" control: rotates [cubeOrientation4] by exactly 90 degrees (or -90
+     * if [reverse]) in the ([axisA], [axisB]) plane, e.g. Z-W cycles F->I->B->O->F. Since this
+     * only ever composes 90-degree rotations, cubeOrientation4 always stays a signed permutation
+     * matrix, keeping the per-sticker slot resolution in [onDrawFrame] exact.
+     */
+    fun requestCameraRotate90(axisA: Int, axisB: Int, reverse: Boolean) {
+        setPlaneRotation4(deltaRot4A, axisA, axisB, if (reverse) -90f else 90f)
+        mat4MatMul(newOrientation4, deltaRot4A, cubeOrientation4)
         System.arraycopy(newOrientation4, 0, cubeOrientation4, 0, 16)
     }
 
@@ -309,15 +262,6 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         }
         if (dYaw != 0f || dPitch != 0f) applyOrdinaryRotation(dYaw, dPitch)
 
-        val (drag4X, drag4Y) = drainDrag4DDelta()
-        var d4X = drag4X
-        var d4Y = drag4Y
-        if (stick4DX != 0f || stick4DY != 0f) {
-            d4X += stick4DX * STICK_DEG_PER_FRAME
-            d4Y += stick4DY * STICK_DEG_PER_FRAME
-        }
-        if (d4X != 0f || d4Y != 0f) apply4DRotation(d4X, d4Y)
-
         Matrix.setLookAtM(viewMatrix, 0, 0f, 0f, distance, 0f, 0f, 0f, 0f, 1f, 0f)
         Matrix.multiplyMM(viewProjMatrix, 0, projMatrix, 0, viewMatrix, 0)
 
@@ -335,6 +279,7 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         val stride = HypercubeGeometry.FLOATS_PER_VERTEX * 4
         val after = animAfter
         for (i in HypercubeGeometry.HOME_POSITIONS.indices) {
+            val home = HypercubeGeometry.HOME_POSITIONS[i]
             val base = i * 20
             val src = when {
                 !animating -> currentTransforms
@@ -347,50 +292,57 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
 
             if (animating && animAffected!![i]) {
                 setPlaneRotation4(animRot4, animPlaneA, animPlaneB, animAngleDeg * animT)
-                mat4VecMul(worldPos4, animRot4, pos4)
-                mat4MatMul(worldOrient4, animRot4, pieceOrient4)
-                System.arraycopy(worldPos4, 0, pos4, 0, 4)
-                System.arraycopy(worldOrient4, 0, pieceOrient4, 0, 16)
+                mat4VecMul(animatedPos4, animRot4, pos4)
+                mat4MatMul(animatedOrient4, animRot4, pieceOrient4)
+                System.arraycopy(animatedPos4, 0, pos4, 0, 4)
+                System.arraycopy(animatedOrient4, 0, pieceOrient4, 0, 16)
             }
 
-            mat4VecMul(worldPos4, cubeOrientation4, pos4)
-            mat4MatMul(worldOrient4, cubeOrientation4, pieceOrient4)
+            mat4VecMul(cameraPos4, cubeOrientation4, pos4)
 
-            val w = worldPos4[3]
-            val scale = W_PROJECTION_DIST / (W_PROJECTION_DIST - w)
-            buildModelMatrix(modelMatrix, worldPos4, worldOrient4, scale)
+            val homeCoords = intArrayOf(home.x, home.y, home.z, home.w)
+            for (axisIdx in 0 until 4) {
+                val homeCoord = homeCoords[axisIdx]
+                if (homeCoord == 0) continue
 
-            Matrix.multiplyMM(mvpMatrix, 0, viewProjMatrix, 0, modelMatrix, 0)
-            GLES30.glUniformMatrix4fv(uMvpLoc, 1, false, mvpMatrix, 0)
+                homeDir4[0] = 0f; homeDir4[1] = 0f; homeDir4[2] = 0f; homeDir4[3] = 0f
+                homeDir4[axisIdx] = homeCoord.toFloat()
+                mat4VecMul(currentDir4, pieceOrient4, homeDir4)
+                mat4VecMul(cameraDir4, cubeOrientation4, currentDir4)
 
-            GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, pieceVertexBufferIds[i])
-            GLES30.glVertexAttribPointer(0, 3, GLES30.GL_FLOAT, false, stride, 0)
-            GLES30.glVertexAttribPointer(1, 3, GLES30.GL_FLOAT, false, stride, 12)
-            GLES30.glDrawElements(GLES30.GL_TRIANGLES, HypercubeGeometry.INDICES.size, GLES30.GL_UNSIGNED_SHORT, 0)
+                var slotAxis = -1
+                var slotSign = 0
+                for (j in 0 until 4) {
+                    if (abs(cameraDir4[j]) > 0.5f) {
+                        slotAxis = j
+                        slotSign = if (cameraDir4[j] > 0) 1 else -1
+                        break
+                    }
+                }
+                if (slotAxis == AXIS_W && slotSign > 0) continue // O slot: never rendered
 
-            // This piece also touches the I or O cell (home w != 0): draw its marker cube-let,
-            // offset from the piece in whatever direction its current (possibly twisted)
-            // orientation points its home W-axis -- worldOrient4's W column is exactly that
-            // direction, since matrix * (0,0,0,homeWSign) picks out that column, scaled.
-            val homeW = HypercubeGeometry.HOME_POSITIONS[i].w
-            if (homeW != 0) {
-                var mx = worldOrient4[3] * homeW
-                var my = worldOrient4[7] * homeW
-                var mz = worldOrient4[11] * homeW
-                val len = kotlin.math.sqrt(mx * mx + my * my + mz * mz).coerceAtLeast(1e-5f)
-                mx /= len; my /= len; mz /= len
+                if (slotAxis == AXIS_W) {
+                    // I slot: floats at the room's center: local axes are simply X, Y, Z.
+                    screenPos[0] = cameraPos4[0] * SPACING
+                    screenPos[1] = cameraPos4[1] * SPACING
+                    screenPos[2] = cameraPos4[2] * SPACING
+                } else {
+                    // A "wall" slot: offset along its own axis by ROOM_HALF, extended further
+                    // by this piece's camera-space W coordinate (its depth within that wall);
+                    // the other 2 axes place it within the wall's own 3x3 in-plane grid.
+                    screenPos[0] = cameraPos4[0]
+                    screenPos[1] = cameraPos4[1]
+                    screenPos[2] = cameraPos4[2]
+                    screenPos[slotAxis] = slotSign * ROOM_HALF + slotSign * cameraPos4[3] * SPACING
+                    for (k in 0 until 3) if (k != slotAxis) screenPos[k] *= SPACING
+                }
 
-                buildMarkerModelMatrix(
-                    markerModelMatrix,
-                    modelMatrix[12] + mx * MARKER_OFFSET * scale,
-                    modelMatrix[13] + my * MARKER_OFFSET * scale,
-                    modelMatrix[14] + mz * MARKER_OFFSET * scale,
-                    scale,
-                )
-                Matrix.multiplyMM(mvpMatrix, 0, viewProjMatrix, 0, markerModelMatrix, 0)
+                buildStickerModelMatrix(stickerModelMatrix, screenPos[0], screenPos[1], screenPos[2])
+                Matrix.multiplyMM(mvpMatrix, 0, viewProjMatrix, 0, stickerModelMatrix, 0)
                 GLES30.glUniformMatrix4fv(uMvpLoc, 1, false, mvpMatrix, 0)
 
-                GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, if (homeW > 0) oMarkerVboId else iMarkerVboId)
+                val cell = cellFor(axisIdx, homeCoord)
+                GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, stickerVboIds[cell.ordinal])
                 GLES30.glVertexAttribPointer(0, 3, GLES30.GL_FLOAT, false, stride, 0)
                 GLES30.glVertexAttribPointer(1, 3, GLES30.GL_FLOAT, false, stride, 12)
                 GLES30.glDrawElements(GLES30.GL_TRIANGLES, HypercubeGeometry.INDICES.size, GLES30.GL_UNSIGNED_SHORT, 0)
@@ -409,27 +361,20 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         }
     }
 
-    /**
-     * Fills [out] (column-major GL layout) from a rotated 4D position/orientation: [pos]'s
-     * XYZ (scaled by [scale] for the W-perspective effect) becomes the translation, and
-     * [orient]'s top-left 3x3 (also scaled by [scale], since scaling then rotating commutes
-     * for a uniform scale) becomes the rotation -- the W row/column of orient is dropped, since
-     * pieces render as ordinary 3D cubes.
-     */
-    private fun buildModelMatrix(out: FloatArray, pos: FloatArray, orient: FloatArray, scale: Float) {
-        // orient is row-major 4x4; take the top-left 3x3 (indices row*4+col for row,col in 0..3).
-        out[0] = orient[0] * scale; out[1] = orient[4] * scale; out[2] = orient[8] * scale; out[3] = 0f
-        out[4] = orient[1] * scale; out[5] = orient[5] * scale; out[6] = orient[9] * scale; out[7] = 0f
-        out[8] = orient[2] * scale; out[9] = orient[6] * scale; out[10] = orient[10] * scale; out[11] = 0f
-        out[12] = pos[0] * scale; out[13] = pos[1] * scale; out[14] = pos[2] * scale; out[15] = 1f
+    /** Which [Cell4] a home direction along [axisIdx] with sign [homeCoord] represents. */
+    private fun cellFor(axisIdx: Int, homeCoord: Int): Cell4 = when (axisIdx) {
+        AXIS_X -> if (homeCoord > 0) Cell4.R else Cell4.L
+        AXIS_Y -> if (homeCoord > 0) Cell4.U else Cell4.D
+        AXIS_Z -> if (homeCoord > 0) Cell4.F else Cell4.B
+        else -> if (homeCoord > 0) Cell4.O else Cell4.I
     }
 
-    /** Fills [out] with a marker cube-let at ([x],[y],[z]), scaled uniformly by [scale] (a
-     * solid-colored cube looks the same regardless of rotation, so no rotation is needed). */
-    private fun buildMarkerModelMatrix(out: FloatArray, x: Float, y: Float, z: Float, scale: Float) {
-        out[0] = scale; out[1] = 0f; out[2] = 0f; out[3] = 0f
-        out[4] = 0f; out[5] = scale; out[6] = 0f; out[7] = 0f
-        out[8] = 0f; out[9] = 0f; out[10] = scale; out[11] = 0f
+    /** Fills [out] (column-major GL layout) with a sticker cube at ([x],[y],[z]); no rotation
+     * needed since a solid-colored cube looks the same regardless of orientation. */
+    private fun buildStickerModelMatrix(out: FloatArray, x: Float, y: Float, z: Float) {
+        out[0] = 1f; out[1] = 0f; out[2] = 0f; out[3] = 0f
+        out[4] = 0f; out[5] = 1f; out[6] = 0f; out[7] = 0f
+        out[8] = 0f; out[9] = 0f; out[10] = 1f; out[11] = 0f
         out[12] = x; out[13] = y; out[14] = z; out[15] = 1f
     }
 
@@ -468,19 +413,17 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         private const val ANIM_DURATION_NANOS = 220_000_000L // 220ms
         private const val INITIAL_YAW_DEG = -35f
         private const val INITIAL_PITCH_DEG = 25f
-        private const val INITIAL_4D_X_DEG = 25f
-        private const val INITIAL_4D_Y_DEG = 18f
 
-        /** How dramatic the 4th-dimension perspective effect is; smaller = more dramatic. */
-        private const val W_PROJECTION_DIST = 3.0f
+        /** Spacing between adjacent stickers within one cell's 3x3x3 block. */
+        private const val SPACING = 1.0f
 
-        /** How far the I/O marker cube-let sits from its piece's center, before W-perspective scale. */
-        private const val MARKER_OFFSET = 0.75f
+        /** Distance from the room's center to each of the 6 wall blocks' center. */
+        private const val ROOM_HALF = 3.5f
 
-        private const val AXIS_X = 0
-        private const val AXIS_Y = 1
-        private const val AXIS_Z = 2
-        private const val AXIS_W = 3
+        const val AXIS_X = 0
+        const val AXIS_Y = 1
+        const val AXIS_Z = 2
+        const val AXIS_W = 3
 
         private fun setIdentity4(m: FloatArray) {
             for (i in 0 until 16) m[i] = 0f

@@ -151,7 +151,7 @@ class MainActivity : AppCompatActivity() {
 
         gamepadInput = GamepadInputHandler(
             onLeftStick = { x, y -> renderer.stickX = x; renderer.stickY = y },
-            onRightStick = { x, y -> renderer.stick4DX = x; renderer.stick4DY = y },
+            onRightStick = { _, _ -> },
             onFaceButton = { index, invert ->
                 surfaceView.queueEvent { renderer.requestTwist(Cell4.entries[index], selectedAxis4, invert) }
             },
@@ -197,13 +197,30 @@ class MainActivity : AppCompatActivity() {
             axisButtons.forEach { (a, b) -> b.alpha = if (a == selectedAxis4) 1f else 0.5f }
         }
 
-        // A dedicated drag area for the 4D-specific camera rotation (XW/ZW planes), separate
-        // from the main view's touch-drag which only controls the ordinary 3D-feeling planes.
-        val fourDDragArea = TextView(this).apply {
-            text = "4D drag"
-            setBackgroundColor(0x552196F3)
-            setPadding(24, 24, 24, 24)
-            setOnTouchListener { _, event -> handle4DOnlyDrag(surfaceView, renderer, event) }
+        // The actual "4D camera" control: 90-degree rotation shortcuts, e.g. tapping "ZW" cycles
+        // F->I->B->O->F (see HypercubeRenderer's class doc) -- tap = +90, long-press = -90.
+        // Continuous free 4D rotation is deliberately not offered: it's hard to control by
+        // dragging and not needed here, since these shortcuts can reach any arrangement.
+        val rotateRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            listOf(
+                Triple("XW", HypercubeRenderer.AXIS_X, HypercubeRenderer.AXIS_W),
+                Triple("YW", HypercubeRenderer.AXIS_Y, HypercubeRenderer.AXIS_W),
+                Triple("ZW", HypercubeRenderer.AXIS_Z, HypercubeRenderer.AXIS_W),
+            ).forEach { (label, axisA, axisB) ->
+                addView(
+                    Button(this@MainActivity).apply {
+                        text = label
+                        setOnClickListener {
+                            surfaceView.queueEvent { renderer.requestCameraRotate90(axisA, axisB, false) }
+                        }
+                        setOnLongClickListener {
+                            surfaceView.queueEvent { renderer.requestCameraRotate90(axisA, axisB, true) }
+                            true
+                        }
+                    },
+                )
+            }
         }
 
         val utilityRow = utilityRow(
@@ -213,36 +230,11 @@ class MainActivity : AppCompatActivity() {
 
         rootLayout.addView(surfaceView)
         rootLayout.addView(statusText, topCenterParams())
-        rootLayout.addView(
-            fourDDragArea,
-            FrameLayout.LayoutParams(300, 300, Gravity.CENTER_VERTICAL or Gravity.START).apply { leftMargin = 24 },
-        )
+        rootLayout.addView(rotateRow, topCenterParams().apply { topMargin = 80 })
         rootLayout.addView(axisRow, bottomCenterParams(bottomMargin = 220))
         rootLayout.addView(cellRow, bottomCenterParams(bottomMargin = 48))
         rootLayout.addView(modeToggleButton(), topStartParams())
         rootLayout.addView(utilityRow, topEndParams())
-    }
-
-    private var last4DTouchX = 0f
-    private var last4DTouchY = 0f
-
-    /** Drag inside the dedicated 4D-drag area only rotates the 4D-specific planes. */
-    private fun handle4DOnlyDrag(surfaceView: GLSurfaceView, renderer: HypercubeRenderer, event: MotionEvent): Boolean {
-        when (event.action) {
-            MotionEvent.ACTION_DOWN -> {
-                last4DTouchX = event.x
-                last4DTouchY = event.y
-            }
-            MotionEvent.ACTION_MOVE -> {
-                val dx = event.x - last4DTouchX
-                val dy = event.y - last4DTouchY
-                last4DTouchX = event.x
-                last4DTouchY = event.y
-                renderer.addDrag4DDelta(dx * DRAG_SENSITIVITY, dy * DRAG_SENSITIVITY)
-                surfaceView.requestRender()
-            }
-        }
-        return true
     }
 
     /** Drag on the main view controls the ordinary 3D-feeling rotation, same as [handle3DDrag]. */
