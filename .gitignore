@@ -1,0 +1,15 @@
+*.iml
+.claude/
+.gradle/
+.idea/
+local.properties
+.DS_Store
+build/
+captures/
+.externalNativeBuild/
+.cxx/
+app/src/main/jniLibs/
+native/*/target/
+
+# Gradle wrapper jar is fetched by `gradle wrapper`, not hand-written; keep it though
+!gradle/wrapper/gradle-wrapper.jar

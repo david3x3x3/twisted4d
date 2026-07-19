@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- outer square -->
+    <path
+        android:pathData="M24,24 L84,24 L84,84 L24,84 Z"
+        android:strokeColor="#4FC3F7"
+        android:strokeWidth="3"
+        android:fillColor="#00000000" />
+    <!-- inner square (projected 4D face) -->
+    <path
+        android:pathData="M40,40 L68,40 L68,68 L40,68 Z"
+        android:strokeColor="#FF8A65"
+        android:strokeWidth="3"
+        android:fillColor="#00000000" />
+    <!-- connecting edges -->
+    <path
+        android:pathData="M24,24 L40,40 M84,24 L68,40 M84,84 L68,68 M24,84 L40,68"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="2"
+        android:fillColor="#00000000" />
+</vector>
