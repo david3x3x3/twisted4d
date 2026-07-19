@@ -8,16 +8,21 @@ import android.view.MotionEvent
 import kotlin.math.abs
 
 /**
- * Detects connected gamepads, logs button/axis events, maps the left stick to camera
- * rotation, and maps face/shoulder buttons to cube twists.
+ * Detects connected gamepads, logs button/axis events, and reports left-stick/right-stick/
+ * face-button input via callbacks -- deliberately renderer-agnostic (a plain button index,
+ * 0-5 matching U/D/L/R/F/B in both [Face] and [Cell4]'s enum order) so the same handler
+ * drives either [CubeRenderer] (3D mode) or [HypercubeRenderer] (4D mode); [MainActivity]
+ * decides what the callbacks actually do.
  *
  * Default mapping (placeholder until the in-app remapping screen exists, per the spec's
  * milestone 6): Y=U, A=D, X=L, B=R, L1=F, R1=B, with L2 held as the "prime" (inverse)
- * modifier. D-pad and sticks stay reserved for camera control per the spec.
+ * modifier. Left stick = ordinary camera rotation, right stick = 4D-specific rotation in 4D
+ * mode (ignored in 3D mode). D-pad stays reserved for camera control per the spec.
  */
 class GamepadInputHandler(
-    private val renderer: CubeRenderer,
-    private val onTwistRequested: (Face, Boolean) -> Unit,
+    private val onLeftStick: (x: Float, y: Float) -> Unit,
+    private val onRightStick: (x: Float, y: Float) -> Unit,
+    private val onFaceButton: (index: Int, invert: Boolean) -> Unit,
 ) : InputManager.InputDeviceListener {
 
     @Volatile private var invertHeld = false
@@ -50,12 +55,16 @@ class GamepadInputHandler(
     fun handleMotionEvent(event: MotionEvent): Boolean {
         if (!event.isFromSource(InputDevice.SOURCE_JOYSTICK)) return false
 
-        val x = applyDeadzone(event.getAxisValue(MotionEvent.AXIS_X))
-        val y = applyDeadzone(event.getAxisValue(MotionEvent.AXIS_Y))
-        Log.d(TAG, "Left stick axes x=$x y=$y (device=${event.device?.name})")
+        val lx = applyDeadzone(event.getAxisValue(MotionEvent.AXIS_X))
+        val ly = applyDeadzone(event.getAxisValue(MotionEvent.AXIS_Y))
+        Log.d(TAG, "Left stick axes x=$lx y=$ly (device=${event.device?.name})")
+        onLeftStick(lx, ly)
 
-        renderer.stickX = x
-        renderer.stickY = y
+        val rx = applyDeadzone(event.getAxisValue(MotionEvent.AXIS_Z))
+        val ry = applyDeadzone(event.getAxisValue(MotionEvent.AXIS_RZ))
+        Log.d(TAG, "Right stick axes x=$rx y=$ry (device=${event.device?.name})")
+        onRightStick(rx, ry)
+
         return true
     }
 
@@ -77,9 +86,9 @@ class GamepadInputHandler(
         }
 
         if (event.action != KeyEvent.ACTION_DOWN) return
-        val face = FACE_BUTTON_MAP[event.keyCode] ?: return
-        Log.i(TAG, "Twist requested: ${face.label}${if (invertHeld) "'" else ""} (gamepad)")
-        onTwistRequested(face, invertHeld)
+        val index = FACE_BUTTON_INDEX_MAP[event.keyCode] ?: return
+        Log.i(TAG, "Twist requested: index=$index invert=$invertHeld (gamepad)")
+        onFaceButton(index, invertHeld)
     }
 
     private fun applyDeadzone(v: Float): Float = if (abs(v) < DEADZONE) 0f else v
@@ -92,13 +101,14 @@ class GamepadInputHandler(
             (sources and InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD ||
                 (sources and InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK
 
-        private val FACE_BUTTON_MAP = mapOf(
-            KeyEvent.KEYCODE_BUTTON_Y to Face.U,
-            KeyEvent.KEYCODE_BUTTON_A to Face.D,
-            KeyEvent.KEYCODE_BUTTON_X to Face.L,
-            KeyEvent.KEYCODE_BUTTON_B to Face.R,
-            KeyEvent.KEYCODE_BUTTON_L1 to Face.F,
-            KeyEvent.KEYCODE_BUTTON_R1 to Face.B,
+        /** Index matches U/D/L/R/F/B's position (0-5) in both [Face] and [Cell4]'s enum order. */
+        private val FACE_BUTTON_INDEX_MAP = mapOf(
+            KeyEvent.KEYCODE_BUTTON_Y to 0,
+            KeyEvent.KEYCODE_BUTTON_A to 1,
+            KeyEvent.KEYCODE_BUTTON_X to 2,
+            KeyEvent.KEYCODE_BUTTON_B to 3,
+            KeyEvent.KEYCODE_BUTTON_L1 to 4,
+            KeyEvent.KEYCODE_BUTTON_R1 to 5,
         )
     }
 }

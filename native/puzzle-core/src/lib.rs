@@ -1,20 +1,27 @@
-// Native puzzle-math core for Twisted4D. The JNI boundary here is intentionally thin --
-// it just marshals calls into `cube3`, which holds the actual puzzle logic.
+// Native puzzle-math core for Twisted4D. The JNI boundary here is intentionally thin -- it
+// just marshals calls into `cube3`/`cube4`, which hold the actual puzzle logic.
 
 mod cube3;
+mod cube4;
 
 use std::sync::{Mutex, OnceLock};
 
 use cube3::{Cube3, Face};
+use cube4::{Axis4, Cell4, Cube4};
 use jni::objects::JClass;
 use jni::sys::{jboolean, jfloatArray, jint, jstring};
 use jni::JNIEnv;
 
 const CORE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-fn cube() -> &'static Mutex<Cube3> {
+fn cube3() -> &'static Mutex<Cube3> {
     static CUBE: OnceLock<Mutex<Cube3>> = OnceLock::new();
     CUBE.get_or_init(|| Mutex::new(Cube3::solved()))
+}
+
+fn cube4() -> &'static Mutex<Cube4> {
+    static CUBE: OnceLock<Mutex<Cube4>> = OnceLock::new();
+    CUBE.get_or_init(|| Mutex::new(Cube4::solved()))
 }
 
 #[no_mangle]
@@ -32,7 +39,7 @@ pub extern "system" fn Java_dev_twisted4d_app_NativeLib_cubeReset<'local>(
     _env: JNIEnv<'local>,
     _class: JClass<'local>,
 ) {
-    *cube().lock().unwrap() = Cube3::solved();
+    *cube3().lock().unwrap() = Cube3::solved();
 }
 
 #[no_mangle]
@@ -43,7 +50,7 @@ pub extern "system" fn Java_dev_twisted4d_app_NativeLib_cubeTwist<'local>(
     prime: jboolean,
 ) {
     if let Some(face) = Face::from_index(face) {
-        cube().lock().unwrap().twist(face, prime != 0);
+        cube3().lock().unwrap().twist(face, prime != 0);
     }
 }
 
@@ -52,7 +59,7 @@ pub extern "system" fn Java_dev_twisted4d_app_NativeLib_cubeIsSolved<'local>(
     _env: JNIEnv<'local>,
     _class: JClass<'local>,
 ) -> jboolean {
-    if cube().lock().unwrap().is_solved() {
+    if cube3().lock().unwrap().is_solved() {
         1
     } else {
         0
@@ -65,7 +72,7 @@ pub extern "system" fn Java_dev_twisted4d_app_NativeLib_cubeScramble<'local>(
     _class: JClass<'local>,
     move_count: jint,
 ) {
-    cube().lock().unwrap().scramble(move_count.max(0) as u32);
+    cube3().lock().unwrap().scramble(move_count.max(0) as u32);
 }
 
 #[no_mangle]
@@ -73,7 +80,63 @@ pub extern "system" fn Java_dev_twisted4d_app_NativeLib_cubeGetTransforms<'local
     env: JNIEnv<'local>,
     _class: JClass<'local>,
 ) -> jfloatArray {
-    let transforms = cube().lock().unwrap().transforms();
+    let transforms = cube3().lock().unwrap().transforms();
+    let array = env
+        .new_float_array(transforms.len() as i32)
+        .expect("failed to allocate float array");
+    env.set_float_array_region(&array, 0, &transforms)
+        .expect("failed to fill float array");
+    array.into_raw()
+}
+
+#[no_mangle]
+pub extern "system" fn Java_dev_twisted4d_app_NativeLib_cube4Reset<'local>(
+    _env: JNIEnv<'local>,
+    _class: JClass<'local>,
+) {
+    *cube4().lock().unwrap() = Cube4::solved();
+}
+
+#[no_mangle]
+pub extern "system" fn Java_dev_twisted4d_app_NativeLib_cube4Twist<'local>(
+    _env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    cell: jint,
+    fix_axis2: jint,
+    prime: jboolean,
+) {
+    if let (Some(cell), Some(fix_axis2)) = (Cell4::from_index(cell), Axis4::from_index(fix_axis2)) {
+        cube4().lock().unwrap().twist(cell, fix_axis2, prime != 0);
+    }
+}
+
+#[no_mangle]
+pub extern "system" fn Java_dev_twisted4d_app_NativeLib_cube4IsSolved<'local>(
+    _env: JNIEnv<'local>,
+    _class: JClass<'local>,
+) -> jboolean {
+    if cube4().lock().unwrap().is_solved() {
+        1
+    } else {
+        0
+    }
+}
+
+#[no_mangle]
+pub extern "system" fn Java_dev_twisted4d_app_NativeLib_cube4Scramble<'local>(
+    _env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    move_count: jint,
+) {
+    cube4().lock().unwrap().scramble(move_count.max(0) as u32);
+}
+
+#[no_mangle]
+pub extern "system" fn Java_dev_twisted4d_app_NativeLib_cube4GetTransforms<'local>(
+    env: JNIEnv<'local>,
+    _class: JClass<'local>,
+) -> jfloatArray {
+    let transforms = cube4().lock().unwrap().transforms();
     let array = env
         .new_float_array(transforms.len() as i32)
         .expect("failed to allocate float array");

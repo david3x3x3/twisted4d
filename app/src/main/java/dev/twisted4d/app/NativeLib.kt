@@ -1,8 +1,8 @@
 package dev.twisted4d.app
 
 /**
- * JNI bridge into the `puzzle-core` Rust crate (native/puzzle-core/src/cube3.rs holds the
- * actual puzzle model; this object is just the JNI surface).
+ * JNI bridge into the `puzzle-core` Rust crate (native/puzzle-core/src/cube3.rs and cube4.rs
+ * hold the actual puzzle models; this object is just the JNI surface).
  */
 object NativeLib {
     init {
@@ -22,4 +22,15 @@ object NativeLib {
      * no color/position data needs to cross the JNI boundary beyond this.
      */
     external fun cubeGetTransforms(): FloatArray
+
+    external fun cube4Reset()
+    external fun cube4Twist(cell: Int, fixAxis2: Int, prime: Boolean)
+    external fun cube4IsSolved(): Boolean
+    external fun cube4Scramble(moveCount: Int)
+
+    /**
+     * 80 pieces x 20 floats: [x, y, z, w, m00..m33 (16 floats, row-major)]. Piece order matches
+     * [HypercubeGeometry.HOME_POSITIONS] by index -- see cube4.rs.
+     */
+    external fun cube4GetTransforms(): FloatArray
 }
