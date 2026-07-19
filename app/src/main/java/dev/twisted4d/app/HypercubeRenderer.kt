@@ -63,6 +63,7 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
     private var program = 0
     private var uMvpLoc = 0
     private var uHighlightLoc = 0
+    private var uForceBlackLoc = 0
 
     private val indexBuffer: ShortBuffer = ByteBuffer
         .allocateDirect(HypercubeGeometry.INDICES.size * 2)
@@ -70,7 +71,14 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         .asShortBuffer()
         .apply { put(HypercubeGeometry.INDICES); position(0) }
 
+    private val wireIndexBuffer: ShortBuffer = ByteBuffer
+        .allocateDirect(HypercubeGeometry.WIREFRAME_INDICES.size * 2)
+        .order(ByteOrder.nativeOrder())
+        .asShortBuffer()
+        .apply { put(HypercubeGeometry.WIREFRAME_INDICES); position(0) }
+
     private var indexBufferId = 0
+    private var wireIndexBufferId = 0
     private lateinit var stickerVboIds: IntArray // one shared mesh per Cell4 color
 
     private val projMatrix = FloatArray(16)
@@ -138,9 +146,11 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         precision mediump float;
         in vec3 vColor;
         uniform float uHighlight;
+        uniform float uForceBlack;
         out vec4 fragColor;
         void main() {
             vec3 c = mix(vColor, vec3(1.0), uHighlight * 0.35);
+            c = mix(c, vec3(0.0), uForceBlack);
             fragColor = vec4(c, 1.0);
         }
     """.trimIndent()
@@ -148,10 +158,15 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
         GLES30.glClearColor(0.05f, 0.05f, 0.07f, 1.0f)
         GLES30.glEnable(GLES30.GL_DEPTH_TEST)
+        // LEQUAL (not the default LESS) so the wireframe overlay -- drawn with the exact same
+        // vertex positions as the triangle fill it's outlining -- doesn't lose the depth test
+        // to the fragments it's coincident with.
+        GLES30.glDepthFunc(GLES30.GL_LEQUAL)
 
         program = buildProgram(vertexShaderSrc, fragmentShaderSrc)
         uMvpLoc = GLES30.glGetUniformLocation(program, "uMVP")
         uHighlightLoc = GLES30.glGetUniformLocation(program, "uHighlight")
+        uForceBlackLoc = GLES30.glGetUniformLocation(program, "uForceBlack")
 
         val ibo = IntArray(1)
         GLES30.glGenBuffers(1, ibo, 0)
@@ -161,6 +176,17 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
             GLES30.GL_ELEMENT_ARRAY_BUFFER,
             indexBuffer.capacity() * 2,
             indexBuffer,
+            GLES30.GL_STATIC_DRAW,
+        )
+
+        val wireIbo = IntArray(1)
+        GLES30.glGenBuffers(1, wireIbo, 0)
+        wireIndexBufferId = wireIbo[0]
+        GLES30.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER, wireIndexBufferId)
+        GLES30.glBufferData(
+            GLES30.GL_ELEMENT_ARRAY_BUFFER,
+            wireIndexBuffer.capacity() * 2,
+            wireIndexBuffer,
             GLES30.GL_STATIC_DRAW,
         )
 
@@ -377,11 +403,29 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
                 GLES30.glUniformMatrix4fv(uMvpLoc, 1, false, mvpMatrix, 0)
 
                 val cell = cellFor(axisIdx, homeCoord)
-                GLES30.glUniform1f(uHighlightLoc, if (cell == highlightedCell) 1f else 0f)
+                val isHighlighted = cell == highlightedCell
+                GLES30.glUniform1f(uHighlightLoc, if (isHighlighted) 1f else 0f)
                 GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, stickerVboIds[cell.ordinal])
                 GLES30.glVertexAttribPointer(0, 3, GLES30.GL_FLOAT, false, stride, 0)
                 GLES30.glVertexAttribPointer(1, 3, GLES30.GL_FLOAT, false, stride, 12)
                 GLES30.glDrawElements(GLES30.GL_TRIANGLES, HypercubeGeometry.INDICES.size, GLES30.GL_UNSIGNED_SHORT, 0)
+
+                if (isHighlighted) {
+                    // Black wireframe outline for the selected cell (see handleCell4StickInput
+                    // in MainActivity) -- a solid-color highlight blend is too subtle to read
+                    // against these unlit, flat-shaded stickers, so this traces actual edges
+                    // instead. Same vertex buffer/layout, just a different index buffer + mode.
+                    GLES30.glUniform1f(uForceBlackLoc, 1f)
+                    GLES30.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER, wireIndexBufferId)
+                    GLES30.glDrawElements(
+                        GLES30.GL_LINES,
+                        HypercubeGeometry.WIREFRAME_INDICES.size,
+                        GLES30.GL_UNSIGNED_SHORT,
+                        0,
+                    )
+                    GLES30.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER, indexBufferId)
+                    GLES30.glUniform1f(uForceBlackLoc, 0f)
+                }
             }
         }
 

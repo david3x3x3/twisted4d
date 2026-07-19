@@ -59,6 +59,21 @@ object HypercubeGeometry {
         }
     }
 
+    /** Shared GL_LINES index buffer tracing all 4 edges of each face's quad (6 faces x 4 edges
+     * x 2 indices) -- reuses the same 24 vertices as [INDICES], just drawn as lines instead of
+     * triangles, for the selected-cell wireframe outline (see [HypercubeRenderer]). Shared cube
+     * edges get traced twice (once per adjacent face); harmless, just minor overdraw. */
+    val WIREFRAME_INDICES: ShortArray = ShortArray(48).also { idx ->
+        for (face in 0 until 6) {
+            val v0 = (face * 4).toShort()
+            val base = face * 8
+            idx[base + 0] = v0; idx[base + 1] = (v0 + 1).toShort()
+            idx[base + 2] = (v0 + 1).toShort(); idx[base + 3] = (v0 + 2).toShort()
+            idx[base + 4] = (v0 + 2).toShort(); idx[base + 5] = (v0 + 3).toShort()
+            idx[base + 6] = (v0 + 3).toShort(); idx[base + 7] = v0
+        }
+    }
+
     /** Interleaved [x,y,z,r,g,b] x 24 vertices for a small solid-colored sticker cube. */
     fun buildStickerVertices(color: FloatArray): FloatArray {
         val h = STICKER_HALF
