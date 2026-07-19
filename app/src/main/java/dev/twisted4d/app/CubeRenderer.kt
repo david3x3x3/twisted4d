@@ -9,33 +9,40 @@ import java.nio.FloatBuffer
 import java.nio.ShortBuffer
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
-import kotlin.math.cos
 import kotlin.math.roundToInt
-import kotlin.math.sin
 
 /**
- * Renders a 3x3x3 cube from the native puzzle-core cubie transforms. Camera is a
- * touch-drag/gamepad-stick orbit (yaw/pitch/distance). Twists are applied to native state
- * instantly (so [NativeLib.cubeIsSolved] is correct right away) but rendered as a smooth
- * 90-degree rotation of just the affected layer, interpolated from a before/after transform
- * snapshot -- see [requestTwist].
+ * Renders a 3x3x3 cube from the native puzzle-core cubie transforms. Twists are applied to
+ * native state instantly (so [NativeLib.cubeIsSolved] is correct right away) but rendered as
+ * a smooth 90-degree rotation of just the affected layer, interpolated from a before/after
+ * transform snapshot -- see [requestTwist].
+ *
+ * The camera itself never moves (fixed eye/center/up); instead the whole puzzle's orientation
+ * is a single accumulated rotation matrix, [cubeOrientation]. Touch drags and the gamepad stick
+ * both feed [addDragDelta]/[stickX]/[stickY], which are applied as small rotations about the
+ * *screen's current* horizontal/vertical axes and left-multiplied onto [cubeOrientation] (see
+ * [applyScreenRelativeRotation]). Because the axes used are always the fixed screen/camera axes
+ * rather than a re-derived yaw/pitch pair, this has no gimbal-lock pole -- holding a direction
+ * keeps spinning the puzzle indefinitely, and a given drag direction always moves whatever's
+ * currently facing the camera in that same screen direction, regardless of prior orientation.
  *
  * All public methods here are meant to be called via `GLSurfaceView.queueEvent` (i.e. on the
- * GL thread), except [yawDeg]/[pitchDeg]/[stickX]/[stickY] which are intentionally `@Volatile`
- * for cross-thread camera input.
+ * GL thread), except [stickX]/[stickY]/[addDragDelta] which are safe to call from the UI thread.
  */
 class CubeRenderer : GLSurfaceView.Renderer {
 
-    // Orbit camera state, updated from the UI thread by MainActivity's touch handling.
-    @Volatile var yawDeg: Float = 35f
-    @Volatile var pitchDeg: Float = 25f
     private val distance = 6.0f
 
     // Left-stick deflection (-1..1), updated from the UI thread by GamepadInputHandler and
     // applied continuously here every frame -- unlike touch drags, a held stick keeps
-    // rotating the camera even if no new motion event arrives while it's steady.
+    // rotating the cube even if no new motion event arrives while it's steady.
     @Volatile var stickX: Float = 0f
     @Volatile var stickY: Float = 0f
+
+    // Touch-drag deltas accumulate here (UI thread) and are drained once per frame (GL thread).
+    private val dragLock = Any()
+    private var pendingDragYawDeg = 0f
+    private var pendingDragPitchDeg = 0f
 
     /** Called (on the GL thread) right after a twist/scramble/reset with the new solved state. */
     @Volatile var onStateChanged: ((Boolean) -> Unit)? = null
@@ -55,7 +62,16 @@ class CubeRenderer : GLSurfaceView.Renderer {
     private val projMatrix = FloatArray(16)
     private val viewMatrix = FloatArray(16)
     private val viewProjMatrix = FloatArray(16)
+
+    // Accumulated whole-puzzle orientation (see class doc). Rebuilt only by drag/stick input.
+    private val cubeOrientation = FloatArray(16)
+    private val deltaRotX = FloatArray(16)
+    private val deltaRotY = FloatArray(16)
+    private val deltaCombined = FloatArray(16)
+    private val newOrientation = FloatArray(16)
+
     private val modelMatrix = FloatArray(16)
+    private val worldModel = FloatArray(16)
     private val rotMatrix = FloatArray(16)
     private val mvpMatrix = FloatArray(16)
 
@@ -133,12 +149,51 @@ class CubeRenderer : GLSurfaceView.Renderer {
 
         NativeLib.cubeReset()
         currentTransforms = NativeLib.cubeGetTransforms()
+
+        // Fixed camera: it never moves. What looks like "camera orbit" is actually rotating
+        // the puzzle itself via cubeOrientation, so this only needs computing once.
+        Matrix.setLookAtM(viewMatrix, 0, 0f, 0f, distance, 0f, 0f, 0f, 0f, 1f, 0f)
+
+        Matrix.setIdentityM(cubeOrientation, 0)
+        applyScreenRelativeRotation(-35f, 25f) // a pleasant default 3/4 view
     }
 
     override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
         GLES30.glViewport(0, 0, width, height)
         val aspect = width.toFloat() / height.toFloat()
         Matrix.perspectiveM(projMatrix, 0, 45f, aspect, 0.1f, 100f)
+        Matrix.multiplyMM(viewProjMatrix, 0, projMatrix, 0, viewMatrix, 0)
+    }
+
+    /** Accumulates a touch-drag delta (in degrees) to be applied on the next drawn frame. */
+    fun addDragDelta(dYawDeg: Float, dPitchDeg: Float) {
+        synchronized(dragLock) {
+            pendingDragYawDeg += dYawDeg
+            pendingDragPitchDeg += dPitchDeg
+        }
+    }
+
+    private fun drainDragDelta(): Pair<Float, Float> {
+        synchronized(dragLock) {
+            val delta = pendingDragYawDeg to pendingDragPitchDeg
+            pendingDragYawDeg = 0f
+            pendingDragPitchDeg = 0f
+            return delta
+        }
+    }
+
+    /**
+     * Rotates [cubeOrientation] by [dYawDeg]/[dPitchDeg] about the *screen's current* vertical/
+     * horizontal axes (i.e. always world Y / world X, since the camera itself never rotates),
+     * composed on the left so the puzzle keeps responding the same way to "push right"/"push
+     * up" no matter how it's currently oriented -- see the class doc.
+     */
+    private fun applyScreenRelativeRotation(dYawDeg: Float, dPitchDeg: Float) {
+        Matrix.setRotateM(deltaRotX, 0, dPitchDeg, 1f, 0f, 0f)
+        Matrix.setRotateM(deltaRotY, 0, dYawDeg, 0f, 1f, 0f)
+        Matrix.multiplyMM(deltaCombined, 0, deltaRotY, 0, deltaRotX, 0)
+        Matrix.multiplyMM(newOrientation, 0, deltaCombined, 0, cubeOrientation, 0)
+        System.arraycopy(newOrientation, 0, cubeOrientation, 0, 16)
     }
 
     /**
@@ -191,18 +246,16 @@ class CubeRenderer : GLSurfaceView.Renderer {
         GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT or GLES30.GL_DEPTH_BUFFER_BIT)
         GLES30.glUseProgram(program)
 
+        val (dragYaw, dragPitch) = drainDragDelta()
+        var dYaw = dragYaw
+        var dPitch = dragPitch
         if (stickX != 0f || stickY != 0f) {
-            yawDeg -= stickX * STICK_DEG_PER_FRAME
-            pitchDeg = (pitchDeg + stickY * STICK_DEG_PER_FRAME).coerceIn(-PITCH_LIMIT_DEG, PITCH_LIMIT_DEG)
+            dYaw += stickX * STICK_DEG_PER_FRAME
+            dPitch += stickY * STICK_DEG_PER_FRAME
         }
-
-        val yawRad = Math.toRadians(yawDeg.toDouble())
-        val pitchRad = Math.toRadians(pitchDeg.toDouble())
-        val eyeX = (distance * cos(pitchRad) * sin(yawRad)).toFloat()
-        val eyeY = (distance * sin(pitchRad)).toFloat()
-        val eyeZ = (distance * cos(pitchRad) * cos(yawRad)).toFloat()
-        Matrix.setLookAtM(viewMatrix, 0, eyeX, eyeY, eyeZ, 0f, 0f, 0f, 0f, 1f, 0f)
-        Matrix.multiplyMM(viewProjMatrix, 0, projMatrix, 0, viewMatrix, 0)
+        if (dYaw != 0f || dPitch != 0f) {
+            applyScreenRelativeRotation(dYaw, dPitch)
+        }
 
         var animT = 0f
         var animDone = false
@@ -226,7 +279,8 @@ class CubeRenderer : GLSurfaceView.Renderer {
             } else {
                 buildModelMatrix(modelMatrix, if (animating) after!! else currentTransforms, i)
             }
-            Matrix.multiplyMM(mvpMatrix, 0, viewProjMatrix, 0, modelMatrix, 0)
+            Matrix.multiplyMM(worldModel, 0, cubeOrientation, 0, modelMatrix, 0)
+            Matrix.multiplyMM(mvpMatrix, 0, viewProjMatrix, 0, worldModel, 0)
             GLES30.glUniformMatrix4fv(uMvpLoc, 1, false, mvpMatrix, 0)
 
             GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, cubieVertexBufferIds[i])
@@ -294,7 +348,6 @@ class CubeRenderer : GLSurfaceView.Renderer {
 
     companion object {
         private const val STICK_DEG_PER_FRAME = 1.2f
-        private const val PITCH_LIMIT_DEG = 85f
         private const val ANIM_DURATION_NANOS = 220_000_000L // 220ms
     }
 }

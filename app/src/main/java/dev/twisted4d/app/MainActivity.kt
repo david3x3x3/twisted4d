@@ -127,9 +127,9 @@ class MainActivity : AppCompatActivity() {
                 lastTouchX = event.x
                 lastTouchY = event.y
 
-                renderer.yawDeg -= dx * DRAG_SENSITIVITY
-                renderer.pitchDeg = (renderer.pitchDeg + dy * DRAG_SENSITIVITY)
-                    .coerceIn(-PITCH_LIMIT_DEG, PITCH_LIMIT_DEG)
+                // Screen-relative: dragging right/up should move whatever's currently facing
+                // the camera to the right/up on screen -- see CubeRenderer's class doc.
+                renderer.addDragDelta(dx * DRAG_SENSITIVITY, dy * DRAG_SENSITIVITY)
                 glSurfaceView.requestRender()
             }
         }
@@ -143,6 +143,13 @@ class MainActivity : AppCompatActivity() {
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         gamepadInput.handleKeyEvent(event)
+
+        // Some gamepads (e.g. the Retroid Pocket's controller) alias face buttons like B with
+        // a synthetic BACK keycode for launcher-navigation compatibility. Without this, pressing
+        // B to twist R also exits the app via the default Back behavior on the root activity.
+        if (event.keyCode == KeyEvent.KEYCODE_BACK && GamepadInputHandler.isGamepadSource(event.source)) {
+            return true
+        }
         return super.dispatchKeyEvent(event)
     }
 
@@ -164,7 +171,6 @@ class MainActivity : AppCompatActivity() {
     companion object {
         private const val TAG = "Twisted4D"
         private const val DRAG_SENSITIVITY = 0.4f
-        private const val PITCH_LIMIT_DEG = 85f
         private const val SCRAMBLE_MOVE_COUNT = 25
         private const val SOLVED_LABEL = "SOLVED"
     }

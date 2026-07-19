@@ -22,10 +22,6 @@ class GamepadInputHandler(
 
     @Volatile private var invertHeld = false
 
-    private fun isGamepadSource(sources: Int): Boolean =
-        (sources and InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD ||
-            (sources and InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK
-
     /** Input device listener callbacks only fire on future connect/disconnect, so call this
      * once at startup to log any gamepad that was already connected before the app launched. */
     fun logAlreadyConnectedDevices() {
@@ -91,6 +87,10 @@ class GamepadInputHandler(
     companion object {
         private const val TAG = "Twisted4DGamepad"
         private const val DEADZONE = 0.15f
+
+        fun isGamepadSource(sources: Int): Boolean =
+            (sources and InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD ||
+                (sources and InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK
 
         private val FACE_BUTTON_MAP = mapOf(
             KeyEvent.KEYCODE_BUTTON_Y to Face.U,
