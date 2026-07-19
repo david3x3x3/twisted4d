@@ -14,8 +14,8 @@ import kotlin.math.sin
 
 /**
  * Renders a static 3x3x3 cube from the native puzzle-core cubie transforms. Camera is a
- * touch-drag orbit (yaw/pitch/distance); twists are applied instantly (no interpolation --
- * smooth twist animation is a later milestone).
+ * touch-drag/gamepad-stick orbit (yaw/pitch/distance); twists are applied instantly (no
+ * interpolation -- smooth twist animation is a later milestone).
  */
 class CubeRenderer : GLSurfaceView.Renderer {
 
@@ -23,6 +23,12 @@ class CubeRenderer : GLSurfaceView.Renderer {
     @Volatile var yawDeg: Float = 35f
     @Volatile var pitchDeg: Float = 25f
     private val distance = 6.0f
+
+    // Left-stick deflection (-1..1), updated from the UI thread by GamepadInputHandler and
+    // applied continuously here every frame -- unlike touch drags, a held stick keeps
+    // rotating the camera even if no new motion event arrives while it's steady.
+    @Volatile var stickX: Float = 0f
+    @Volatile var stickY: Float = 0f
 
     private var program = 0
     private var uMvpLoc = 0
@@ -115,6 +121,11 @@ class CubeRenderer : GLSurfaceView.Renderer {
         GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT or GLES30.GL_DEPTH_BUFFER_BIT)
         GLES30.glUseProgram(program)
 
+        if (stickX != 0f || stickY != 0f) {
+            yawDeg -= stickX * STICK_DEG_PER_FRAME
+            pitchDeg = (pitchDeg + stickY * STICK_DEG_PER_FRAME).coerceIn(-PITCH_LIMIT_DEG, PITCH_LIMIT_DEG)
+        }
+
         val yawRad = Math.toRadians(yawDeg.toDouble())
         val pitchRad = Math.toRadians(pitchDeg.toDouble())
         val eyeX = (distance * cos(pitchRad) * sin(yawRad)).toFloat()
@@ -192,5 +203,10 @@ class CubeRenderer : GLSurfaceView.Renderer {
             "Shader compile failed: ${GLES30.glGetShaderInfoLog(shader)}"
         }
         return shader
+    }
+
+    companion object {
+        private const val STICK_DEG_PER_FRAME = 1.2f
+        private const val PITCH_LIMIT_DEG = 85f
     }
 }

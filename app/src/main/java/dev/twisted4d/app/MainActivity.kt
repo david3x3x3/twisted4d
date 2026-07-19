@@ -1,20 +1,23 @@
 package dev.twisted4d.app
 
+import android.content.Context
+import android.hardware.input.InputManager
 import android.opengl.GLSurfaceView
 import android.os.Bundle
 import android.util.Log
 import android.view.Gravity
+import android.view.KeyEvent
 import android.view.MotionEvent
 import android.widget.Button
 import android.widget.FrameLayout
 import androidx.appcompat.app.AppCompatActivity
-import kotlin.math.max
-import kotlin.math.min
 
 class MainActivity : AppCompatActivity() {
 
     private lateinit var glSurfaceView: GLSurfaceView
     private lateinit var renderer: CubeRenderer
+    private lateinit var gamepadInput: GamepadInputHandler
+    private lateinit var inputManager: InputManager
 
     private var lastTouchX = 0f
     private var lastTouchY = 0f
@@ -30,6 +33,11 @@ class MainActivity : AppCompatActivity() {
             setRenderer(renderer)
             setOnTouchListener { _, event -> handleCameraDrag(event) }
         }
+
+        gamepadInput = GamepadInputHandler(renderer)
+        inputManager = getSystemService(Context.INPUT_SERVICE) as InputManager
+        inputManager.registerInputDeviceListener(gamepadInput, null)
+        gamepadInput.logAlreadyConnectedDevices()
 
         val twistButton = Button(this).apply {
             text = "Twist U"
@@ -73,6 +81,16 @@ class MainActivity : AppCompatActivity() {
         return true
     }
 
+    override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean {
+        if (gamepadInput.handleMotionEvent(event)) return true
+        return super.dispatchGenericMotionEvent(event)
+    }
+
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        gamepadInput.handleKeyEvent(event)
+        return super.dispatchKeyEvent(event)
+    }
+
     override fun onResume() {
         super.onResume()
         glSurfaceView.onResume()
@@ -81,6 +99,11 @@ class MainActivity : AppCompatActivity() {
     override fun onPause() {
         super.onPause()
         glSurfaceView.onPause()
+    }
+
+    override fun onDestroy() {
+        inputManager.unregisterInputDeviceListener(gamepadInput)
+        super.onDestroy()
     }
 
     companion object {
