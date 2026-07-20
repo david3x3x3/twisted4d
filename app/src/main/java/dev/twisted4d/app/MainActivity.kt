@@ -12,6 +12,7 @@ import android.view.Gravity
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
+import android.view.ViewGroup
 import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.LinearLayout
@@ -249,27 +250,34 @@ class MainActivity : AppCompatActivity() {
 
         renderer.onTwistApplied = { cell, fixAxis2, prime -> moveHistory4D.add(Triple(cell, fixAxis2, prime)) }
 
-        val cellRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            Cell4.entries.forEach { cell ->
-                addView(
-                    Button(this@MainActivity).apply {
-                        text = cell.label
-                        setOnClickListener {
-                            surfaceView.queueEvent { renderer.requestTwist(cell, selectedAxis4, false) }
-                        }
-                        setOnLongClickListener {
-                            surfaceView.queueEvent { renderer.requestTwist(cell, selectedAxis4, true) }
-                            true
-                        }
-                    },
-                )
+        // All the controls below sit in two vertical columns along the screen's left/right
+        // edges rather than stacked rows at the top/bottom -- the isometric hexagon view (see
+        // HypercubeRenderer's default orientation) occupies a squarish region in the middle,
+        // leaving the sides mostly empty, so this maximizes how much of that shape is unobscured
+        // top-to-bottom. Cell4.entries' 8 buttons are split in half (first 4 / last 4) between
+        // the two columns purely to keep either column's height reasonable.
+        fun cellButton(cell: Cell4): Button = Button(this@MainActivity).apply {
+            text = cell.label
+            setOnClickListener {
+                surfaceView.queueEvent { renderer.requestTwist(cell, selectedAxis4, false) }
             }
+            setOnLongClickListener {
+                surfaceView.queueEvent { renderer.requestTwist(cell, selectedAxis4, true) }
+                true
+            }
+        }
+        val cellColumnLeft = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            Cell4.entries.take(4).forEach { addView(cellButton(it)) }
+        }
+        val cellColumnRight = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            Cell4.entries.drop(4).forEach { addView(cellButton(it)) }
         }
 
         lateinit var axisButtons: Map<Axis4, Button>
-        val axisRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
+        val axisColumn = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
             axisButtons = Axis4.entries.associateWith { axis ->
                 Button(this@MainActivity).apply {
                     text = "axis:${axis.label}"
@@ -286,8 +294,8 @@ class MainActivity : AppCompatActivity() {
         // F->I->B->O->F (see HypercubeRenderer's class doc) -- tap = +90, long-press = -90.
         // Continuous free 4D rotation is deliberately not offered: it's hard to control by
         // dragging and not needed here, since these shortcuts can reach any arrangement.
-        val rotateRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
+        val rotateColumn = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
             listOf(
                 Triple("XW", HypercubeRenderer.AXIS_X, HypercubeRenderer.AXIS_W),
                 Triple("YW", HypercubeRenderer.AXIS_Y, HypercubeRenderer.AXIS_W),
@@ -308,7 +316,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        val utilityRow = utilityRow(
+        val utilityColumn = utilityRow(
             onScramble = { surfaceView.queueEvent { renderer.requestScramble(SCRAMBLE_MOVE_COUNT_4D) }; moveHistory4D.clear() },
             onReset = { surfaceView.queueEvent { renderer.requestReset() }; moveHistory4D.clear() },
             onUndo = {
@@ -323,10 +331,11 @@ class MainActivity : AppCompatActivity() {
                 val snapshot = synchronized(moveHistory4D) { moveHistory4D.toList() }
                 shareTwistLog(formatTwistLog4D(snapshot))
             },
+            orientation = LinearLayout.VERTICAL,
         )
 
-        val filterRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
+        val filterColumn = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
             fun filterToggle(label: String, apply: (Boolean) -> Unit): Button =
                 Button(this@MainActivity).apply {
                     text = label
@@ -343,14 +352,38 @@ class MainActivity : AppCompatActivity() {
             filterToggle("Hide 3c") { renderer.hideEdges = it }
         }
 
+        // This device's actual target form factor (handhelds like the Retroid Pocket, per the
+        // project's gamepad focus) is landscape -- wide but short -- so a single vertical column
+        // of 8+ buttons per side doesn't fit the available height at all. Each side is instead
+        // two narrower sub-columns side by side, and every button here gets compactChildren()'s
+        // reduced padding/text size so ~8 per sub-column still fits comfortably.
+        val leftOuter = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(modeToggleButton())
+            addView(rotateColumn)
+            addView(filterColumn)
+        }
+        val leftColumn = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            addView(leftOuter)
+            addView(cellColumnLeft)
+        }
+        val rightOuter = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(utilityColumn)
+            addView(axisColumn)
+        }
+        val rightColumn = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            addView(cellColumnRight)
+            addView(rightOuter)
+        }
+        listOf(leftOuter, cellColumnLeft, cellColumnRight, rightOuter).forEach { it.compactChildren() }
+
         rootLayout.addView(surfaceView)
         rootLayout.addView(statusText, topCenterParams())
-        rootLayout.addView(rotateRow, topCenterParams().apply { topMargin = 80 })
-        rootLayout.addView(filterRow, topCenterParams().apply { topMargin = 132 })
-        rootLayout.addView(axisRow, bottomCenterParams(bottomMargin = 220))
-        rootLayout.addView(cellRow, bottomCenterParams(bottomMargin = 48))
-        rootLayout.addView(modeToggleButton(), topStartParams())
-        rootLayout.addView(utilityRow, topEndParams())
+        rootLayout.addView(leftColumn, centerStartParams())
+        rootLayout.addView(rightColumn, centerEndParams())
     }
 
     /** Drag on the main view controls the ordinary 3D-feeling rotation, same as [handle3DDrag]. */
@@ -396,14 +429,35 @@ class MainActivity : AppCompatActivity() {
         onReset: () -> Unit,
         onUndo: () -> Unit,
         onShareLog: () -> Unit,
+        orientation: Int = LinearLayout.HORIZONTAL,
     ): LinearLayout =
         LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
+            this.orientation = orientation
             addView(Button(this@MainActivity).apply { text = "Scramble"; setOnClickListener { onScramble() } })
             addView(Button(this@MainActivity).apply { text = "Reset"; setOnClickListener { onReset() } })
             addView(Button(this@MainActivity).apply { text = "Undo"; setOnClickListener { onUndo() } })
             addView(Button(this@MainActivity).apply { text = "Log"; setOnClickListener { onShareLog() } })
         }
+
+    /** Shrinks every [Button] nested anywhere under this [ViewGroup] (recursing into nested
+     * layouts, e.g. the small per-group columns build4DScreen nests into its two side columns) --
+     * used for the 4D screen's side-column buttons, since the platform's default button padding/
+     * text size is sized for a handful of buttons in a row, not 6-8 stacked down a short
+     * landscape screen (this app's actual target form factor -- gamepad handhelds, not portrait
+     * phones). */
+    private fun ViewGroup.compactChildren() {
+        for (i in 0 until childCount) {
+            when (val child = getChildAt(i)) {
+                is Button -> {
+                    child.setPadding(20, 22, 20, 22)
+                    child.textSize = 13f
+                    child.minimumHeight = 0
+                    child.minHeight = 0
+                }
+                is ViewGroup -> child.compactChildren()
+            }
+        }
+    }
 
     /** Puts [log] on the clipboard and offers the Android share sheet for it -- used by both
      * modes' "Log" button to export their twist history (see `todo-controller-input.md`'s
@@ -453,6 +507,18 @@ class MainActivity : AppCompatActivity() {
         FrameLayout.LayoutParams.WRAP_CONTENT,
         Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL,
     ).apply { this.bottomMargin = bottomMargin }
+
+    private fun centerStartParams() = FrameLayout.LayoutParams(
+        FrameLayout.LayoutParams.WRAP_CONTENT,
+        FrameLayout.LayoutParams.WRAP_CONTENT,
+        Gravity.CENTER_VERTICAL or Gravity.START,
+    ).apply { leftMargin = 12 }
+
+    private fun centerEndParams() = FrameLayout.LayoutParams(
+        FrameLayout.LayoutParams.WRAP_CONTENT,
+        FrameLayout.LayoutParams.WRAP_CONTENT,
+        Gravity.CENTER_VERTICAL or Gravity.END,
+    ).apply { rightMargin = 12 }
 
     // --- lifecycle / input dispatch ----------------------------------------------------------
 
