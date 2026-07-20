@@ -70,7 +70,6 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
     // GL-thread-only edge-detection state for updateCell4Selection's snap-on-deflect behavior.
     private var stickWasSignificant = false
     private val roomDirScratch4 = FloatArray(4)
-    private val stickScratchVec3 = FloatArray(3)
 
     private var program = 0
     private var uMvpLoc = 0
@@ -333,13 +332,13 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         val deg = (Math.toDegrees(atan2(-y.toDouble(), x.toDouble())) + 360.0) % 360.0
         selectedCell4 = when {
             deg < 22.5 || deg >= 337.5 -> nativeCellInRoomSlot(AXIS_W, -1) // right: whatever's in I
-            deg < 67.5 -> resolveWallCellForTargetAngle(45.0) // up-right
-            deg < 112.5 -> resolveWallCellForTargetAngle(90.0) // up
-            deg < 157.5 -> resolveWallCellForTargetAngle(135.0) // up-left
+            deg < 67.5 -> resolveWallCellForTargetAngle(ROLE_TARGET_DEG.getValue(Cell4.B)) // up-right
+            deg < 112.5 -> resolveWallCellForTargetAngle(ROLE_TARGET_DEG.getValue(Cell4.U)) // up
+            deg < 157.5 -> resolveWallCellForTargetAngle(ROLE_TARGET_DEG.getValue(Cell4.L)) // up-left
             deg < 202.5 -> nativeCellInRoomSlot(AXIS_W, 1) // left: whatever's in O
-            deg < 247.5 -> resolveWallCellForTargetAngle(225.0) // down-left
-            deg < 292.5 -> resolveWallCellForTargetAngle(270.0) // down
-            else -> resolveWallCellForTargetAngle(315.0) // down-right
+            deg < 247.5 -> resolveWallCellForTargetAngle(ROLE_TARGET_DEG.getValue(Cell4.F)) // down-left
+            deg < 292.5 -> resolveWallCellForTargetAngle(ROLE_TARGET_DEG.getValue(Cell4.D)) // down
+            else -> resolveWallCellForTargetAngle(ROLE_TARGET_DEG.getValue(Cell4.R)) // down-right
         }
         highlightedCell = selectedCell4
     }
@@ -356,27 +355,15 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         error("cubeOrientation4 should always map every cell to exactly one room slot")
     }
 
-    /** The current on-screen compass angle (degrees, 0 = right, 90 = up) of the room-local wall
-     * at ([roomAxis], [roomSign]), found by applying [viewOrientation3]'s rotation to that
-     * wall's fixed room-space direction and reading off its screen-plane (x, y) components. */
-    private fun wallSlotScreenAngleDeg(roomAxis: Int, roomSign: Int): Double {
-        stickScratchVec3[0] = 0f; stickScratchVec3[1] = 0f; stickScratchVec3[2] = 0f
-        stickScratchVec3[roomAxis] = roomSign.toFloat()
-        val (vx, vy, vz) = stickScratchVec3
-        val sx = viewOrientation3[0] * vx + viewOrientation3[4] * vy + viewOrientation3[8] * vz
-        val sy = viewOrientation3[1] * vx + viewOrientation3[5] * vy + viewOrientation3[9] * vz
-        return (Math.toDegrees(atan2(sy.toDouble(), sx.toDouble())) + 360.0) % 360.0
-    }
-
     /** Which native [Cell4] is currently closest, on screen, to [targetDeg] -- checks all 6
      * wall slots (see [WALL_SLOTS], I/O excluded since they don't occupy an outward wall
-     * position) via [wallSlotScreenAngleDeg] and picks the nearest by circular distance, then
-     * resolves that slot to its current occupant via [nativeCellInRoomSlot]. */
+     * position) via [wallAngleDeg] and picks the nearest by circular distance, then resolves
+     * that slot to its current occupant via [nativeCellInRoomSlot]. */
     private fun resolveWallCellForTargetAngle(targetDeg: Double): Cell4 {
         var bestSlot = WALL_SLOTS[0]
         var bestDist = Double.MAX_VALUE
         for (slot in WALL_SLOTS) {
-            val angle = wallSlotScreenAngleDeg(slot.first, slot.second)
+            val angle = wallAngleDeg(viewOrientation3, slot.first, slot.second)
             var dist = abs(angle - targetDeg) % 360.0
             if (dist > 180.0) dist = 360.0 - dist
             if (dist < bestDist) {
@@ -715,6 +702,41 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
             AXIS_X to 1, AXIS_X to -1,
             AXIS_Y to 1, AXIS_Y to -1,
             AXIS_Z to 1, AXIS_Z to -1,
+        )
+
+        /** The on-screen compass angle (degrees, 0 = right, 90 = up) of the room-local wall at
+         * ([roomAxis], [roomSign]) under a given (column-major GL) view [orientation], found by
+         * applying its rotation to that wall's fixed room-space direction and reading off the
+         * resulting screen-plane (x, y) components. */
+        private fun wallAngleDeg(orientation: FloatArray, roomAxis: Int, roomSign: Int): Double {
+            val v = floatArrayOf(0f, 0f, 0f)
+            v[roomAxis] = roomSign.toFloat()
+            val sx = orientation[0] * v[0] + orientation[4] * v[1] + orientation[8] * v[2]
+            val sy = orientation[1] * v[0] + orientation[5] * v[1] + orientation[9] * v[2]
+            return (Math.toDegrees(atan2(sy.toDouble(), sx.toDouble())) + 360.0) % 360.0
+        }
+
+        /**
+         * Each of the 6 wall roles' target screen angle for [updateCell4Selection], fixed at
+         * whatever angle its *default* native occupant (matching the pre-screen-relative
+         * convention: up=U, down=D, up-left=L, down-right=R, up-right=B, down-left=F) naturally
+         * sits at under [INITIAL_VIEW_ORIENTATION] -- deliberately *not* an assumed-even compass
+         * spacing (45/90/135deg etc). That assumption was wrong: R/L structurally always sit at
+         * exactly 0/180 degrees on screen for this pitch-then-yaw, no-roll camera (pitch only
+         * rotates Y/Z, so it never moves the +-X wall pair off the horizontal, for any pitch or
+         * yaw), never anywhere near a 45-degree diagonal -- so a literal 315-degree target for
+         * "down-right" was consistently closer to D than to R, and R could never win. Using each
+         * role's real natural angle instead means at the default view each role resolves to
+         * exactly its own reference cell (distance 0, so it can't lose to a neighbor), and after
+         * dragging, resolves to whichever wall has now rotated into that same *visual* slot.
+         */
+        private val ROLE_TARGET_DEG: Map<Cell4, Double> = mapOf(
+            Cell4.U to wallAngleDeg(INITIAL_VIEW_ORIENTATION, AXIS_Y, 1),
+            Cell4.D to wallAngleDeg(INITIAL_VIEW_ORIENTATION, AXIS_Y, -1),
+            Cell4.L to wallAngleDeg(INITIAL_VIEW_ORIENTATION, AXIS_X, -1),
+            Cell4.R to wallAngleDeg(INITIAL_VIEW_ORIENTATION, AXIS_X, 1),
+            Cell4.F to wallAngleDeg(INITIAL_VIEW_ORIENTATION, AXIS_Z, 1),
+            Cell4.B to wallAngleDeg(INITIAL_VIEW_ORIENTATION, AXIS_Z, -1),
         )
 
         private fun setIdentity4(m: FloatArray) {
