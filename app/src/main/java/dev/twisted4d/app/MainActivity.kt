@@ -158,8 +158,8 @@ class MainActivity : AppCompatActivity() {
                 surfaceView.queueEvent {
                     // Twisting without actively re-selecting via the stick (e.g. pressing a
                     // rotation button while it's centered, reusing the last selection) should
-                    // still realign the view -- see HypercubeRenderer.snapViewToNearestCardinalOrientation.
-                    renderer.snapViewToNearestCardinalOrientation()
+                    // still realign the view -- see HypercubeRenderer.snapViewToDefaultOrientation.
+                    renderer.snapViewToDefaultOrientation()
                     val cell = renderer.selectedCell4
                     val fixAxis2 = if (button.literalAxis == cell.axis) Axis4.W else button.literalAxis
                     renderer.requestTwist(cell, fixAxis2, button.primaryPrime)
