@@ -43,6 +43,10 @@ enum class RotationButton(val literalAxis: Axis4, val primaryPrime: Boolean) {
  * has selected; direction is which button was pressed, not a held modifier. Both fire for any
  * relevant physical press regardless of which callback the active mode actually wires up.
  *
+ * L2 (left trigger) is 3D mode's "prime" modifier ([invertHeld]) but otherwise unused there;
+ * in 4D mode it instead fires [on4DMoveSelectedToI] on press, a puzzle *rotation* (not a twist)
+ * that brings whichever cell is currently selected into the I slot.
+ *
  * Left stick = ordinary camera rotation in 3D mode, cell selection in 4D mode (per
  * `todo-controller-input.md`); right stick = 4D-specific rotation, i.e. camera orbit, in 4D
  * mode (ignored in 3D mode). D-pad stays reserved for camera control per the spec.
@@ -52,6 +56,7 @@ class GamepadInputHandler(
     private val onRightStick: (x: Float, y: Float) -> Unit,
     private val onFaceButton: (index: Int, invert: Boolean) -> Unit,
     private val on4DRotationButton: (RotationButton) -> Unit = {},
+    private val on4DMoveSelectedToI: () -> Unit = {},
 ) : InputManager.InputDeviceListener {
 
     @Volatile private var invertHeld = false
@@ -123,6 +128,10 @@ class GamepadInputHandler(
         ROTATION_BUTTON_MAP[event.keyCode]?.let { button ->
             Log.i(TAG, "4D rotation button: $button (gamepad)")
             on4DRotationButton(button)
+        }
+        if (event.keyCode == KeyEvent.KEYCODE_BUTTON_L2) {
+            Log.i(TAG, "4D move-selected-to-I (gamepad)")
+            on4DMoveSelectedToI()
         }
     }
 

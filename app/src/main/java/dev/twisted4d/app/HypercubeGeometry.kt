@@ -15,7 +15,7 @@ data class Vec4i(val x: Int, val y: Int, val z: Int, val w: Int)
 object HypercubeGeometry {
 
     const val STICKER_HALF = 0.28f // ~60% of the original 0.46 half-extent, per grid spacing 1.0
-    const val FLOATS_PER_VERTEX = 6 // x, y, z, r, g, b
+    const val FLOATS_PER_VERTEX = 9 // x, y, z, nx, ny, nz, r, g, b
     const val VERTICES_PER_STICKER = 24 // 4 per face x 6 faces
 
     // Canonical piece order: x, y, z, then w, over {-1,0,1}, skipping the hidden core
@@ -74,25 +74,30 @@ object HypercubeGeometry {
         }
     }
 
-    /** Interleaved [x,y,z,r,g,b] x 24 vertices for a small solid-colored sticker cube. */
+    /** Interleaved [x,y,z,nx,ny,nz,r,g,b] x 24 vertices for a small solid-colored sticker cube --
+     * each face gets its own constant outward normal (this is a cube, not a smooth surface, so
+     * no per-vertex normal averaging) for [HypercubeRenderer]'s per-face diffuse lighting; without
+     * it, every face renders as exactly the same flat color and the cube shape only reads from
+     * its silhouette/gaps rather than actually looking three-dimensional. */
     fun buildStickerVertices(color: FloatArray): FloatArray {
         val h = STICKER_HALF
         val out = FloatArray(VERTICES_PER_STICKER * FLOATS_PER_VERTEX)
         var o = 0
 
-        fun face(vararg corners: FloatArray) {
+        fun face(normal: FloatArray, vararg corners: FloatArray) {
             for (c in corners) {
                 out[o++] = c[0]; out[o++] = c[1]; out[o++] = c[2]
+                out[o++] = normal[0]; out[o++] = normal[1]; out[o++] = normal[2]
                 out[o++] = color[0]; out[o++] = color[1]; out[o++] = color[2]
             }
         }
 
-        face(floatArrayOf(h, -h, -h), floatArrayOf(h, h, -h), floatArrayOf(h, h, h), floatArrayOf(h, -h, h))
-        face(floatArrayOf(-h, -h, h), floatArrayOf(-h, h, h), floatArrayOf(-h, h, -h), floatArrayOf(-h, -h, -h))
-        face(floatArrayOf(-h, h, -h), floatArrayOf(-h, h, h), floatArrayOf(h, h, h), floatArrayOf(h, h, -h))
-        face(floatArrayOf(-h, -h, h), floatArrayOf(-h, -h, -h), floatArrayOf(h, -h, -h), floatArrayOf(h, -h, h))
-        face(floatArrayOf(-h, -h, h), floatArrayOf(h, -h, h), floatArrayOf(h, h, h), floatArrayOf(-h, h, h))
-        face(floatArrayOf(h, -h, -h), floatArrayOf(-h, -h, -h), floatArrayOf(-h, h, -h), floatArrayOf(h, h, -h))
+        face(floatArrayOf(1f, 0f, 0f), floatArrayOf(h, -h, -h), floatArrayOf(h, h, -h), floatArrayOf(h, h, h), floatArrayOf(h, -h, h))
+        face(floatArrayOf(-1f, 0f, 0f), floatArrayOf(-h, -h, h), floatArrayOf(-h, h, h), floatArrayOf(-h, h, -h), floatArrayOf(-h, -h, -h))
+        face(floatArrayOf(0f, 1f, 0f), floatArrayOf(-h, h, -h), floatArrayOf(-h, h, h), floatArrayOf(h, h, h), floatArrayOf(h, h, -h))
+        face(floatArrayOf(0f, -1f, 0f), floatArrayOf(-h, -h, h), floatArrayOf(-h, -h, -h), floatArrayOf(h, -h, -h), floatArrayOf(h, -h, h))
+        face(floatArrayOf(0f, 0f, 1f), floatArrayOf(-h, -h, h), floatArrayOf(h, -h, h), floatArrayOf(h, h, h), floatArrayOf(-h, h, h))
+        face(floatArrayOf(0f, 0f, -1f), floatArrayOf(h, -h, -h), floatArrayOf(-h, -h, -h), floatArrayOf(-h, h, -h), floatArrayOf(h, h, -h))
 
         return out
     }

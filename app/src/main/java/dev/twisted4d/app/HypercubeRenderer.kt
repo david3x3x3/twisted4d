@@ -123,8 +123,15 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
 
     private var program = 0
     private var uMvpLoc = 0
+    private var uNormalMatrixLoc = 0
     private var uHighlightLoc = 0
     private var uForceBlackLoc = 0
+
+    // The 3x3 rotation part of viewOrientation3, column-major, re-extracted once per frame (not
+    // per-sticker -- every sticker's mesh is always axis-aligned, only its position varies, even
+    // mid-twist-animation, so this one matrix correctly transforms every sticker's normals for
+    // the whole frame). See onDrawFrame and ROTATION_PART_INDICES.
+    private val normalMat3 = FloatArray(9)
 
     private val indexBuffer: ShortBuffer = ByteBuffer
         .allocateDirect(HypercubeGeometry.INDICES.size * 2)
@@ -218,11 +225,15 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
     private val vertexShaderSrc = """
         #version 300 es
         layout(location = 0) in vec3 aPosition;
-        layout(location = 1) in vec3 aColor;
+        layout(location = 1) in vec3 aNormal;
+        layout(location = 2) in vec3 aColor;
         uniform mat4 uMVP;
+        uniform mat3 uNormalMatrix;
+        out vec3 vNormal;
         out vec3 vColor;
         void main() {
             gl_Position = uMVP * vec4(aPosition, 1.0);
+            vNormal = uNormalMatrix * aNormal;
             vColor = aColor;
         }
     """.trimIndent()
@@ -230,12 +241,24 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
     private val fragmentShaderSrc = """
         #version 300 es
         precision mediump float;
+        in vec3 vNormal;
         in vec3 vColor;
         uniform float uHighlight;
         uniform float uForceBlack;
         out vec4 fragColor;
         void main() {
-            vec3 c = mix(vColor, vec3(1.0), uHighlight * 0.35);
+            vec3 n = normalize(vNormal);
+            // Key light from upper-front-right plus a dimmer fill from the opposite side, so
+            // every face of a sticker cube reads as a distinct shade instead of one flat color --
+            // faces exactly perpendicular to both lights (fully shadowed) still get the ambient
+            // floor so nothing goes pure black.
+            vec3 keyDir = normalize(vec3(0.45, 0.85, 0.55));
+            vec3 fillDir = normalize(vec3(-0.35, -0.2, -0.6));
+            float key = max(dot(n, keyDir), 0.0);
+            float fill = max(dot(n, fillDir), 0.0);
+            float lighting = 0.38 + key * 0.5 + fill * 0.16;
+            vec3 c = vColor * lighting;
+            c = mix(c, vec3(1.0), uHighlight * 0.35);
             c = mix(c, vec3(0.0), uForceBlack);
             fragColor = vec4(c, 1.0);
         }
@@ -251,6 +274,7 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
 
         program = buildProgram(vertexShaderSrc, fragmentShaderSrc)
         uMvpLoc = GLES30.glGetUniformLocation(program, "uMVP")
+        uNormalMatrixLoc = GLES30.glGetUniformLocation(program, "uNormalMatrix")
         uHighlightLoc = GLES30.glGetUniformLocation(program, "uHighlight")
         uForceBlackLoc = GLES30.glGetUniformLocation(program, "uForceBlack")
 
@@ -367,6 +391,24 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         setPlaneRotation4(deltaRot4A, axisA, axisB, if (reverse) -90f else 90f)
         mat4MatMul(newOrientation4, deltaRot4A, cubeOrientation4)
         System.arraycopy(newOrientation4, 0, cubeOrientation4, 0, 16)
+    }
+
+    /**
+     * Rotates the room by exactly one 90-degree step so whichever cell the left stick currently
+     * has selected ([selectedRoomAxis]/[selectedRoomSign] -- its *current* room slot, not its
+     * native identity) ends up in the I slot -- for the gamepad's left trigger. A no-op if the
+     * selection is already on the W axis (I or O), since there's no spatial axis left to pair
+     * with W for this: the two cells on the W axis can only swap via a *180*-degree turn, not a
+     * single quarter turn, and this only ever does quarter turns like every other rotation here.
+     *
+     * The rotation direction (`reverse`) is derived, not looked up: [requestCameraRotate90]'s
+     * `(axis, W)` quarter turn sends the room's own +axis direction to +W when [reverse] is
+     * false, and to -W when true (see [setPlaneRotation4]) -- I is -W, so the selected slot's
+     * sign alone picks the direction that lands there.
+     */
+    fun requestMoveSelectedCellToI() {
+        if (selectedRoomAxis == AXIS_W) return
+        requestCameraRotate90(selectedRoomAxis, AXIS_W, reverse = selectedRoomSign > 0)
     }
 
     /** Multiplies the camera distance by [factor] (>1 zooms in, <1 zooms out), clamped so the
@@ -614,6 +656,11 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         Matrix.setLookAtM(viewMatrix, 0, 0f, 0f, distance, 0f, 0f, 0f, 0f, 1f, 0f)
         Matrix.multiplyMM(viewProjMatrix, 0, projMatrix, 0, viewMatrix, 0)
 
+        // Same for every sticker this frame (see normalMat3's doc) -- upload once here rather
+        // than inside the per-sticker loop below.
+        for (k in ROTATION_PART_INDICES.indices) normalMat3[k] = viewOrientation3[ROTATION_PART_INDICES[k]]
+        GLES30.glUniformMatrix3fv(uNormalMatrixLoc, 1, false, normalMat3, 0)
+
         var animT = 0f
         var animDone = false
         if (animating) {
@@ -623,6 +670,7 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
 
         GLES30.glEnableVertexAttribArray(0)
         GLES30.glEnableVertexAttribArray(1)
+        GLES30.glEnableVertexAttribArray(2)
         GLES30.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER, indexBufferId)
 
         val stride = HypercubeGeometry.FLOATS_PER_VERTEX * 4
@@ -709,6 +757,7 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
                 GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, stickerVboIds[colorCell.ordinal])
                 GLES30.glVertexAttribPointer(0, 3, GLES30.GL_FLOAT, false, stride, 0)
                 GLES30.glVertexAttribPointer(1, 3, GLES30.GL_FLOAT, false, stride, 12)
+                GLES30.glVertexAttribPointer(2, 3, GLES30.GL_FLOAT, false, stride, 24)
                 GLES30.glDrawElements(GLES30.GL_TRIANGLES, HypercubeGeometry.INDICES.size, GLES30.GL_UNSIGNED_SHORT, 0)
 
                 if (isHighlighted) {
@@ -732,6 +781,7 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
 
         GLES30.glDisableVertexAttribArray(0)
         GLES30.glDisableVertexAttribArray(1)
+        GLES30.glDisableVertexAttribArray(2)
 
         if (animDone) {
             currentTransforms = after!!

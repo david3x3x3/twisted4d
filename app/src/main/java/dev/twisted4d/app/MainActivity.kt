@@ -239,6 +239,12 @@ class MainActivity : AppCompatActivity() {
                     renderer.requestTwist(cell, fixAxis2, button.primaryPrime)
                 }
             },
+            on4DMoveSelectedToI = {
+                surfaceView.queueEvent {
+                    renderer.snapViewToNearestCardinalOrientation()
+                    renderer.requestMoveSelectedCellToI()
+                }
+            },
         )
         inputManager.registerInputDeviceListener(gamepadInput, null)
         gamepadInput.logAlreadyConnectedDevices()
