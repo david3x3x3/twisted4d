@@ -47,7 +47,10 @@ import kotlin.math.sqrt
  */
 class HypercubeRenderer : GLSurfaceView.Renderer {
 
-    @Volatile private var distance = 22.0f
+    // Scaled up from the room's plain size to compensate for the narrower FOV in
+    // onSurfaceChanged (a telephoto-style flatter perspective needs a proportionally longer
+    // distance to keep the same on-screen framing) -- see that FOV's own doc comment.
+    @Volatile private var distance = 38.0f
 
     // Ordinary 3D-feeling rotation input (touch-drag / left stick) -> XZ/YZ planes.
     @Volatile var stickX: Float = 0f
@@ -299,7 +302,14 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
 
         setIdentity4(cubeOrientation4)
         Matrix.setIdentityM(viewOrientation3, 0)
-        applyScreenRelativeRotation(INITIAL_YAW_DEG, INITIAL_PITCH_DEG) // a pleasant default 3/4 view
+        // Two separate calls, not one combined applyScreenRelativeRotation(yaw, pitch) -- yaw
+        // alone first, then pitch alone, so pitch rotates about the *original* (still-horizontal)
+        // X axis rather than one already tilted by yaw. That's what keeps U/D exactly vertical on
+        // screen for any yaw (rotating around Y can never move a vector that's still purely along
+        // Y), which a single combined call can't guarantee. See INITIAL_VIEW_ORIENTATION, built
+        // the same way, for why snapping back to this default must match this exact order.
+        applyScreenRelativeRotation(INITIAL_YAW_DEG, 0f)
+        applyScreenRelativeRotation(0f, INITIAL_PITCH_DEG)
         Matrix.setIdentityM(cameraSnapSymmetry, 0)
         Matrix.setIdentityM(holdSymmetry, 0)
     }
@@ -307,7 +317,11 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
     override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
         GLES30.glViewport(0, 0, width, height)
         val aspect = width.toFloat() / height.toFloat()
-        Matrix.perspectiveM(projMatrix, 0, 40f, aspect, 0.1f, 100f)
+        // A narrower FOV (was 40f) than CubeRenderer's, paired with a proportionally longer
+        // camera distance below, flattens the perspective -- less size difference between the
+        // near and far walls (e.g. F/R vs. their opposite B/L) -- closer to an isometric look
+        // without going fully orthographic.
+        Matrix.perspectiveM(projMatrix, 0, 24f, aspect, 0.1f, 150f)
     }
 
     /** Accumulates an "ordinary" 3D-feeling touch-drag delta (degrees), applied next frame. */
@@ -788,8 +802,13 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
          * read as a motion rather than a jarring instant jump. */
         private const val SNAP_ANIM_DURATION_NANOS = 100_000_000L // 100ms
 
-        private const val INITIAL_YAW_DEG = -35f
-        private const val INITIAL_PITCH_DEG = 25f
+        // -45 puts F and R (and their opposite mirrors, L and B) symmetrically either side of
+        // center at equal depth; 35.264 (arctan(1/sqrt(2)), the standard "true isometric" tilt)
+        // makes all 6 walls land on a regular hexagon around the center once combined with that
+        // yaw -- see the two-call ordering in onSurfaceCreated and INITIAL_VIEW_ORIENTATION below,
+        // both required for this to come out exactly symmetric rather than approximately so.
+        private const val INITIAL_YAW_DEG = -45f
+        private const val INITIAL_PITCH_DEG = 35.264f
 
         /** Spacing between adjacent stickers within one cell's 3x3x3 block. */
         private const val SPACING = 1.0f
@@ -798,8 +817,8 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
          * further than a tight 3x3x3 grid would need, closer to MagicCube4D's proportions. */
         private const val ROOM_HALF = 6.0f
 
-        private const val MIN_DISTANCE = 8f
-        private const val MAX_DISTANCE = 45f
+        private const val MIN_DISTANCE = 14f
+        private const val MAX_DISTANCE = 77f
 
         const val AXIS_X = 0
         const val AXIS_Y = 1
@@ -816,16 +835,22 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
          * [lerpAndOrthonormalizeRotation]). */
         private val ROTATION_PART_INDICES = intArrayOf(0, 1, 2, 4, 5, 6, 8, 9, 10)
 
-        /** The app's default startup tilt for [viewOrientation3], matching the
-         * applyScreenRelativeRotation call in onSurfaceCreated -- the fixed reference frame for
-         * [snapViewToNearestCardinalOrientation], mirroring [CubeRenderer.INITIAL_ORIENTATION]. */
+        /** The app's default startup tilt for [viewOrientation3] -- must match the *order* of the
+         * two separate applyScreenRelativeRotation calls in onSurfaceCreated (yaw about the fixed
+         * Y axis, composed on the left, *then* pitch about the fixed X axis, composed on the left
+         * of that) exactly, i.e. `rotX * rotY`, not `rotY * rotX`: rotating about Y can never move
+         * a vector already lying exactly along Y, which is what keeps U/D vertical -- but only if
+         * pitch is the outermost (last-applied, leftmost) rotation. Getting this backwards here
+         * wouldn't change how the startup view actually looks (onSurfaceCreated doesn't use this
+         * constant directly), only make [snapViewToNearestCardinalOrientation] snap to a visibly
+         * different, unsymmetric orientation the instant it's triggered. */
         private val INITIAL_VIEW_ORIENTATION: FloatArray = run {
             val rotX = FloatArray(16)
             val rotY = FloatArray(16)
             val combined = FloatArray(16)
             Matrix.setRotateM(rotX, 0, INITIAL_PITCH_DEG, 1f, 0f, 0f)
             Matrix.setRotateM(rotY, 0, INITIAL_YAW_DEG, 0f, 1f, 0f)
-            Matrix.multiplyMM(combined, 0, rotY, 0, rotX, 0)
+            Matrix.multiplyMM(combined, 0, rotX, 0, rotY, 0)
             combined
         }
 
