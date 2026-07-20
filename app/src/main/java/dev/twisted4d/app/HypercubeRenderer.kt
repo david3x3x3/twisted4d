@@ -152,11 +152,19 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
     private val deltaCombined3 = FloatArray(16)
     private val newOrientation3 = FloatArray(16)
 
-    // In-flight snapViewToDefaultOrientation animation state -- see that function's doc.
+    // In-flight snapViewToNearestCardinalOrientation animation state -- see that function's doc.
     private var snapAnimating = false
     private var snapAnimStartNanos = 0L
     private val snapAnimFrom = FloatArray(16)
     private val snapAnimTo = FloatArray(16)
+
+    // The one of CARDINAL_ROTATIONS chosen by the most recent snap (identity until the first
+    // snap ever happens) -- see snapViewToNearestCardinalOrientation's doc and
+    // applyInverseSnapSymmetry, which uses this to keep left-stick wedges pointing at whatever
+    // they visually point at post-snap, not just their pre-snap default room slot.
+    private val cameraSnapSymmetry = FloatArray(16)
+    private val snapSymmetryVecScratch = FloatArray(3)
+    private val snapSymmetryOutScratch = FloatArray(3)
 
     private val stickerModelMatrix = FloatArray(16)
     private val worldModelMatrix = FloatArray(16)
@@ -257,6 +265,7 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         setIdentity4(cubeOrientation4)
         Matrix.setIdentityM(viewOrientation3, 0)
         applyScreenRelativeRotation(INITIAL_YAW_DEG, INITIAL_PITCH_DEG) // a pleasant default 3/4 view
+        Matrix.setIdentityM(cameraSnapSymmetry, 0)
     }
 
     override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
@@ -311,30 +320,45 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
     }
 
     /**
-     * Starts animating [viewOrientation3] back to exactly [INITIAL_VIEW_ORIENTATION], easing
-     * into it over [SNAP_ANIM_DURATION_NANOS] (see [onDrawFrame]'s handling of [snapAnimating])
-     * for a quick but visible rotation rather than a jarring jump. Called (see
-     * [updateCell4Selection] and [MainActivity]'s rotation-button wiring) whenever the puzzle
-     * is about to be interacted with via the gamepad, so the view never stays at an arbitrary,
-     * ugly continuous drag angle.
+     * Starts animating [viewOrientation3] toward whichever of the cube's 24 rotational
+     * symmetries (see [CARDINAL_TARGETS]) is *closest* to the current orientation, easing into
+     * it over [SNAP_ANIM_DURATION_NANOS] (see [onDrawFrame]'s handling of [snapAnimating]) for a
+     * quick but visible rotation rather than a jarring jump -- the same target-finding as
+     * [CubeRenderer.snapToNearestCardinalOrientation] ("maximize the elementwise dot product of
+     * the 3x3 rotation parts"). Called (see [updateCell4Selection] and [MainActivity]'s
+     * rotation-button wiring) whenever the puzzle is about to be interacted with via the
+     * gamepad, so the view never stays at an arbitrary, ugly continuous drag angle -- e.g. drag
+     * the room until native R's wall is closest to where D's wall usually sits, and the snap
+     * settles it precisely there rather than snapping all the way back to the start.
      *
-     * Unlike [CubeRenderer.snapToNearestCardinalOrientation] -- which picks whichever of the
-     * cube's 24 rotational symmetries is *closest* to the current orientation -- this always
-     * targets the *one* default tilt, not the nearest of many equally-valid candidates. That
-     * difference matters here specifically because this puzzle's left-stick cell selection is
-     * deliberately *not* screen-relative (see [updateCell4Selection]'s doc): "down-right" always
-     * means the room's fixed +X slot, regardless of camera angle. 3D mode can get away with
-     * snapping to the nearest of 24 symmetric views because its buttons re-resolve which native
-     * face is at each screen position every press ([CubeRenderer.requestScreenRelativeTwist]);
-     * this puzzle's stick mapping does not adapt like that. If the snap were allowed to land on
-     * a different symmetric orientation (e.g. after a large drag), the room could end up visibly
-     * rotated relative to the view the player is used to -- same cells, same slots, but the
-     * whole layout flipped on screen -- so "down-right" would stop lining up with what's
-     * actually down-right, even though the selection itself was never wrong.
+     * Also records *which* of the 24 symmetries was chosen, into [cameraSnapSymmetry] -- unlike
+     * 3D mode, which can get away with an unconstrained 24-way snap because its buttons
+     * re-resolve which native face is at each screen position every press
+     * ([CubeRenderer.requestScreenRelativeTwist]), this puzzle's left-stick wedges are fixed to
+     * room slots (see [updateCell4Selection]'s doc) and would silently point at the wrong wall
+     * once the snap has picked a symmetry other than identity -- e.g. after the R-near-D drag
+     * above, "down" needs to mean "whatever's visually down", which is now R, not D.
+     * [applyInverseSnapSymmetry] uses [cameraSnapSymmetry] to correct for exactly that.
      */
-    fun snapViewToDefaultOrientation() {
+    fun snapViewToNearestCardinalOrientation() {
+        var bestTarget = CARDINAL_TARGETS[0]
+        var bestSymmetry = CARDINAL_ROTATIONS[0]
+        var bestScore = Float.NEGATIVE_INFINITY
+        for (i in CARDINAL_TARGETS.indices) {
+            val candidate = CARDINAL_TARGETS[i]
+            var score = 0f
+            for (idx in ROTATION_PART_INDICES) {
+                score += candidate[idx] * viewOrientation3[idx]
+            }
+            if (score > bestScore) {
+                bestScore = score
+                bestTarget = candidate
+                bestSymmetry = CARDINAL_ROTATIONS[i]
+            }
+        }
         System.arraycopy(viewOrientation3, 0, snapAnimFrom, 0, 16)
-        System.arraycopy(INITIAL_VIEW_ORIENTATION, 0, snapAnimTo, 0, 16)
+        System.arraycopy(bestTarget, 0, snapAnimTo, 0, 16)
+        System.arraycopy(bestSymmetry, 0, cameraSnapSymmetry, 0, 16)
         snapAnimStartNanos = System.nanoTime()
         snapAnimating = true
     }
@@ -342,18 +366,24 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
     /**
      * Left-stick cell selection for 4D mode (see `todo-controller-input.md`), called via
      * `queueEvent` on every left-stick motion update -- [x]/[y] are the deadzoned stick axes as
-     * reported by [GamepadInputHandler]. A fixed 8-way compass (evenly split into 45-degree
-     * wedges by the stick's raw angle alone -- deliberately *not* approximated against any
-     * on-screen/projected angle) picks one of the 8 room slots -- e.g. down-right always means
-     * "whichever cell currently occupies the room's own +X slot" -- and [nativeCellInRoomSlot]
-     * resolves that slot to its current native occupant via [cubeOrientation4]. Since
-     * [cubeOrientation4] only ever changes via [requestCameraRotate90] (not by dragging the
-     * view around), so does which cell a given stick direction selects.
+     * reported by [GamepadInputHandler]. An 8-way compass (evenly split into 45-degree wedges by
+     * the stick's raw angle alone) picks one of the 6 walls or 2 special (I/O) slots. Each wedge
+     * has a *default* room slot (e.g. down-right defaults to the room's own +X slot) calibrated
+     * for the default camera tilt, but for the 6 wall wedges that default is then corrected by
+     * [applyInverseSnapSymmetry] for whichever of the 24 cardinal symmetries the view is
+     * currently snapped to -- so "down-right" always means whichever wall is *currently*
+     * down-right on screen, not just the wall that's down-right when the camera hasn't been
+     * touched. I/O are excluded from that correction since they're not walls: I always renders
+     * at the room's center and O is never rendered at all (see class doc), so there's no "visual
+     * position" for a camera symmetry to relabel. [nativeCellInRoomSlot] then resolves whichever
+     * slot was landed on to its current native occupant via [cubeOrientation4] -- a completely
+     * separate concern from the camera-symmetry correction above (one tracks which native cell
+     * is in a room slot; the other tracks which room slot is at a screen position), and both can
+     * be in effect at once.
      *
      * As soon as the stick crosses [SIGNIFICANT_STICK_MAGNITUDE] from centered, this also snaps
-     * the view (see [snapViewToDefaultOrientation]) exactly once per press-and-hold
-     * (tracked via [stickWasSignificant]) -- a purely visual realignment (see that function's
-     * doc); it has no bearing on which cell gets selected here.
+     * the view (see [snapViewToNearestCardinalOrientation]) exactly once per press-and-hold
+     * (tracked via [stickWasSignificant]).
      *
      * Below [SIGNIFICANT_STICK_MAGNITUDE], a nonzero-but-small deflection is ignored entirely
      * rather than updating the selected slot -- a real analog stick (especially wireless)
@@ -370,7 +400,7 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         }
         val isSignificant = hypot(x, y) > SIGNIFICANT_STICK_MAGNITUDE
         if (!isSignificant) return
-        if (!stickWasSignificant) snapViewToDefaultOrientation()
+        if (!stickWasSignificant) snapViewToNearestCardinalOrientation()
         stickWasSignificant = true
         stickHeld = true
 
@@ -379,13 +409,18 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         val deg = (Math.toDegrees(atan2(-y.toDouble(), x.toDouble())) + 360.0) % 360.0
         when {
             deg < 22.5 || deg >= 337.5 -> { selectedRoomAxis = AXIS_W; selectedRoomSign = -1 } // right: I's slot
-            deg < 67.5 -> { selectedRoomAxis = AXIS_Z; selectedRoomSign = -1 } // up-right: B's slot
-            deg < 112.5 -> { selectedRoomAxis = AXIS_Y; selectedRoomSign = 1 } // up: U's slot
-            deg < 157.5 -> { selectedRoomAxis = AXIS_X; selectedRoomSign = -1 } // up-left: L's slot
-            deg < 202.5 -> { selectedRoomAxis = AXIS_W; selectedRoomSign = 1 } // left: O's slot
-            deg < 247.5 -> { selectedRoomAxis = AXIS_Z; selectedRoomSign = 1 } // down-left: F's slot
-            deg < 292.5 -> { selectedRoomAxis = AXIS_Y; selectedRoomSign = -1 } // down: D's slot
-            else -> { selectedRoomAxis = AXIS_X; selectedRoomSign = 1 } // down-right: R's slot
+            deg < 202.5 && deg >= 157.5 -> { selectedRoomAxis = AXIS_W; selectedRoomSign = 1 } // left: O's slot
+            else -> {
+                val (defaultAxis, defaultSign) = when {
+                    deg < 67.5 -> AXIS_Z to -1 // up-right: B's default slot
+                    deg < 112.5 -> AXIS_Y to 1 // up: U's default slot
+                    deg < 157.5 -> AXIS_X to -1 // up-left: L's default slot
+                    deg < 247.5 -> AXIS_Z to 1 // down-left: F's default slot
+                    deg < 292.5 -> AXIS_Y to -1 // down: D's default slot
+                    else -> AXIS_X to 1 // down-right: R's default slot
+                }
+                applyInverseSnapSymmetry(defaultAxis, defaultSign)
+            }
         }
     }
 
@@ -399,6 +434,34 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
             if (roomDirScratch4[roomAxis] * roomSign > 0.5f) return cell
         }
         error("cubeOrientation4 should always map every cell to exactly one room slot")
+    }
+
+    /**
+     * Sets [selectedRoomAxis]/[selectedRoomSign] to whichever room slot is *currently* where
+     * ([defaultAxis], [defaultSign]) would be under the default (un-snapped) camera tilt --
+     * i.e. corrects a wedge's default target for [cameraSnapSymmetry], the symmetry the last
+     * [snapViewToNearestCardinalOrientation] call landed on. Since that symmetry only ever
+     * permutes/sign-flips the 3 spatial axes among themselves (never anything fractional -- it's
+     * always exactly one of 24 known rotations), this is exact, not an approximation: apply its
+     * *inverse* (its transpose, since it's orthogonal) to the default axis vector to find which
+     * room axis now maps onto it.
+     */
+    private fun applyInverseSnapSymmetry(defaultAxis: Int, defaultSign: Int) {
+        snapSymmetryVecScratch[0] = 0f; snapSymmetryVecScratch[1] = 0f; snapSymmetryVecScratch[2] = 0f
+        snapSymmetryVecScratch[defaultAxis] = defaultSign.toFloat()
+        for (row in 0 until 3) {
+            var sum = 0f
+            for (col in 0 until 3) sum += cameraSnapSymmetry[row * 4 + col] * snapSymmetryVecScratch[col]
+            snapSymmetryOutScratch[row] = sum
+        }
+        for (axis in 0 until 3) {
+            if (abs(snapSymmetryOutScratch[axis]) > 0.5f) {
+                selectedRoomAxis = axis
+                selectedRoomSign = if (snapSymmetryOutScratch[axis] > 0) 1 else -1
+                return
+            }
+        }
+        error("cameraSnapSymmetry should always map every axis to exactly one other axis")
     }
 
     /**
@@ -654,7 +717,7 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         private const val STICK_DEG_PER_FRAME = 1.2f
         private const val ANIM_DURATION_NANOS = 220_000_000L // 220ms
 
-        /** Duration of the eased view-realignment in [snapViewToDefaultOrientation] --
+        /** Duration of the eased view-realignment in [snapViewToNearestCardinalOrientation] --
          * quick enough to not feel laggy, but long enough (a handful of frames at 60fps) to
          * read as a motion rather than a jarring instant jump. */
         private const val SNAP_ANIM_DURATION_NANOS = 100_000_000L // 100ms
@@ -684,9 +747,8 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         private val ROTATION_PART_INDICES = intArrayOf(0, 1, 2, 4, 5, 6, 8, 9, 10)
 
         /** The app's default startup tilt for [viewOrientation3], matching the
-         * applyScreenRelativeRotation call in onSurfaceCreated -- and, per
-         * [snapViewToDefaultOrientation]'s doc, the *only* target that function ever
-         * eases back to. */
+         * applyScreenRelativeRotation call in onSurfaceCreated -- the fixed reference frame for
+         * [snapViewToNearestCardinalOrientation], mirroring [CubeRenderer.INITIAL_ORIENTATION]. */
         private val INITIAL_VIEW_ORIENTATION: FloatArray = run {
             val rotX = FloatArray(16)
             val rotY = FloatArray(16)
@@ -695,6 +757,53 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
             Matrix.setRotateM(rotY, 0, INITIAL_YAW_DEG, 0f, 1f, 0f)
             Matrix.multiplyMM(combined, 0, rotY, 0, rotX, 0)
             combined
+        }
+
+        /** The 24 orientation-preserving symmetries of a cube -- every signed permutation
+         * matrix (one +-1 entry per row/column) with determinant +1 -- as 4x4 GL matrices.
+         * Identical construction to [CubeRenderer.CARDINAL_ROTATIONS]; used by
+         * [snapViewToNearestCardinalOrientation] to find the closest axis-aligned view, and (via
+         * [cameraSnapSymmetry]) by [applyInverseSnapSymmetry] to correct left-stick wedges for
+         * whichever symmetry got picked. */
+        private val CARDINAL_ROTATIONS: List<FloatArray> = buildList {
+            val permutations = listOf(
+                intArrayOf(0, 1, 2), intArrayOf(0, 2, 1),
+                intArrayOf(1, 0, 2), intArrayOf(1, 2, 0),
+                intArrayOf(2, 0, 1), intArrayOf(2, 1, 0),
+            )
+            for (perm in permutations) {
+                for (sx in intArrayOf(-1, 1)) {
+                    for (sy in intArrayOf(-1, 1)) {
+                        for (sz in intArrayOf(-1, 1)) {
+                            val signs = intArrayOf(sx, sy, sz)
+                            val m = Array(3) { FloatArray(3) }
+                            for (row in 0..2) {
+                                m[row][perm[row]] = signs[row].toFloat()
+                            }
+                            val det = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) -
+                                m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) +
+                                m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0])
+                            if (det > 0f) {
+                                val out = FloatArray(16)
+                                out[0] = m[0][0]; out[1] = m[1][0]; out[2] = m[2][0]; out[3] = 0f
+                                out[4] = m[0][1]; out[5] = m[1][1]; out[6] = m[2][1]; out[7] = 0f
+                                out[8] = m[0][2]; out[9] = m[1][2]; out[10] = m[2][2]; out[11] = 0f
+                                out[12] = 0f; out[13] = 0f; out[14] = 0f; out[15] = 1f
+                                add(out)
+                            }
+                        }
+                    }
+                }
+            }
+        }.also { check(it.size == 24) { "expected 24 cardinal rotations, got ${it.size}" } }
+
+        /** Each [CARDINAL_ROTATIONS] symmetry re-expressed relative to
+         * [INITIAL_VIEW_ORIENTATION] (i.e. INITIAL_VIEW_ORIENTATION * C), so snapping preserves
+         * the app's nice corner-on tilt instead of flattening to a single wall viewed dead-on. */
+        private val CARDINAL_TARGETS: List<FloatArray> = CARDINAL_ROTATIONS.map { c ->
+            val out = FloatArray(16)
+            Matrix.multiplyMM(out, 0, INITIAL_VIEW_ORIENTATION, 0, c, 0)
+            out
         }
 
         private fun setIdentity4(m: FloatArray) {
@@ -735,7 +844,7 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         /**
          * Fills [out] (column-major GL layout) with an approximation of the rotation [t] of the
          * way from [from] to [to] (both column-major GL rotation matrices), for
-         * [snapViewToDefaultOrientation]'s eased snap. A plain per-entry lerp of two
+         * [snapViewToNearestCardinalOrientation]'s eased snap. A plain per-entry lerp of two
          * rotation matrices isn't itself a rotation matrix (its columns won't stay unit length
          * or perpendicular), so this re-orthonormalizes afterward: normalize column 0, subtract
          * off column 1's projection onto it and normalize that, then take column 2 as their
