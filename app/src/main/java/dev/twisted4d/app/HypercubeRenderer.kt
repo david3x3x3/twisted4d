@@ -161,6 +161,20 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
     private val cubeOrientation4 = FloatArray(16)
     private val deltaRot4A = FloatArray(16)
     private val newOrientation4 = FloatArray(16)
+
+    // In-flight requestCameraRotate90 animation state -- cubeOrientation4 itself updates
+    // immediately (same "apply to logical state now, animate the visual separately" pattern as
+    // requestTwist), so onDrawFrame instead renders from effectiveCubeOrientation4: interpolated
+    // from roomAnimBefore (a snapshot from just before the rotation) toward the now-already-final
+    // cubeOrientation4 over ROOM_ANIM_DURATION_NANOS.
+    private var roomAnimating = false
+    private var roomAnimStartNanos = 0L
+    private var roomAnimPlaneA = 0
+    private var roomAnimPlaneB = 0
+    private var roomAnimAngleDeg = 0f
+    private val roomAnimBefore = FloatArray(16)
+    private val roomAnimDeltaRot4 = FloatArray(16)
+    private val effectiveCubeOrientation4 = FloatArray(16)
     private val pieceOrient4 = FloatArray(16)
     private val animRot4 = FloatArray(16)
     private val animatedPos4 = FloatArray(4)
@@ -385,10 +399,20 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
      * The actual "4D camera" control: rotates [cubeOrientation4] by exactly 90 degrees (or -90
      * if [reverse]) in the ([axisA], [axisB]) plane, e.g. Z-W cycles F->I->B->O->F. Since this
      * only ever composes 90-degree rotations, cubeOrientation4 always stays a signed permutation
-     * matrix, keeping the per-sticker slot resolution in [onDrawFrame] exact.
+     * matrix, keeping the per-sticker slot resolution in [onDrawFrame] exact. Ignored while a
+     * twist or another room rotation is still animating, same as [requestTwist]'s own guard --
+     * keeps at most one animation driving the room/pieces at a time.
      */
     fun requestCameraRotate90(axisA: Int, axisB: Int, reverse: Boolean) {
-        setPlaneRotation4(deltaRot4A, axisA, axisB, if (reverse) -90f else 90f)
+        if (animating || roomAnimating) return
+        System.arraycopy(cubeOrientation4, 0, roomAnimBefore, 0, 16)
+        roomAnimPlaneA = axisA
+        roomAnimPlaneB = axisB
+        roomAnimAngleDeg = if (reverse) -90f else 90f
+        roomAnimStartNanos = System.nanoTime()
+        roomAnimating = true
+
+        setPlaneRotation4(deltaRot4A, axisA, axisB, roomAnimAngleDeg)
         mat4MatMul(newOrientation4, deltaRot4A, cubeOrientation4)
         System.arraycopy(newOrientation4, 0, cubeOrientation4, 0, 16)
     }
@@ -586,7 +610,7 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
     }
 
     private fun applyTwistInternal(cell: Cell4, fixAxis2: Axis4, prime: Boolean): Boolean {
-        if (animating || fixAxis2 == cell.axis) return false
+        if (animating || roomAnimating || fixAxis2 == cell.axis) return false
 
         val before = currentTransforms
         NativeLib.cube4Twist(cell.nativeIndex, fixAxis2.nativeIndex, prime)
@@ -642,6 +666,19 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
             } else {
                 lerpAndOrthonormalizeRotation(viewOrientation3, snapAnimFrom, snapAnimTo, snapT)
             }
+        }
+
+        if (roomAnimating) {
+            val roomAnimT = ((System.nanoTime() - roomAnimStartNanos).toFloat() / ROOM_ANIM_DURATION_NANOS).coerceIn(0f, 1f)
+            if (roomAnimT >= 1f) {
+                System.arraycopy(cubeOrientation4, 0, effectiveCubeOrientation4, 0, 16)
+                roomAnimating = false
+            } else {
+                setPlaneRotation4(roomAnimDeltaRot4, roomAnimPlaneA, roomAnimPlaneB, roomAnimAngleDeg * roomAnimT)
+                mat4MatMul(effectiveCubeOrientation4, roomAnimDeltaRot4, roomAnimBefore)
+            }
+        } else {
+            System.arraycopy(cubeOrientation4, 0, effectiveCubeOrientation4, 0, 16)
         }
 
         val (dragYaw, dragPitch) = drainDragDelta()
@@ -700,7 +737,7 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
                 System.arraycopy(animatedOrient4, 0, pieceOrient4, 0, 16)
             }
 
-            mat4VecMul(cameraPos4, cubeOrientation4, pos4)
+            mat4VecMul(cameraPos4, effectiveCubeOrientation4, pos4)
 
             val homeCoords = intArrayOf(home.x, home.y, home.z, home.w)
             for (axisIdx in 0 until 4) {
@@ -710,7 +747,7 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
                 homeDir4[0] = 0f; homeDir4[1] = 0f; homeDir4[2] = 0f; homeDir4[3] = 0f
                 homeDir4[axisIdx] = homeCoord.toFloat()
                 mat4VecMul(currentDir4, pieceOrient4, homeDir4)
-                mat4VecMul(cameraDir4, cubeOrientation4, currentDir4)
+                mat4VecMul(cameraDir4, effectiveCubeOrientation4, currentDir4)
 
                 var slotAxis = -1
                 var slotSign = 0
@@ -851,6 +888,12 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
          * quick enough to not feel laggy, but long enough (a handful of frames at 60fps) to
          * read as a motion rather than a jarring instant jump. */
         private const val SNAP_ANIM_DURATION_NANOS = 100_000_000L // 100ms
+
+        /** Duration of [requestCameraRotate90]'s room-turn animation -- shorter than a twist's
+         * [ANIM_DURATION_NANOS], since this is a quick "see it snap into place" motion rather
+         * than a puzzle move to actually register mentally, and it shouldn't add drag to rapid
+         * repeated presses (e.g. the left trigger). */
+        private const val ROOM_ANIM_DURATION_NANOS = 130_000_000L // 130ms
 
         // -45 puts F and R (and their opposite mirrors, L and B) symmetrically either side of
         // center at equal depth; 35.264 (arctan(1/sqrt(2)), the standard "true isometric" tilt)

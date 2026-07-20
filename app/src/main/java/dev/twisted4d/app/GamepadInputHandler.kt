@@ -99,6 +99,11 @@ class GamepadInputHandler(
         Log.d(TAG, "Right stick axes x=$rx y=$ry (device=${event.device?.name})")
         onRightStick(rx, ry)
 
+        GamepadVisualState.leftStickX = lx
+        GamepadVisualState.leftStickY = ly
+        GamepadVisualState.rightStickX = rx
+        GamepadVisualState.rightStickY = ry
+
         return true
     }
 
@@ -109,6 +114,23 @@ class GamepadInputHandler(
 
         if (event.keyCode == KeyEvent.KEYCODE_BUTTON_L2) {
             invertHeld = event.action == KeyEvent.ACTION_DOWN
+        }
+
+        // Tracks true "currently held" state (both down and up) for GamepadOverlayView's debug
+        // display -- unlike the callbacks below, which only fire once per press and don't care
+        // about release, so they can't drive a light-stays-on-while-held indicator by themselves.
+        if (event.action == KeyEvent.ACTION_DOWN || event.action == KeyEvent.ACTION_UP) {
+            val held = event.action == KeyEvent.ACTION_DOWN
+            when (event.keyCode) {
+                KeyEvent.KEYCODE_BUTTON_Y -> GamepadVisualState.yHeld = held
+                KeyEvent.KEYCODE_BUTTON_A -> GamepadVisualState.aHeld = held
+                KeyEvent.KEYCODE_BUTTON_X -> GamepadVisualState.xHeld = held
+                KeyEvent.KEYCODE_BUTTON_B -> GamepadVisualState.bHeld = held
+                KeyEvent.KEYCODE_BUTTON_L1 -> GamepadVisualState.l1Held = held
+                KeyEvent.KEYCODE_BUTTON_R1 -> GamepadVisualState.r1Held = held
+                KeyEvent.KEYCODE_BUTTON_L2 -> GamepadVisualState.l2Held = held
+                KeyEvent.KEYCODE_BUTTON_R2 -> GamepadVisualState.r2Held = held
+            }
         }
 
         if (event.repeatCount > 0) return // don't spam the log/twists while a button is held

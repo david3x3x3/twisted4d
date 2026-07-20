@@ -170,6 +170,7 @@ class MainActivity : AppCompatActivity() {
         rootLayout.addView(twistRow, bottomCenterParams(bottomMargin = 48))
         rootLayout.addView(modeToggleButton(), topStartParams())
         rootLayout.addView(utilityRow, topEndParams())
+        rootLayout.addView(gamepadOverlayView(), bottomStartParams())
     }
 
     private fun handle3DDrag(surfaceView: GLSurfaceView, renderer: CubeRenderer, event: MotionEvent): Boolean {
@@ -390,6 +391,7 @@ class MainActivity : AppCompatActivity() {
         rootLayout.addView(statusText, topCenterParams())
         rootLayout.addView(leftColumn, centerStartParams())
         rootLayout.addView(rightColumn, centerEndParams())
+        rootLayout.addView(gamepadOverlayView(), bottomStartParams())
     }
 
     /** Drag on the main view controls the ordinary 3D-feeling rotation, same as [handle3DDrag]. */
@@ -525,6 +527,17 @@ class MainActivity : AppCompatActivity() {
         FrameLayout.LayoutParams.WRAP_CONTENT,
         Gravity.CENTER_VERTICAL or Gravity.END,
     ).apply { rightMargin = 12 }
+
+    private fun bottomStartParams() = FrameLayout.LayoutParams(
+        (180 * resources.displayMetrics.density).toInt(),
+        (110 * resources.displayMetrics.density).toInt(),
+        Gravity.BOTTOM or Gravity.START,
+    ).apply { leftMargin = 12; bottomMargin = 12 }
+
+    /** A low-detail live gamepad HUD (see [GamepadOverlayView]) for confirming, after the fact
+     * from a screen recording, exactly which physical control produced a given twist -- both
+     * modes get one since both accept gamepad input. */
+    private fun gamepadOverlayView(): GamepadOverlayView = GamepadOverlayView(this)
 
     // --- lifecycle / input dispatch ----------------------------------------------------------
 
