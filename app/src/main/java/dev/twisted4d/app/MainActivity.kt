@@ -155,7 +155,7 @@ class MainActivity : AppCompatActivity() {
                 android.util.Log.i("TwistDiag", "raw stick x=$x y=$y")
                 surfaceView.queueEvent {
                     renderer.updateCell4Selection(x, y)
-                    android.util.Log.i("TwistDiag", "resolved selectedCell4=${renderer.selectedCell4}")
+                    android.util.Log.i("TwistDiag", "resolved selectedCell4=${renderer.selectedCell4} ${renderer.debugWedgeState}")
                 }
             },
             onRightStick = { x, y -> renderer.stickX = x; renderer.stickY = y },
@@ -330,10 +330,20 @@ class MainActivity : AppCompatActivity() {
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         gamepadInput.handleKeyEvent(event)
 
-        // Some gamepads (e.g. the Retroid Pocket's controller) alias face buttons like B with
-        // a synthetic BACK keycode for launcher-navigation compatibility. Without this, pressing
-        // B to twist R also exits the app via the default Back behavior on the root activity.
-        if (event.keyCode == KeyEvent.KEYCODE_BACK && GamepadInputHandler.isGamepadSource(event.source)) {
+        // Consume every gamepad-sourced key event ourselves rather than falling through to
+        // super.dispatchKeyEvent(): GamepadInputHandler is the sole intended handler for
+        // gamepad input, but an unconsumed event still reaches Android's default view-focus/
+        // click handling, which can silently activate whatever on-screen Button currently has
+        // focus. Confirmed via logcat: every "Up" rotation-button press was also clicking the
+        // on-screen "XW" camera-rotate button (a 90-degree cubeOrientation4 rotation) through
+        // this exact fallthrough -- fully deterministic, no touch involved, and specifically
+        // what broke the second twist in a row (it silently reassigned which native cell the
+        // already-selected room slot pointed at). This subsumes the older, narrower special
+        // case for KEYCODE_BACK (some gamepads, e.g. the Retroid Pocket's controller, alias
+        // face buttons like B with a synthetic BACK keycode for launcher-navigation
+        // compatibility -- without consuming it, pressing B to twist R also exits the app via
+        // the default Back behavior).
+        if (GamepadInputHandler.isGamepadSource(event.source)) {
             return true
         }
         return super.dispatchKeyEvent(event)

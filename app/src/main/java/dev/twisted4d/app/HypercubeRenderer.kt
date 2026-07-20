@@ -66,6 +66,11 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
     private var selectedRoomSign = 1
     private var stickHeld = false
 
+    /** TEMP diagnostic-only: the raw wedge state, to distinguish "the wedge itself changed"
+     * from "the wedge stayed the same but cubeOrientation4 changed underneath it" when read
+     * alongside selectedCell4. */
+    val debugWedgeState: String get() = "axis=$selectedRoomAxis sign=$selectedRoomSign"
+
     /** Which [Cell4] the gamepad's left stick currently has selected for the next twist -- see
      * [updateCell4Selection]. A computed property, re-resolved against the *current*
      * [cubeOrientation4] on every read, rather than a cached value -- otherwise, since a
@@ -326,6 +331,7 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
      * matrix, keeping the per-sticker slot resolution in [onDrawFrame] exact.
      */
     fun requestCameraRotate90(axisA: Int, axisB: Int, reverse: Boolean) {
+        android.util.Log.i("TwistDiag", "requestCameraRotate90 CALLED axisA=$axisA axisB=$axisB reverse=$reverse")
         setPlaneRotation4(deltaRot4A, axisA, axisB, if (reverse) -90f else 90f)
         mat4MatMul(newOrientation4, deltaRot4A, cubeOrientation4)
         System.arraycopy(newOrientation4, 0, cubeOrientation4, 0, 16)
