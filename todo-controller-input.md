@@ -26,18 +26,28 @@ delete) so there's a record of what's done.
       up-left → L, down-right → R, up-right → B, down-left → F, right → I,
       left → O (see HypercubeRenderer.updateCell4Selection).
 
-- [x] Selection should be screen-relative, not tied to fixed native cells:
-      pushing the stick in a direction selects whichever cell currently
-      *looks* like it's in that direction/role, re-resolved against the
-      current (possibly just-snapped) view orientation every time —
-      mirroring how 3D mode's screen-relative twist buttons work. See
-      HypercubeRenderer.resolveWallCellForTargetAngle/nativeCellInRoomSlot.
+- [x] ~~Selection should be screen-relative~~ (tried, reverted 2026-07-20:
+      approximating the stick's fixed 45-degree wedges against each wall's
+      actual on-screen angle broke down badly, e.g. R/L structurally
+      always sit at exactly 0/180 degrees on screen for this camera's
+      pitch-then-yaw, no-roll rotation order — never near the 315/135
+      degree diagonal targets — so R and L could never be selected via
+      the down-right/up-left wedges at all). Selection is a fixed mapping
+      instead: each 45-degree stick wedge always means the same *room
+      slot* (e.g. down-right = the room's own +X slot), resolved to
+      whichever native cell currently occupies that slot via
+      [cubeOrientation4] alone — see
+      HypercubeRenderer.updateCell4Selection/nativeCellInRoomSlot. This
+      still means the mapping isn't static forever: rotating the room via
+      the XW/YW/ZW buttons (which is what actually changes
+      cubeOrientation4) changes which cell a wedge selects. Dragging the
+      view around does not.
 - [x] Snap the view to the nearest "nice" cardinal-ish angle (mirroring
       CubeRenderer.snapToNearestCardinalOrientation) as soon as the left
       stick moves significantly off-center, and also whenever a twist is
       applied via a rotation button (even without actively re-selecting
-      via the stick) — this can reassign which cell a given stick
-      direction/button currently means, same as it does in 3D mode. See
+      via the stick) — purely a visual realignment now (see above), no
+      longer tied to what a stick direction selects. See
       HypercubeRenderer.snapViewToNearestCardinalOrientation.
 
 ## Rotation controls (right-side buttons, once a cell is selected)

@@ -21,8 +21,9 @@ import kotlin.math.sin
  * to: 6 of the cells (U/D/L/R/F/B) sit as separate, non-overlapping 3x3x3 blocks arranged like
  * the walls of a room, a 7th (I) is a 3x3x3 block floating at the center, and the 8th (O) is
  * never rendered at all -- from this viewpoint it's the "outside of everything," which has no
- * meaningful position to draw. Ordinary 3D rotation (touch-drag/left-stick) orbits the whole
- * room so you can see each wall in turn, same feel as [CubeRenderer]. Which native cell
+ * meaningful position to draw. Ordinary 3D rotation (touch-drag/right-stick -- the left stick
+ * is reserved for cell selection, see [updateCell4Selection]) orbits the whole room so you can
+ * see each wall in turn, same feel as [CubeRenderer]. Which native cell
  * currently occupies which of these 8 fixed positions is controlled by [cubeOrientation4], a
  * 4D rotation kept restricted to exact 90-degree increments via [requestCameraRotate90] (a full
  * continuous 4D trackball is both hard to use and unnecessary here) -- e.g. rotating the Z-W
@@ -35,7 +36,7 @@ import kotlin.math.sin
  * is twisted.
  *
  * [cubeOrientation4] only ever changes in exact 90-degree steps (via [requestCameraRotate90]),
- * so it never needs to move continuously. The *continuous* touch-drag/left-stick "look around
+ * so it never needs to move continuously. The *continuous* touch-drag/right-stick "look around
  * the room" feel is a separate, ordinary 3D rotation, [viewOrientation3], applied uniformly to
  * the whole assembled room (both each sticker's position and its mesh, exactly like
  * [CubeRenderer.cubeOrientation]) after room-local positions are resolved. Keeping these two
@@ -282,8 +283,9 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
      * dot product of the 3x3 rotation parts" trick). Called (see [updateCell4Selection] and
      * [MainActivity]'s rotation-button wiring) whenever the puzzle is about to be interacted
      * with via the gamepad, so the view never stays at an arbitrary, ugly continuous drag angle
-     * -- it settles back near a nice cardinal-ish tilt, which (like in 3D mode) can incidentally
-     * change which native cell a given stick direction currently resolves to.
+     * -- purely a visual realignment; unlike in 3D mode, it has no bearing on which cell a given
+     * stick direction selects, since that's resolved via [cubeOrientation4] alone (see
+     * [nativeCellInRoomSlot]), not against the view's current on-screen angle.
      */
     fun snapViewToNearestCardinalOrientation() {
         var best = CARDINAL_TARGETS[0]
@@ -304,18 +306,18 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
     /**
      * Left-stick cell selection for 4D mode (see `todo-controller-input.md`), called via
      * `queueEvent` on every left-stick motion update -- [x]/[y] are the deadzoned stick axes as
-     * reported by [GamepadInputHandler]. Screen-relative, mirroring
-     * [CubeRenderer.requestScreenRelativeTwist]: an 8-way compass read off the stick's angle
-     * picks a *role* (up/down/one of 4 diagonals for the 6 wall cells, or toward/away from the
-     * room's center for I/O), and each role resolves fresh to whichever native cell currently
-     * occupies that position -- see [resolveWallCellForTargetAngle]/[nativeCellInRoomSlot] --
-     * instead of always meaning the same fixed native cell regardless of how the view has been
-     * dragged around.
+     * reported by [GamepadInputHandler]. A fixed 8-way compass (evenly split into 45-degree
+     * wedges by the stick's raw angle alone -- deliberately *not* approximated against any
+     * on-screen/projected angle) picks one of the 8 room slots -- e.g. down-right always means
+     * "whichever cell currently occupies the room's own +X slot" -- and [nativeCellInRoomSlot]
+     * resolves that slot to its current native occupant via [cubeOrientation4]. Since
+     * [cubeOrientation4] only ever changes via [requestCameraRotate90] (not by dragging the
+     * view around), so does which cell a given stick direction selects.
      *
-     * As soon as the stick crosses [SIGNIFICANT_STICK_MAGNITUDE] from centered, this first
-     * snaps the view (see [snapViewToNearestCardinalOrientation]) exactly once per press-and-
-     * hold (tracked via [stickWasSignificant]), so role resolution always runs against a nice
-     * settled angle rather than wherever a prior drag happened to leave it.
+     * As soon as the stick crosses [SIGNIFICANT_STICK_MAGNITUDE] from centered, this also snaps
+     * the view (see [snapViewToNearestCardinalOrientation]) exactly once per press-and-hold
+     * (tracked via [stickWasSignificant]) -- a purely visual realignment (see that function's
+     * doc); it has no bearing on which cell gets selected here.
      */
     fun updateCell4Selection(x: Float, y: Float) {
         if (x == 0f && y == 0f) {
@@ -331,14 +333,14 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         // = right, 90 deg = up, increasing counterclockwise).
         val deg = (Math.toDegrees(atan2(-y.toDouble(), x.toDouble())) + 360.0) % 360.0
         selectedCell4 = when {
-            deg < 22.5 || deg >= 337.5 -> nativeCellInRoomSlot(AXIS_W, -1) // right: whatever's in I
-            deg < 67.5 -> resolveWallCellForTargetAngle(ROLE_TARGET_DEG.getValue(Cell4.B)) // up-right
-            deg < 112.5 -> resolveWallCellForTargetAngle(ROLE_TARGET_DEG.getValue(Cell4.U)) // up
-            deg < 157.5 -> resolveWallCellForTargetAngle(ROLE_TARGET_DEG.getValue(Cell4.L)) // up-left
-            deg < 202.5 -> nativeCellInRoomSlot(AXIS_W, 1) // left: whatever's in O
-            deg < 247.5 -> resolveWallCellForTargetAngle(ROLE_TARGET_DEG.getValue(Cell4.F)) // down-left
-            deg < 292.5 -> resolveWallCellForTargetAngle(ROLE_TARGET_DEG.getValue(Cell4.D)) // down
-            else -> resolveWallCellForTargetAngle(ROLE_TARGET_DEG.getValue(Cell4.R)) // down-right
+            deg < 22.5 || deg >= 337.5 -> nativeCellInRoomSlot(AXIS_W, -1) // right: I's slot
+            deg < 67.5 -> nativeCellInRoomSlot(AXIS_Z, -1) // up-right: B's slot
+            deg < 112.5 -> nativeCellInRoomSlot(AXIS_Y, 1) // up: U's slot
+            deg < 157.5 -> nativeCellInRoomSlot(AXIS_X, -1) // up-left: L's slot
+            deg < 202.5 -> nativeCellInRoomSlot(AXIS_W, 1) // left: O's slot
+            deg < 247.5 -> nativeCellInRoomSlot(AXIS_Z, 1) // down-left: F's slot
+            deg < 292.5 -> nativeCellInRoomSlot(AXIS_Y, -1) // down: D's slot
+            else -> nativeCellInRoomSlot(AXIS_X, 1) // down-right: R's slot
         }
         highlightedCell = selectedCell4
     }
@@ -353,25 +355,6 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
             if (roomDirScratch4[roomAxis] * roomSign > 0.5f) return cell
         }
         error("cubeOrientation4 should always map every cell to exactly one room slot")
-    }
-
-    /** Which native [Cell4] is currently closest, on screen, to [targetDeg] -- checks all 6
-     * wall slots (see [WALL_SLOTS], I/O excluded since they don't occupy an outward wall
-     * position) via [wallAngleDeg] and picks the nearest by circular distance, then resolves
-     * that slot to its current occupant via [nativeCellInRoomSlot]. */
-    private fun resolveWallCellForTargetAngle(targetDeg: Double): Cell4 {
-        var bestSlot = WALL_SLOTS[0]
-        var bestDist = Double.MAX_VALUE
-        for (slot in WALL_SLOTS) {
-            val angle = wallAngleDeg(viewOrientation3, slot.first, slot.second)
-            var dist = abs(angle - targetDeg) % 360.0
-            if (dist > 180.0) dist = 360.0 - dist
-            if (dist < bestDist) {
-                bestDist = dist
-                bestSlot = slot
-            }
-        }
-        return nativeCellInRoomSlot(bestSlot.first, bestSlot.second)
     }
 
     /**
@@ -694,50 +677,6 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
             Matrix.multiplyMM(out, 0, INITIAL_VIEW_ORIENTATION, 0, c, 0)
             out
         }
-
-        /** The 6 room-local wall directions (axis index, sign) -- I/O are excluded since,
-         * unlike U/D/L/R/F/B, they don't occupy an outward-facing wall position (see class
-         * doc), so [resolveWallCellForTargetAngle] only ever needs to search these 6. */
-        private val WALL_SLOTS: List<Pair<Int, Int>> = listOf(
-            AXIS_X to 1, AXIS_X to -1,
-            AXIS_Y to 1, AXIS_Y to -1,
-            AXIS_Z to 1, AXIS_Z to -1,
-        )
-
-        /** The on-screen compass angle (degrees, 0 = right, 90 = up) of the room-local wall at
-         * ([roomAxis], [roomSign]) under a given (column-major GL) view [orientation], found by
-         * applying its rotation to that wall's fixed room-space direction and reading off the
-         * resulting screen-plane (x, y) components. */
-        private fun wallAngleDeg(orientation: FloatArray, roomAxis: Int, roomSign: Int): Double {
-            val v = floatArrayOf(0f, 0f, 0f)
-            v[roomAxis] = roomSign.toFloat()
-            val sx = orientation[0] * v[0] + orientation[4] * v[1] + orientation[8] * v[2]
-            val sy = orientation[1] * v[0] + orientation[5] * v[1] + orientation[9] * v[2]
-            return (Math.toDegrees(atan2(sy.toDouble(), sx.toDouble())) + 360.0) % 360.0
-        }
-
-        /**
-         * Each of the 6 wall roles' target screen angle for [updateCell4Selection], fixed at
-         * whatever angle its *default* native occupant (matching the pre-screen-relative
-         * convention: up=U, down=D, up-left=L, down-right=R, up-right=B, down-left=F) naturally
-         * sits at under [INITIAL_VIEW_ORIENTATION] -- deliberately *not* an assumed-even compass
-         * spacing (45/90/135deg etc). That assumption was wrong: R/L structurally always sit at
-         * exactly 0/180 degrees on screen for this pitch-then-yaw, no-roll camera (pitch only
-         * rotates Y/Z, so it never moves the +-X wall pair off the horizontal, for any pitch or
-         * yaw), never anywhere near a 45-degree diagonal -- so a literal 315-degree target for
-         * "down-right" was consistently closer to D than to R, and R could never win. Using each
-         * role's real natural angle instead means at the default view each role resolves to
-         * exactly its own reference cell (distance 0, so it can't lose to a neighbor), and after
-         * dragging, resolves to whichever wall has now rotated into that same *visual* slot.
-         */
-        private val ROLE_TARGET_DEG: Map<Cell4, Double> = mapOf(
-            Cell4.U to wallAngleDeg(INITIAL_VIEW_ORIENTATION, AXIS_Y, 1),
-            Cell4.D to wallAngleDeg(INITIAL_VIEW_ORIENTATION, AXIS_Y, -1),
-            Cell4.L to wallAngleDeg(INITIAL_VIEW_ORIENTATION, AXIS_X, -1),
-            Cell4.R to wallAngleDeg(INITIAL_VIEW_ORIENTATION, AXIS_X, 1),
-            Cell4.F to wallAngleDeg(INITIAL_VIEW_ORIENTATION, AXIS_Z, 1),
-            Cell4.B to wallAngleDeg(INITIAL_VIEW_ORIENTATION, AXIS_Z, -1),
-        )
 
         private fun setIdentity4(m: FloatArray) {
             for (i in 0 until 16) m[i] = 0f
