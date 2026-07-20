@@ -159,10 +159,21 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
     private val snapAnimTo = FloatArray(16)
 
     // The one of CARDINAL_ROTATIONS chosen by the most recent snap (identity until the first
-    // snap ever happens) -- see snapViewToNearestCardinalOrientation's doc and
-    // applyInverseSnapSymmetry, which uses this to keep left-stick wedges pointing at whatever
-    // they visually point at post-snap, not just their pre-snap default room slot.
+    // snap ever happens) -- see snapViewToNearestCardinalOrientation's doc. Updated by *every*
+    // snap, including the ones on4DRotationButton triggers on every press purely to keep the
+    // view visually tidy -- so this can change without the left stick having moved at all.
     private val cameraSnapSymmetry = FloatArray(16)
+
+    // The symmetry actually used by applyInverseSnapSymmetry -- frozen from cameraSnapSymmetry
+    // at the *start* of each stick hold (see updateCell4Selection) and held fixed until the
+    // stick is released, deliberately not tracking cameraSnapSymmetry live. Without this, a
+    // rotation-button press mid-hold (which re-snaps the camera for its own reasons, e.g. to
+    // correct drift from incidental touchscreen contact while also holding a controller) could
+    // change cameraSnapSymmetry between two motion events of the *same* continuous hold, making
+    // an unmoved stick silently resolve to a different cell -- confirmed via a real-device
+    // logcat capture: (0.576, 0.733) resolved to R, then moments later (0.576, 0.702) -- an
+    // almost identical position, no release in between -- resolved to I.
+    private val holdSymmetry = FloatArray(16)
     private val snapSymmetryVecScratch = FloatArray(3)
     private val snapSymmetryOutScratch = FloatArray(3)
 
@@ -266,6 +277,7 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         Matrix.setIdentityM(viewOrientation3, 0)
         applyScreenRelativeRotation(INITIAL_YAW_DEG, INITIAL_PITCH_DEG) // a pleasant default 3/4 view
         Matrix.setIdentityM(cameraSnapSymmetry, 0)
+        Matrix.setIdentityM(holdSymmetry, 0)
     }
 
     override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
@@ -383,7 +395,9 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
      *
      * As soon as the stick crosses [SIGNIFICANT_STICK_MAGNITUDE] from centered, this also snaps
      * the view (see [snapViewToNearestCardinalOrientation]) exactly once per press-and-hold
-     * (tracked via [stickWasSignificant]).
+     * (tracked via [stickWasSignificant]), and freezes [holdSymmetry] from [cameraSnapSymmetry]
+     * at that same moment -- see [holdSymmetry]'s doc for why the wedge-correcting symmetry
+     * must be captured once per hold rather than read live on every motion event.
      *
      * Below [SIGNIFICANT_STICK_MAGNITUDE], a nonzero-but-small deflection is ignored entirely
      * rather than updating the selected slot -- a real analog stick (especially wireless)
@@ -400,7 +414,10 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         }
         val isSignificant = hypot(x, y) > SIGNIFICANT_STICK_MAGNITUDE
         if (!isSignificant) return
-        if (!stickWasSignificant) snapViewToNearestCardinalOrientation()
+        if (!stickWasSignificant) {
+            snapViewToNearestCardinalOrientation()
+            System.arraycopy(cameraSnapSymmetry, 0, holdSymmetry, 0, 16)
+        }
         stickWasSignificant = true
         stickHeld = true
 
@@ -439,8 +456,9 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
     /**
      * Sets [selectedRoomAxis]/[selectedRoomSign] to whichever room slot is *currently* where
      * ([defaultAxis], [defaultSign]) would be under the default (un-snapped) camera tilt --
-     * i.e. corrects a wedge's default target for [cameraSnapSymmetry], the symmetry the last
-     * [snapViewToNearestCardinalOrientation] call landed on. Since that symmetry only ever
+     * i.e. corrects a wedge's default target for [holdSymmetry], the symmetry frozen at the
+     * start of the current stick hold (*not* the live [cameraSnapSymmetry] -- see
+     * [holdSymmetry]'s doc for why that distinction matters). Since that symmetry only ever
      * permutes/sign-flips the 3 spatial axes among themselves (never anything fractional -- it's
      * always exactly one of 24 known rotations), this is exact, not an approximation: apply its
      * *inverse* (its transpose, since it's orthogonal) to the default axis vector to find which
@@ -451,7 +469,7 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         snapSymmetryVecScratch[defaultAxis] = defaultSign.toFloat()
         for (row in 0 until 3) {
             var sum = 0f
-            for (col in 0 until 3) sum += cameraSnapSymmetry[row * 4 + col] * snapSymmetryVecScratch[col]
+            for (col in 0 until 3) sum += holdSymmetry[row * 4 + col] * snapSymmetryVecScratch[col]
             snapSymmetryOutScratch[row] = sum
         }
         for (axis in 0 until 3) {
@@ -461,7 +479,7 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
                 return
             }
         }
-        error("cameraSnapSymmetry should always map every axis to exactly one other axis")
+        error("holdSymmetry should always map every axis to exactly one other axis")
     }
 
     /**
