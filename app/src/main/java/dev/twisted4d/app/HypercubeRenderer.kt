@@ -10,7 +10,9 @@ import java.nio.ShortBuffer
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
 import kotlin.math.abs
+import kotlin.math.atan2
 import kotlin.math.cos
+import kotlin.math.hypot
 import kotlin.math.roundToInt
 import kotlin.math.sin
 
@@ -59,6 +61,16 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
      * for the next twist is actively deflected (see `todo-controller-input.md`); null shows no
      * highlight. Safe to set from the UI thread. */
     @Volatile var highlightedCell: Cell4? = null
+
+    /** Which [Cell4] the gamepad's left stick currently has selected for the next twist -- see
+     * [updateCell4Selection]. Only ever written on the GL thread, but safe to read from
+     * anywhere ([MainActivity]'s rotation-button handling reads it). */
+    @Volatile var selectedCell4: Cell4 = Cell4.U
+
+    // GL-thread-only edge-detection state for updateCell4Selection's snap-on-deflect behavior.
+    private var stickWasSignificant = false
+    private val roomDirScratch4 = FloatArray(4)
+    private val stickScratchVec3 = FloatArray(3)
 
     private var program = 0
     private var uMvpLoc = 0
@@ -262,6 +274,117 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         setPlaneRotation4(deltaRot4A, axisA, axisB, if (reverse) -90f else 90f)
         mat4MatMul(newOrientation4, deltaRot4A, cubeOrientation4)
         System.arraycopy(newOrientation4, 0, cubeOrientation4, 0, 16)
+    }
+
+    /**
+     * Snaps [viewOrientation3] to whichever of the 24 symmetries of [INITIAL_VIEW_ORIENTATION]
+     * (see [CARDINAL_TARGETS]) requires the smallest rotation from the current one -- mirrors
+     * [CubeRenderer.snapToNearestCardinalOrientation] exactly (same "maximize the elementwise
+     * dot product of the 3x3 rotation parts" trick). Called (see [updateCell4Selection] and
+     * [MainActivity]'s rotation-button wiring) whenever the puzzle is about to be interacted
+     * with via the gamepad, so the view never stays at an arbitrary, ugly continuous drag angle
+     * -- it settles back near a nice cardinal-ish tilt, which (like in 3D mode) can incidentally
+     * change which native cell a given stick direction currently resolves to.
+     */
+    fun snapViewToNearestCardinalOrientation() {
+        var best = CARDINAL_TARGETS[0]
+        var bestScore = Float.NEGATIVE_INFINITY
+        for (candidate in CARDINAL_TARGETS) {
+            var score = 0f
+            for (idx in ROTATION_PART_INDICES) {
+                score += candidate[idx] * viewOrientation3[idx]
+            }
+            if (score > bestScore) {
+                bestScore = score
+                best = candidate
+            }
+        }
+        System.arraycopy(best, 0, viewOrientation3, 0, 16)
+    }
+
+    /**
+     * Left-stick cell selection for 4D mode (see `todo-controller-input.md`), called via
+     * `queueEvent` on every left-stick motion update -- [x]/[y] are the deadzoned stick axes as
+     * reported by [GamepadInputHandler]. Screen-relative, mirroring
+     * [CubeRenderer.requestScreenRelativeTwist]: an 8-way compass read off the stick's angle
+     * picks a *role* (up/down/one of 4 diagonals for the 6 wall cells, or toward/away from the
+     * room's center for I/O), and each role resolves fresh to whichever native cell currently
+     * occupies that position -- see [resolveWallCellForTargetAngle]/[nativeCellInRoomSlot] --
+     * instead of always meaning the same fixed native cell regardless of how the view has been
+     * dragged around.
+     *
+     * As soon as the stick crosses [SIGNIFICANT_STICK_MAGNITUDE] from centered, this first
+     * snaps the view (see [snapViewToNearestCardinalOrientation]) exactly once per press-and-
+     * hold (tracked via [stickWasSignificant]), so role resolution always runs against a nice
+     * settled angle rather than wherever a prior drag happened to leave it.
+     */
+    fun updateCell4Selection(x: Float, y: Float) {
+        if (x == 0f && y == 0f) {
+            stickWasSignificant = false
+            highlightedCell = null
+            return
+        }
+        val isSignificant = hypot(x, y) > SIGNIFICANT_STICK_MAGNITUDE
+        if (isSignificant && !stickWasSignificant) snapViewToNearestCardinalOrientation()
+        stickWasSignificant = isSignificant
+
+        // AXIS_Y is negative when pushed up, so negate it to get a standard math angle (0 deg
+        // = right, 90 deg = up, increasing counterclockwise).
+        val deg = (Math.toDegrees(atan2(-y.toDouble(), x.toDouble())) + 360.0) % 360.0
+        selectedCell4 = when {
+            deg < 22.5 || deg >= 337.5 -> nativeCellInRoomSlot(AXIS_W, -1) // right: whatever's in I
+            deg < 67.5 -> resolveWallCellForTargetAngle(45.0) // up-right
+            deg < 112.5 -> resolveWallCellForTargetAngle(90.0) // up
+            deg < 157.5 -> resolveWallCellForTargetAngle(135.0) // up-left
+            deg < 202.5 -> nativeCellInRoomSlot(AXIS_W, 1) // left: whatever's in O
+            deg < 247.5 -> resolveWallCellForTargetAngle(225.0) // down-left
+            deg < 292.5 -> resolveWallCellForTargetAngle(270.0) // down
+            else -> resolveWallCellForTargetAngle(315.0) // down-right
+        }
+        highlightedCell = selectedCell4
+    }
+
+    /** Which native [Cell4] currently occupies the room slot at ([roomAxis], [roomSign]) --
+     * the inverse of the forward `cubeOrientation4 * cell.outwardNormal()` mapping [onDrawFrame]
+     * uses per-sticker, found here by just checking all 8 cells (cheap; only called on stick
+     * input, never per-frame-per-sticker). */
+    private fun nativeCellInRoomSlot(roomAxis: Int, roomSign: Int): Cell4 {
+        for (cell in Cell4.entries) {
+            mat4VecMul(roomDirScratch4, cubeOrientation4, cell.outwardNormal())
+            if (roomDirScratch4[roomAxis] * roomSign > 0.5f) return cell
+        }
+        error("cubeOrientation4 should always map every cell to exactly one room slot")
+    }
+
+    /** The current on-screen compass angle (degrees, 0 = right, 90 = up) of the room-local wall
+     * at ([roomAxis], [roomSign]), found by applying [viewOrientation3]'s rotation to that
+     * wall's fixed room-space direction and reading off its screen-plane (x, y) components. */
+    private fun wallSlotScreenAngleDeg(roomAxis: Int, roomSign: Int): Double {
+        stickScratchVec3[0] = 0f; stickScratchVec3[1] = 0f; stickScratchVec3[2] = 0f
+        stickScratchVec3[roomAxis] = roomSign.toFloat()
+        val (vx, vy, vz) = stickScratchVec3
+        val sx = viewOrientation3[0] * vx + viewOrientation3[4] * vy + viewOrientation3[8] * vz
+        val sy = viewOrientation3[1] * vx + viewOrientation3[5] * vy + viewOrientation3[9] * vz
+        return (Math.toDegrees(atan2(sy.toDouble(), sx.toDouble())) + 360.0) % 360.0
+    }
+
+    /** Which native [Cell4] is currently closest, on screen, to [targetDeg] -- checks all 6
+     * wall slots (see [WALL_SLOTS], I/O excluded since they don't occupy an outward wall
+     * position) via [wallSlotScreenAngleDeg] and picks the nearest by circular distance, then
+     * resolves that slot to its current occupant via [nativeCellInRoomSlot]. */
+    private fun resolveWallCellForTargetAngle(targetDeg: Double): Cell4 {
+        var bestSlot = WALL_SLOTS[0]
+        var bestDist = Double.MAX_VALUE
+        for (slot in WALL_SLOTS) {
+            val angle = wallSlotScreenAngleDeg(slot.first, slot.second)
+            var dist = abs(angle - targetDeg) % 360.0
+            if (dist > 180.0) dist = 360.0 - dist
+            if (dist < bestDist) {
+                bestDist = dist
+                bestSlot = slot
+            }
+        }
+        return nativeCellInRoomSlot(bestSlot.first, bestSlot.second)
     }
 
     /**
@@ -515,6 +638,84 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         const val AXIS_Y = 1
         const val AXIS_Z = 2
         const val AXIS_W = 3
+
+        /** How far off-center (0..1 stick magnitude) counts as "moving significantly" for
+         * [updateCell4Selection]'s snap-on-deflect trigger -- higher than the plain deadzone
+         * [GamepadInputHandler] already applies, so a small/incidental deflection can still
+         * select a cell without yanking the view around every time. */
+        private const val SIGNIFICANT_STICK_MAGNITUDE = 0.5f
+
+        /** Column-major indices of the 3x3 rotation part within a 4x4 GL matrix (see
+         * [snapViewToNearestCardinalOrientation]). */
+        private val ROTATION_PART_INDICES = intArrayOf(0, 1, 2, 4, 5, 6, 8, 9, 10)
+
+        /** The app's default startup tilt for [viewOrientation3], matching the
+         * applyScreenRelativeRotation call in onSurfaceCreated -- the fixed reference frame for
+         * [snapViewToNearestCardinalOrientation], mirroring
+         * [CubeRenderer.INITIAL_ORIENTATION]. */
+        private val INITIAL_VIEW_ORIENTATION: FloatArray = run {
+            val rotX = FloatArray(16)
+            val rotY = FloatArray(16)
+            val combined = FloatArray(16)
+            Matrix.setRotateM(rotX, 0, INITIAL_PITCH_DEG, 1f, 0f, 0f)
+            Matrix.setRotateM(rotY, 0, INITIAL_YAW_DEG, 0f, 1f, 0f)
+            Matrix.multiplyMM(combined, 0, rotY, 0, rotX, 0)
+            combined
+        }
+
+        /** The 24 orientation-preserving symmetries of a cube -- every signed permutation
+         * matrix (one +-1 entry per row/column) with determinant +1 -- as 4x4 GL matrices.
+         * Identical construction to [CubeRenderer.CARDINAL_ROTATIONS]; used by
+         * [snapViewToNearestCardinalOrientation] to find the closest axis-aligned view. */
+        private val CARDINAL_ROTATIONS: List<FloatArray> = buildList {
+            val permutations = listOf(
+                intArrayOf(0, 1, 2), intArrayOf(0, 2, 1),
+                intArrayOf(1, 0, 2), intArrayOf(1, 2, 0),
+                intArrayOf(2, 0, 1), intArrayOf(2, 1, 0),
+            )
+            for (perm in permutations) {
+                for (sx in intArrayOf(-1, 1)) {
+                    for (sy in intArrayOf(-1, 1)) {
+                        for (sz in intArrayOf(-1, 1)) {
+                            val signs = intArrayOf(sx, sy, sz)
+                            val m = Array(3) { FloatArray(3) }
+                            for (row in 0..2) {
+                                m[row][perm[row]] = signs[row].toFloat()
+                            }
+                            val det = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) -
+                                m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) +
+                                m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0])
+                            if (det > 0f) {
+                                val out = FloatArray(16)
+                                out[0] = m[0][0]; out[1] = m[1][0]; out[2] = m[2][0]; out[3] = 0f
+                                out[4] = m[0][1]; out[5] = m[1][1]; out[6] = m[2][1]; out[7] = 0f
+                                out[8] = m[0][2]; out[9] = m[1][2]; out[10] = m[2][2]; out[11] = 0f
+                                out[12] = 0f; out[13] = 0f; out[14] = 0f; out[15] = 1f
+                                add(out)
+                            }
+                        }
+                    }
+                }
+            }
+        }.also { check(it.size == 24) { "expected 24 cardinal rotations, got ${it.size}" } }
+
+        /** Each [CARDINAL_ROTATIONS] symmetry re-expressed relative to
+         * [INITIAL_VIEW_ORIENTATION] (i.e. INITIAL_VIEW_ORIENTATION * C), so snapping preserves
+         * the app's nice corner-on tilt instead of flattening to a single wall viewed dead-on. */
+        private val CARDINAL_TARGETS: List<FloatArray> = CARDINAL_ROTATIONS.map { c ->
+            val out = FloatArray(16)
+            Matrix.multiplyMM(out, 0, INITIAL_VIEW_ORIENTATION, 0, c, 0)
+            out
+        }
+
+        /** The 6 room-local wall directions (axis index, sign) -- I/O are excluded since,
+         * unlike U/D/L/R/F/B, they don't occupy an outward-facing wall position (see class
+         * doc), so [resolveWallCellForTargetAngle] only ever needs to search these 6. */
+        private val WALL_SLOTS: List<Pair<Int, Int>> = listOf(
+            AXIS_X to 1, AXIS_X to -1,
+            AXIS_Y to 1, AXIS_Y to -1,
+            AXIS_Z to 1, AXIS_Z to -1,
+        )
 
         private fun setIdentity4(m: FloatArray) {
             for (i in 0 until 16) m[i] = 0f

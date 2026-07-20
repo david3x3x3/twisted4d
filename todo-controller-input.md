@@ -22,8 +22,23 @@ delete) so there's a record of what's done.
       "left" or "right" specifically) is not yet locked in — flexible for
       now, can be decided during implementation.
 
-      Decided: up-left → L, down-right → R, up-right → F, down-left → B
-      (see MainActivity.handleCell4StickInput).
+      Decided (as of 2026-07-20, after trying it and reversing a couple):
+      up-left → L, down-right → R, up-right → B, down-left → F, right → I,
+      left → O (see HypercubeRenderer.updateCell4Selection).
+
+- [x] Selection should be screen-relative, not tied to fixed native cells:
+      pushing the stick in a direction selects whichever cell currently
+      *looks* like it's in that direction/role, re-resolved against the
+      current (possibly just-snapped) view orientation every time —
+      mirroring how 3D mode's screen-relative twist buttons work. See
+      HypercubeRenderer.resolveWallCellForTargetAngle/nativeCellInRoomSlot.
+- [x] Snap the view to the nearest "nice" cardinal-ish angle (mirroring
+      CubeRenderer.snapToNearestCardinalOrientation) as soon as the left
+      stick moves significantly off-center, and also whenever a twist is
+      applied via a rotation button (even without actively re-selecting
+      via the stick) — this can reassign which cell a given stick
+      direction/button currently means, same as it does in 3D mode. See
+      HypercubeRenderer.snapViewToNearestCardinalOrientation.
 
 ## Rotation controls (right-side buttons, once a cell is selected)
 
