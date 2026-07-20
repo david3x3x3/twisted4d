@@ -8,8 +8,8 @@ use std::sync::{Mutex, OnceLock};
 
 use cube3::{Cube3, Face};
 use cube4::{Axis4, Cell4, Cube4};
-use jni::objects::JClass;
-use jni::sys::{jboolean, jfloatArray, jint, jstring};
+use jni::objects::{JClass, JIntArray};
+use jni::sys::{jboolean, jfloatArray, jint, jintArray, jstring};
 use jni::JNIEnv;
 
 const CORE_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -90,6 +90,40 @@ pub extern "system" fn Java_dev_twisted4d_app_NativeLib_cubeGetTransforms<'local
 }
 
 #[no_mangle]
+pub extern "system" fn Java_dev_twisted4d_app_NativeLib_cubeGetState<'local>(
+    env: JNIEnv<'local>,
+    _class: JClass<'local>,
+) -> jintArray {
+    let state = cube3().lock().unwrap().get_state();
+    let array = env
+        .new_int_array(state.len() as i32)
+        .expect("failed to allocate int array");
+    env.set_int_array_region(&array, 0, &state)
+        .expect("failed to fill int array");
+    array.into_raw()
+}
+
+/// Replaces native state wholesale from a previously-[cubeGetState]-produced array (e.g.
+/// restoring a puzzle saved before the process died). Silently ignored (leaving current state
+/// untouched) if the array is the wrong length or otherwise unreadable.
+#[no_mangle]
+pub extern "system" fn Java_dev_twisted4d_app_NativeLib_cubeSetState<'local>(
+    env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    state: jintArray,
+) {
+    let state = unsafe { JIntArray::from_raw(state) };
+    if let Ok(len) = env.get_array_length(&state) {
+        let mut buf = vec![0i32; len as usize];
+        if env.get_int_array_region(&state, 0, &mut buf).is_ok() {
+            if let Some(cube) = Cube3::from_state(&buf) {
+                *cube3().lock().unwrap() = cube;
+            }
+        }
+    }
+}
+
+#[no_mangle]
 pub extern "system" fn Java_dev_twisted4d_app_NativeLib_cube4Reset<'local>(
     _env: JNIEnv<'local>,
     _class: JClass<'local>,
@@ -143,4 +177,36 @@ pub extern "system" fn Java_dev_twisted4d_app_NativeLib_cube4GetTransforms<'loca
     env.set_float_array_region(&array, 0, &transforms)
         .expect("failed to fill float array");
     array.into_raw()
+}
+
+#[no_mangle]
+pub extern "system" fn Java_dev_twisted4d_app_NativeLib_cube4GetState<'local>(
+    env: JNIEnv<'local>,
+    _class: JClass<'local>,
+) -> jintArray {
+    let state = cube4().lock().unwrap().get_state();
+    let array = env
+        .new_int_array(state.len() as i32)
+        .expect("failed to allocate int array");
+    env.set_int_array_region(&array, 0, &state)
+        .expect("failed to fill int array");
+    array.into_raw()
+}
+
+/// See [Java_dev_twisted4d_app_NativeLib_cubeSetState] -- same contract, for the 4D cube.
+#[no_mangle]
+pub extern "system" fn Java_dev_twisted4d_app_NativeLib_cube4SetState<'local>(
+    env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    state: jintArray,
+) {
+    let state = unsafe { JIntArray::from_raw(state) };
+    if let Ok(len) = env.get_array_length(&state) {
+        let mut buf = vec![0i32; len as usize];
+        if env.get_int_array_region(&state, 0, &mut buf).is_ok() {
+            if let Some(cube) = Cube4::from_state(&buf) {
+                *cube4().lock().unwrap() = cube;
+            }
+        }
+    }
 }

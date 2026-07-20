@@ -47,7 +47,7 @@ import kotlin.math.sqrt
  */
 class HypercubeRenderer : GLSurfaceView.Renderer {
 
-    @Volatile private var distance = 13.0f
+    @Volatile private var distance = 22.0f
 
     // Ordinary 3D-feeling rotation input (touch-drag / left stick) -> XZ/YZ planes.
     @Volatile var stickX: Float = 0f
@@ -58,6 +58,24 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
 
     /** Called (on the GL thread) right after a twist/scramble/reset with the new solved state. */
     @Volatile var onStateChanged: ((Boolean) -> Unit)? = null
+
+    /** Called (on the GL thread) right after a twist is applied via [requestTwist] -- not fired
+     * by [undoTwist], so a caller (MainActivity) using this to build an undo/log history doesn't
+     * see its own undo moves recorded back into that same history. */
+    @Volatile var onTwistApplied: ((Cell4, Axis4, Boolean) -> Unit)? = null
+
+    /** If set (by MainActivity, *before* `setRenderer` is called -- see build4DScreen), consumed
+     * by [onSurfaceCreated] instead of its usual [NativeLib.cube4Reset] -- restores a puzzle
+     * saved before the process died. See [CubeRenderer.pendingRestoreState]'s doc for why this
+     * must be a plain field set before [setRenderer], not a `queueEvent` call afterward. */
+    @Volatile var pendingRestoreState: IntArray? = null
+
+    // Piece-type filtering: hides whole pieces (all their stickers) by how many of the piece's
+    // HOME_POSITIONS coordinates are nonzero -- 4 = corner, 3 = "edge" -- a solve aid for early
+    // stages. Sticker count is a permanent piece-type identity (see onDrawFrame), so this is a
+    // safe, cheap per-piece check against each piece's *home* position, not its current one.
+    @Volatile var hideCorners: Boolean = false
+    @Volatile var hideEdges: Boolean = false
 
     // Persistent left-stick selection state: which room *slot* (axis+sign), not which resolved
     // cell, is selected -- see selectedCell4's doc for why. GL-thread-only (updateCell4Selection
@@ -270,7 +288,13 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
             GLES30.glBufferData(GLES30.GL_ARRAY_BUFFER, vertices.size * 4, buffer, GLES30.GL_STATIC_DRAW)
         }
 
-        NativeLib.cube4Reset()
+        val restore = pendingRestoreState
+        if (restore != null) {
+            NativeLib.cube4SetState(restore)
+            pendingRestoreState = null
+        } else {
+            NativeLib.cube4Reset()
+        }
         currentTransforms = NativeLib.cube4GetTransforms()
 
         setIdentity4(cubeOrientation4)
@@ -329,6 +353,13 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         setPlaneRotation4(deltaRot4A, axisA, axisB, if (reverse) -90f else 90f)
         mat4MatMul(newOrientation4, deltaRot4A, cubeOrientation4)
         System.arraycopy(newOrientation4, 0, cubeOrientation4, 0, 16)
+    }
+
+    /** Multiplies the camera distance by [factor] (>1 zooms in, <1 zooms out), clamped so the
+     * room can't be zoomed inside-out or pushed arbitrarily far away -- mirrors
+     * [CubeRenderer.zoomBy] exactly, just with a range scaled up for this room's larger extent. */
+    fun zoomBy(factor: Float) {
+        distance = (distance / factor).coerceIn(MIN_DISTANCE, MAX_DISTANCE)
     }
 
     /**
@@ -488,7 +519,18 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
      * another twist is still animating, or if [fixAxis2] equals [cell]'s own axis (invalid).
      */
     fun requestTwist(cell: Cell4, fixAxis2: Axis4, prime: Boolean) {
-        if (animating || fixAxis2 == cell.axis) return
+        if (!applyTwistInternal(cell, fixAxis2, prime)) return
+        onTwistApplied?.invoke(cell, fixAxis2, prime)
+    }
+
+    /** Re-applies [cell]/[fixAxis2] with [prime] inverted, without notifying [onTwistApplied] --
+     * for undo, where the caller is already responsible for popping its own history entry. */
+    fun undoTwist(cell: Cell4, fixAxis2: Axis4, prime: Boolean) {
+        applyTwistInternal(cell, fixAxis2, !prime)
+    }
+
+    private fun applyTwistInternal(cell: Cell4, fixAxis2: Axis4, prime: Boolean): Boolean {
+        if (animating || fixAxis2 == cell.axis) return false
 
         val before = currentTransforms
         NativeLib.cube4Twist(cell.nativeIndex, fixAxis2.nativeIndex, prime)
@@ -509,6 +551,7 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         animating = true
 
         onStateChanged?.invoke(NativeLib.cube4IsSolved())
+        return true
     }
 
     /** Instantly re-randomizes the puzzle (no animation) and refreshes solved state. */
@@ -572,6 +615,11 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         val after = animAfter
         for (i in HypercubeGeometry.HOME_POSITIONS.indices) {
             val home = HypercubeGeometry.HOME_POSITIONS[i]
+            val stickerCount = (if (home.x != 0) 1 else 0) + (if (home.y != 0) 1 else 0) +
+                (if (home.z != 0) 1 else 0) + (if (home.w != 0) 1 else 0)
+            if (hideCorners && stickerCount == 4) continue
+            if (hideEdges && stickerCount == 3) continue
+
             val base = i * 20
             val src = when {
                 !animating -> currentTransforms
@@ -746,8 +794,12 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         /** Spacing between adjacent stickers within one cell's 3x3x3 block. */
         private const val SPACING = 1.0f
 
-        /** Distance from the room's center to each of the 6 wall blocks' center. */
-        private const val ROOM_HALF = 3.5f
+        /** Distance from the room's center to each of the 6 wall blocks' center -- spaced out
+         * further than a tight 3x3x3 grid would need, closer to MagicCube4D's proportions. */
+        private const val ROOM_HALF = 6.0f
+
+        private const val MIN_DISTANCE = 8f
+        private const val MAX_DISTANCE = 45f
 
         const val AXIS_X = 0
         const val AXIS_Y = 1

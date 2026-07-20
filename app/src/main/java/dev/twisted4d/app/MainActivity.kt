@@ -1,6 +1,9 @@
 package dev.twisted4d.app
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
 import android.hardware.input.InputManager
 import android.opengl.GLSurfaceView
 import android.os.Bundle
@@ -14,6 +17,10 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.File
+import java.util.Collections
 
 class MainActivity : AppCompatActivity() {
 
@@ -32,12 +39,34 @@ class MainActivity : AppCompatActivity() {
     private var lastTouchY = 0f
     private lateinit var scaleGestureDetector: ScaleGestureDetector
 
+    // Twist history for the currently-built screen's mode -- written from the GL thread
+    // (onTwistApplied) and read/cleared from the UI thread (undo/scramble/reset/log buttons),
+    // so both need to be synchronizedList plus explicit `synchronized(...)` around compound
+    // check-then-act sequences. Instance fields (not locals inside build3DScreen/build4DScreen)
+    // so onPause can read the active mode's history to persist it -- see saveState/loadState.
+    private val moveHistory3D = Collections.synchronizedList(mutableListOf<Pair<Face, Boolean>>())
+    private val moveHistory4D = Collections.synchronizedList(mutableListOf<Triple<Cell4, Axis4, Boolean>>())
+
+    // Set by loadState() (called once, before the first rebuildUi()) when a saved puzzle state
+    // exists for that mode; consumed (and nulled) by build3DScreen/build4DScreen the first time
+    // they run afterward, restoring native state instead of the fresh solved() reset that
+    // onSurfaceCreated always performs. See restoreState on both renderers.
+    private var pendingRestoreState3D: IntArray? = null
+    private var pendingRestoreState4D: IntArray? = null
+
+    // Persisted alongside state (see saveState) so the status label can be initialized correctly
+    // on restore -- onSurfaceCreated's restore path runs on the GL thread with no reliable
+    // signal back to the UI thread before the first frame, so this can't just be queried live.
+    private var pendingRestoreSolved3D: Boolean? = null
+    private var pendingRestoreSolved4D: Boolean? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
         Log.i(TAG, "puzzle-core version: ${NativeLib.coreVersion()}")
 
         inputManager = getSystemService(Context.INPUT_SERVICE) as InputManager
+        loadState()
         rootLayout = FrameLayout(this)
         setContentView(rootLayout)
         rebuildUi()
@@ -58,6 +87,16 @@ class MainActivity : AppCompatActivity() {
 
     private fun build3DScreen() {
         val renderer = CubeRenderer()
+        val initiallySolved: Boolean
+        if (pendingRestoreState3D == null) {
+            moveHistory3D.clear()
+            initiallySolved = true
+        } else {
+            renderer.pendingRestoreState = pendingRestoreState3D
+            pendingRestoreState3D = null
+            initiallySolved = pendingRestoreSolved3D ?: true
+            pendingRestoreSolved3D = null
+        }
         val surfaceView = GLSurfaceView(this).apply {
             setEGLContextClientVersion(3)
             setRenderer(renderer)
@@ -85,10 +124,12 @@ class MainActivity : AppCompatActivity() {
         inputManager.registerInputDeviceListener(gamepadInput, null)
         gamepadInput.logAlreadyConnectedDevices()
 
-        val statusText = statusTextView()
+        val statusText = statusTextView(initiallySolved)
         renderer.onStateChanged = { solved ->
             runOnUiThread { statusText.text = if (solved) SOLVED_LABEL else "" }
         }
+
+        renderer.onTwistApplied = { face, prime -> moveHistory3D.add(face to prime) }
 
         val twistRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -107,8 +148,20 @@ class MainActivity : AppCompatActivity() {
         }
 
         val utilityRow = utilityRow(
-            onScramble = { surfaceView.queueEvent { renderer.requestScramble(SCRAMBLE_MOVE_COUNT_3D) } },
-            onReset = { surfaceView.queueEvent { renderer.requestReset() } },
+            onScramble = { surfaceView.queueEvent { renderer.requestScramble(SCRAMBLE_MOVE_COUNT_3D) }; moveHistory3D.clear() },
+            onReset = { surfaceView.queueEvent { renderer.requestReset() }; moveHistory3D.clear() },
+            onUndo = {
+                synchronized(moveHistory3D) {
+                    if (moveHistory3D.isNotEmpty()) {
+                        val (face, prime) = moveHistory3D.removeAt(moveHistory3D.size - 1)
+                        surfaceView.queueEvent { renderer.undoTwist(face, prime) }
+                    }
+                }
+            },
+            onShareLog = {
+                val snapshot = synchronized(moveHistory3D) { moveHistory3D.toList() }
+                shareTwistLog(formatTwistLog3D(snapshot))
+            },
         )
 
         rootLayout.addView(surfaceView)
@@ -143,11 +196,31 @@ class MainActivity : AppCompatActivity() {
 
     private fun build4DScreen() {
         val renderer = HypercubeRenderer()
+        val initiallySolved: Boolean
+        if (pendingRestoreState4D == null) {
+            moveHistory4D.clear()
+            initiallySolved = true
+        } else {
+            renderer.pendingRestoreState = pendingRestoreState4D
+            pendingRestoreState4D = null
+            initiallySolved = pendingRestoreSolved4D ?: true
+            pendingRestoreSolved4D = null
+        }
         val surfaceView = GLSurfaceView(this).apply {
             setEGLContextClientVersion(3)
             setRenderer(renderer)
         }
         glSurfaceView = surfaceView
+
+        scaleGestureDetector = ScaleGestureDetector(
+            this,
+            object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+                override fun onScale(detector: ScaleGestureDetector): Boolean {
+                    renderer.zoomBy(detector.scaleFactor)
+                    return true
+                }
+            },
+        )
         surfaceView.setOnTouchListener { _, event -> handle4DDrag(surfaceView, renderer, event) }
 
         gamepadInput = GamepadInputHandler(
@@ -169,10 +242,12 @@ class MainActivity : AppCompatActivity() {
         inputManager.registerInputDeviceListener(gamepadInput, null)
         gamepadInput.logAlreadyConnectedDevices()
 
-        val statusText = statusTextView()
+        val statusText = statusTextView(initiallySolved)
         renderer.onStateChanged = { solved ->
             runOnUiThread { statusText.text = if (solved) SOLVED_LABEL else "" }
         }
+
+        renderer.onTwistApplied = { cell, fixAxis2, prime -> moveHistory4D.add(Triple(cell, fixAxis2, prime)) }
 
         val cellRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -234,13 +309,44 @@ class MainActivity : AppCompatActivity() {
         }
 
         val utilityRow = utilityRow(
-            onScramble = { surfaceView.queueEvent { renderer.requestScramble(SCRAMBLE_MOVE_COUNT_4D) } },
-            onReset = { surfaceView.queueEvent { renderer.requestReset() } },
+            onScramble = { surfaceView.queueEvent { renderer.requestScramble(SCRAMBLE_MOVE_COUNT_4D) }; moveHistory4D.clear() },
+            onReset = { surfaceView.queueEvent { renderer.requestReset() }; moveHistory4D.clear() },
+            onUndo = {
+                synchronized(moveHistory4D) {
+                    if (moveHistory4D.isNotEmpty()) {
+                        val (cell, fixAxis2, prime) = moveHistory4D.removeAt(moveHistory4D.size - 1)
+                        surfaceView.queueEvent { renderer.undoTwist(cell, fixAxis2, prime) }
+                    }
+                }
+            },
+            onShareLog = {
+                val snapshot = synchronized(moveHistory4D) { moveHistory4D.toList() }
+                shareTwistLog(formatTwistLog4D(snapshot))
+            },
         )
+
+        val filterRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            fun filterToggle(label: String, apply: (Boolean) -> Unit): Button =
+                Button(this@MainActivity).apply {
+                    text = label
+                    alpha = 0.5f
+                    var hidden = false
+                    setOnClickListener {
+                        hidden = !hidden
+                        apply(hidden)
+                        alpha = if (hidden) 1f else 0.5f
+                        surfaceView.requestRender()
+                    }
+                }.also { addView(it) }
+            filterToggle("Hide 4c") { renderer.hideCorners = it }
+            filterToggle("Hide 3c") { renderer.hideEdges = it }
+        }
 
         rootLayout.addView(surfaceView)
         rootLayout.addView(statusText, topCenterParams())
         rootLayout.addView(rotateRow, topCenterParams().apply { topMargin = 80 })
+        rootLayout.addView(filterRow, topCenterParams().apply { topMargin = 132 })
         rootLayout.addView(axisRow, bottomCenterParams(bottomMargin = 220))
         rootLayout.addView(cellRow, bottomCenterParams(bottomMargin = 48))
         rootLayout.addView(modeToggleButton(), topStartParams())
@@ -249,8 +355,9 @@ class MainActivity : AppCompatActivity() {
 
     /** Drag on the main view controls the ordinary 3D-feeling rotation, same as [handle3DDrag]. */
     private fun handle4DDrag(surfaceView: GLSurfaceView, renderer: HypercubeRenderer, event: MotionEvent): Boolean {
-        when (event.action) {
-            MotionEvent.ACTION_DOWN -> {
+        scaleGestureDetector.onTouchEvent(event)
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_UP -> {
                 lastTouchX = event.x
                 lastTouchY = event.y
             }
@@ -259,8 +366,10 @@ class MainActivity : AppCompatActivity() {
                 val dy = event.y - lastTouchY
                 lastTouchX = event.x
                 lastTouchY = event.y
-                renderer.addDragDelta(dx * DRAG_SENSITIVITY, dy * DRAG_SENSITIVITY)
-                surfaceView.requestRender()
+                if (!scaleGestureDetector.isInProgress) {
+                    renderer.addDragDelta(dx * DRAG_SENSITIVITY, dy * DRAG_SENSITIVITY)
+                    surfaceView.requestRender()
+                }
             }
         }
         return true
@@ -268,8 +377,8 @@ class MainActivity : AppCompatActivity() {
 
     // --- shared UI helpers -------------------------------------------------------------------
 
-    private fun statusTextView(): TextView = TextView(this).apply {
-        text = SOLVED_LABEL
+    private fun statusTextView(initiallySolved: Boolean = true): TextView = TextView(this).apply {
+        text = if (initiallySolved) SOLVED_LABEL else ""
         textSize = 18f
         setPadding(24, 16, 24, 16)
     }
@@ -282,11 +391,43 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun utilityRow(onScramble: () -> Unit, onReset: () -> Unit): LinearLayout =
+    private fun utilityRow(
+        onScramble: () -> Unit,
+        onReset: () -> Unit,
+        onUndo: () -> Unit,
+        onShareLog: () -> Unit,
+    ): LinearLayout =
         LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             addView(Button(this@MainActivity).apply { text = "Scramble"; setOnClickListener { onScramble() } })
             addView(Button(this@MainActivity).apply { text = "Reset"; setOnClickListener { onReset() } })
+            addView(Button(this@MainActivity).apply { text = "Undo"; setOnClickListener { onUndo() } })
+            addView(Button(this@MainActivity).apply { text = "Log"; setOnClickListener { onShareLog() } })
+        }
+
+    /** Puts [log] on the clipboard and offers the Android share sheet for it -- used by both
+     * modes' "Log" button to export their twist history (see `todo-controller-input.md`'s
+     * milestone-6 notes for why this is our own plain-text notation, not a literal MagicCube4D
+     * log file). */
+    private fun shareTwistLog(log: String) {
+        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.setPrimaryClip(ClipData.newPlainText("twisted4d move log", log))
+        val shareIntent = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_TEXT, log)
+        }
+        startActivity(Intent.createChooser(shareIntent, "Share move log"))
+    }
+
+    /** e.g. "R F' U" -- standard face notation, prime marks a counterclockwise twist. */
+    private fun formatTwistLog3D(history: List<Pair<Face, Boolean>>): String =
+        history.joinToString(" ") { (face, prime) -> face.label + (if (prime) "'" else "") }
+
+    /** e.g. "F +x R' +w" -- cell twisted, prime marks counterclockwise, then the fixed axis
+     * (see `todo-controller-input.md`'s milestone-6 notes: our own notation, not MC4D's). */
+    private fun formatTwistLog4D(history: List<Triple<Cell4, Axis4, Boolean>>): String =
+        history.joinToString(" ") { (cell, fixAxis2, prime) ->
+            cell.label + (if (prime) "'" else "") + " +" + fixAxis2.label
         }
 
     private fun topCenterParams() = FrameLayout.LayoutParams(
@@ -350,6 +491,80 @@ class MainActivity : AppCompatActivity() {
     override fun onPause() {
         super.onPause()
         glSurfaceView?.onPause()
+        saveState()
+    }
+
+    /** Persists the active mode's puzzle state + twist history to [SAVE_FILE_NAME] in
+     * [filesDir], so [loadState] can restore it on the next launch even after the process was
+     * killed outright (home + swipe-away, not just backgrounding) -- onPause is used rather than
+     * onStop/onDestroy since only onPause is reliably called in that case. Native state itself
+     * is read directly via NativeLib (safe from any thread -- see cube3()/cube4()'s Mutex on the
+     * Rust side), not through the renderer's GL-thread-only cached `currentTransforms`. */
+    private fun saveState() {
+        try {
+            val stateJson = JSONArray()
+            val historyJson = JSONArray()
+            if (is4DMode) {
+                NativeLib.cube4GetState().forEach { stateJson.put(it) }
+                synchronized(moveHistory4D) {
+                    moveHistory4D.forEach { (cell, fixAxis2, prime) ->
+                        historyJson.put(JSONArray().put(cell.ordinal).put(fixAxis2.ordinal).put(prime))
+                    }
+                }
+            } else {
+                NativeLib.cubeGetState().forEach { stateJson.put(it) }
+                synchronized(moveHistory3D) {
+                    moveHistory3D.forEach { (face, prime) ->
+                        historyJson.put(JSONArray().put(face.ordinal).put(prime))
+                    }
+                }
+            }
+            val solved = if (is4DMode) NativeLib.cube4IsSolved() else NativeLib.cubeIsSolved()
+            val root = JSONObject()
+                .put("mode4D", is4DMode)
+                .put("state", stateJson)
+                .put("history", historyJson)
+                .put("solved", solved)
+            File(filesDir, SAVE_FILE_NAME).writeText(root.toString())
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to save puzzle state", e)
+        }
+    }
+
+    /** Inverse of [saveState] -- called once from [onCreate], before the first [rebuildUi],
+     * setting [is4DMode] and the pending-restore fields that [build3DScreen]/[build4DScreen]
+     * consume. Leaves everything untouched (fresh solved puzzle) if there's no save file or it
+     * fails to parse. */
+    private fun loadState() {
+        try {
+            val file = File(filesDir, SAVE_FILE_NAME)
+            if (!file.exists()) return
+            val root = JSONObject(file.readText())
+            is4DMode = root.getBoolean("mode4D")
+            val stateJson = root.getJSONArray("state")
+            val state = IntArray(stateJson.length()) { stateJson.getInt(it) }
+            val historyJson = root.getJSONArray("history")
+            val solved = root.optBoolean("solved", true)
+            if (is4DMode) {
+                pendingRestoreState4D = state
+                pendingRestoreSolved4D = solved
+                for (i in 0 until historyJson.length()) {
+                    val entry = historyJson.getJSONArray(i)
+                    moveHistory4D.add(
+                        Triple(Cell4.entries[entry.getInt(0)], Axis4.entries[entry.getInt(1)], entry.getBoolean(2)),
+                    )
+                }
+            } else {
+                pendingRestoreState3D = state
+                pendingRestoreSolved3D = solved
+                for (i in 0 until historyJson.length()) {
+                    val entry = historyJson.getJSONArray(i)
+                    moveHistory3D.add(Face.entries[entry.getInt(0)] to entry.getBoolean(1))
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to load puzzle state", e)
+        }
     }
 
     override fun onDestroy() {
@@ -365,5 +580,6 @@ class MainActivity : AppCompatActivity() {
         private const val SCRAMBLE_MOVE_COUNT_3D = 25
         private const val SCRAMBLE_MOVE_COUNT_4D = 25
         private const val SOLVED_LABEL = "SOLVED"
+        private const val SAVE_FILE_NAME = "puzzle_state.json"
     }
 }

@@ -23,6 +23,11 @@ object NativeLib {
      */
     external fun cubeGetTransforms(): FloatArray
 
+    /** 26 cubies x 12 ints, same layout as [cubeGetTransforms] but exact integers -- for
+     * persisting/restoring puzzle state across process death (see MainActivity). */
+    external fun cubeGetState(): IntArray
+    external fun cubeSetState(state: IntArray)
+
     external fun cube4Reset()
     external fun cube4Twist(cell: Int, fixAxis2: Int, prime: Boolean)
     external fun cube4IsSolved(): Boolean
@@ -33,4 +38,9 @@ object NativeLib {
      * [HypercubeGeometry.HOME_POSITIONS] by index -- see cube4.rs.
      */
     external fun cube4GetTransforms(): FloatArray
+
+    /** 80 pieces x 20 ints, same layout as [cube4GetTransforms] but exact integers -- for
+     * persisting/restoring puzzle state across process death (see MainActivity). */
+    external fun cube4GetState(): IntArray
+    external fun cube4SetState(state: IntArray)
 }

@@ -190,6 +190,44 @@ impl Cube3 {
         }
         out
     }
+
+    /// Flattened per-cubie [pos.0, pos.1, pos.2, orient rows...] in solved-order (12 ints x 26
+    /// cubies = 312 ints total) -- an exact, lossless integer encoding (unlike [Cube3::transforms],
+    /// which is meant for rendering) used to persist/restore puzzle state across process death.
+    pub fn get_state(&self) -> Vec<i32> {
+        let mut out = Vec::with_capacity(self.cubies.len() * 12);
+        for cubie in &self.cubies {
+            out.push(cubie.pos.0);
+            out.push(cubie.pos.1);
+            out.push(cubie.pos.2);
+            for row in cubie.orient.iter() {
+                for &v in row.iter() {
+                    out.push(v);
+                }
+            }
+        }
+        out
+    }
+
+    /// Inverse of [Cube3::get_state]. Returns `None` if `data`'s length doesn't match the
+    /// expected 312 ints, leaving the caller free to fall back to [Cube3::solved].
+    pub fn from_state(data: &[i32]) -> Option<Cube3> {
+        if data.len() != 26 * 12 {
+            return None;
+        }
+        let mut cubies = Vec::with_capacity(26);
+        for chunk in data.chunks_exact(12) {
+            let pos = (chunk[0], chunk[1], chunk[2]);
+            let mut orient = [[0; 3]; 3];
+            for r in 0..3 {
+                for c in 0..3 {
+                    orient[r][c] = chunk[3 + r * 3 + c];
+                }
+            }
+            cubies.push(Cubie { pos, orient });
+        }
+        Some(Cube3 { cubies })
+    }
 }
 
 #[cfg(test)]
@@ -264,5 +302,22 @@ mod tests {
         for pair in moves.windows(2) {
             assert_ne!(pair[0].0, pair[1].0);
         }
+    }
+
+    #[test]
+    fn get_state_round_trips_through_from_state() {
+        let mut cube = Cube3::solved();
+        cube.scramble(15);
+        let restored = Cube3::from_state(&cube.get_state()).expect("valid state");
+        assert!(cube
+            .cubies
+            .iter()
+            .zip(restored.cubies.iter())
+            .all(|(a, b)| a.pos == b.pos && a.orient == b.orient));
+    }
+
+    #[test]
+    fn from_state_rejects_wrong_length() {
+        assert!(Cube3::from_state(&[0; 10]).is_none());
     }
 }

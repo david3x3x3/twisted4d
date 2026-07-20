@@ -54,6 +54,20 @@ class CubeRenderer : GLSurfaceView.Renderer {
     /** Called (on the GL thread) right after a twist/scramble/reset with the new solved state. */
     @Volatile var onStateChanged: ((Boolean) -> Unit)? = null
 
+    /** Called (on the GL thread) right after a twist is applied via [requestTwist] -- not fired
+     * by [undoTwist], so a caller (MainActivity) using this to build an undo/log history doesn't
+     * see its own undo moves recorded back into that same history. */
+    @Volatile var onTwistApplied: ((Face, Boolean) -> Unit)? = null
+
+    /** If set (by MainActivity, *before* `setRenderer` is called -- see build3DScreen), consumed
+     * by [onSurfaceCreated] instead of its usual [NativeLib.cubeReset] -- restores a puzzle saved
+     * before the process died. Must be set this way, not via `queueEvent` after construction: the
+     * GL thread's first loop iteration can run an already-queued event *before* it calls
+     * [onSurfaceCreated] for the first time, which would otherwise silently clobber the restore
+     * with a fresh solved() reset. A plain field (not queueEvent) set before [setRenderer] avoids
+     * the race entirely -- thread-start already guarantees the GL thread sees it. */
+    @Volatile var pendingRestoreState: IntArray? = null
+
     private var program = 0
     private var uMvpLoc = 0
 
@@ -154,7 +168,13 @@ class CubeRenderer : GLSurfaceView.Renderer {
             )
         }
 
-        NativeLib.cubeReset()
+        val restore = pendingRestoreState
+        if (restore != null) {
+            NativeLib.cubeSetState(restore)
+            pendingRestoreState = null
+        } else {
+            NativeLib.cubeReset()
+        }
         currentTransforms = NativeLib.cubeGetTransforms()
 
         Matrix.setIdentityM(cubeOrientation, 0)
@@ -271,7 +291,18 @@ class CubeRenderer : GLSurfaceView.Renderer {
      * Ignored if another twist is still animating.
      */
     fun requestTwist(face: Face, prime: Boolean) {
-        if (animating) return
+        if (!applyTwistInternal(face, prime)) return
+        onTwistApplied?.invoke(face, prime)
+    }
+
+    /** Re-applies [face] with [prime] inverted, without notifying [onTwistApplied] -- for undo,
+     * where the caller is already responsible for popping its own history entry. */
+    fun undoTwist(face: Face, prime: Boolean) {
+        applyTwistInternal(face, !prime)
+    }
+
+    private fun applyTwistInternal(face: Face, prime: Boolean): Boolean {
+        if (animating) return false
 
         val before = currentTransforms
         NativeLib.cubeTwist(face.nativeIndex, prime)
@@ -293,6 +324,7 @@ class CubeRenderer : GLSurfaceView.Renderer {
         animating = true
 
         onStateChanged?.invoke(NativeLib.cubeIsSolved())
+        return true
     }
 
     /** Instantly re-randomizes the cube (no animation) and refreshes solved state. */

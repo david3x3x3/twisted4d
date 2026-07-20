@@ -14,7 +14,7 @@ data class Vec4i(val x: Int, val y: Int, val z: Int, val w: Int)
  */
 object HypercubeGeometry {
 
-    const val STICKER_HALF = 0.46f
+    const val STICKER_HALF = 0.28f // ~60% of the original 0.46 half-extent, per grid spacing 1.0
     const val FLOATS_PER_VERTEX = 6 // x, y, z, r, g, b
     const val VERTICES_PER_STICKER = 24 // 4 per face x 6 faces
 
@@ -41,8 +41,8 @@ object HypercubeGeometry {
         floatArrayOf(0.80f, 0.15f, 0.15f), // R: red
         floatArrayOf(0.10f, 0.60f, 0.20f), // F: green
         floatArrayOf(0.10f, 0.35f, 0.80f), // B: blue
-        floatArrayOf(0.05f, 0.80f, 0.80f), // I: cyan
-        floatArrayOf(0.65f, 0.10f, 0.85f), // O: purple (never actually rendered)
+        floatArrayOf(0.55f, 0.15f, 0.75f), // I: purple
+        floatArrayOf(0.95f, 0.45f, 0.70f), // O: pink (never actually rendered)
     )
 
     /** Shared index buffer: 6 faces x 2 triangles x 3 indices, reused by every sticker. */
