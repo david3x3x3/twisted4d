@@ -4,6 +4,42 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
+    <!-- game controller, behind the wireframe -->
+    <path
+        android:pathData="M36,33 L72,33 C79,33 86,36 86,46 C86,51 92,51 92,59 C92,67 88,75 82,75 C77,75 71,70 68,63 L40,63 C37,70 31,75 26,75 C20,75 16,67 16,59 C16,51 22,51 22,46 C22,36 29,33 36,33 Z"
+        android:strokeColor="#A7BBE0"
+        android:strokeWidth="2"
+        android:fillColor="#00000000" />
+    <path
+        android:pathData="M33,45 L43,45 L43,49 L33,49 Z"
+        android:strokeColor="#A7BBE0"
+        android:strokeWidth="1.5"
+        android:fillColor="#00000000" />
+    <path
+        android:pathData="M36,42 L40,42 L40,52 L36,52 Z"
+        android:strokeColor="#A7BBE0"
+        android:strokeWidth="1.5"
+        android:fillColor="#00000000" />
+    <path
+        android:pathData="M67.7,40 A2.3,2.3 0 1 0 72.3,40 A2.3,2.3 0 1 0 67.7,40 Z"
+        android:strokeColor="#A7BBE0"
+        android:strokeWidth="1.5"
+        android:fillColor="#00000000" />
+    <path
+        android:pathData="M73.7,47 A2.3,2.3 0 1 0 78.3,47 A2.3,2.3 0 1 0 73.7,47 Z"
+        android:strokeColor="#A7BBE0"
+        android:strokeWidth="1.5"
+        android:fillColor="#00000000" />
+    <path
+        android:pathData="M67.7,54 A2.3,2.3 0 1 0 72.3,54 A2.3,2.3 0 1 0 67.7,54 Z"
+        android:strokeColor="#A7BBE0"
+        android:strokeWidth="1.5"
+        android:fillColor="#00000000" />
+    <path
+        android:pathData="M61.7,47 A2.3,2.3 0 1 0 66.3,47 A2.3,2.3 0 1 0 61.7,47 Z"
+        android:strokeColor="#A7BBE0"
+        android:strokeWidth="1.5"
+        android:fillColor="#00000000" />
     <!-- outer square -->
     <path
         android:pathData="M24,24 L84,24 L84,84 L24,84 Z"
