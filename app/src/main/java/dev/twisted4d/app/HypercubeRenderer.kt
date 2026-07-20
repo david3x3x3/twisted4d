@@ -72,13 +72,29 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
      * physical stick held perfectly steady fires no new motion events, rotating the room (e.g.
      * via [requestCameraRotate90]) while a selection is being held wouldn't update it until the
      * next stick nudge: the highlight and any subsequent twist would silently act on whichever
-     * cell used to be in that slot, not whichever cell is actually there now. */
+     * cell used to be in that slot, not whichever cell is actually there now. This is the
+     * *native* occupant's identity (via [nativeCellInRoomSlot]), which is what [requestTwist]
+     * needs -- for the on-screen highlight, see [highlightedCell] instead, which is a
+     * deliberately different computation.
+     */
     val selectedCell4: Cell4 get() = nativeCellInRoomSlot(selectedRoomAxis, selectedRoomSign)
 
-    /** Which [Cell4] to render brightened -- [selectedCell4] while the left stick is held
-     * significantly deflected (see `todo-controller-input.md`), null otherwise. Also a computed
-     * property for the same live-resolution reason as [selectedCell4]. */
-    val highlightedCell: Cell4? get() = if (stickHeld) selectedCell4 else null
+    /**
+     * Which [Cell4] to render brightened -- the selected room slot, while the left stick is
+     * held significantly deflected (see `todo-controller-input.md`), null otherwise. Also a
+     * computed property for the same live-resolution reason as [selectedCell4] -- but
+     * deliberately computed via [cellFor], *not* [selectedCell4]/[nativeCellInRoomSlot], even
+     * though they usually agree: [onDrawFrame] labels each sticker's *current* room position
+     * with `cellFor(slotAxis, slotSign)`, a fixed axis+sign -> label convention (the wall at
+     * +X is always "R"), not that sticker's own native identity. Once the room's been rotated
+     * away from its default arrangement (cubeOrientation4 != identity), a native cell's own
+     * identity and its current position's label are different things -- e.g. after rotating
+     * native I into the "R" wall, that sticker's currentCell is `R` (the wall it's now on), not
+     * `I` (what it natively is). Comparing against [selectedCell4] (I's own native identity)
+     * would never match anything actually sitting in the selected wall; comparing against this
+     * property (the wall's label) does.
+     */
+    val highlightedCell: Cell4? get() = if (stickHeld) cellFor(selectedRoomAxis, selectedRoomSign) else null
 
     // GL-thread-only edge-detection state for updateCell4Selection's snap-on-deflect behavior.
     private var stickWasSignificant = false
