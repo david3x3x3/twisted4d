@@ -402,10 +402,17 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
                 Matrix.multiplyMM(mvpMatrix, 0, viewProjMatrix, 0, worldModelMatrix, 0)
                 GLES30.glUniformMatrix4fv(uMvpLoc, 1, false, mvpMatrix, 0)
 
-                val cell = cellFor(axisIdx, homeCoord)
-                val isHighlighted = cell == highlightedCell
+                // colorCell is this sticker's permanent identity (like a real sticker, it never
+                // repaints itself -- see cellFor's doc), so it picks which color VBO to draw.
+                // currentCell is whichever wall it's *presently* sitting on (from the slot this
+                // sticker just got resolved into above), which is what selection/highlighting
+                // needs to match against -- otherwise selecting "R" would highlight whatever
+                // stickers originally started on R, not whatever's actually on R right now.
+                val colorCell = cellFor(axisIdx, homeCoord)
+                val currentCell = cellFor(slotAxis, slotSign)
+                val isHighlighted = currentCell == highlightedCell
                 GLES30.glUniform1f(uHighlightLoc, if (isHighlighted) 1f else 0f)
-                GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, stickerVboIds[cell.ordinal])
+                GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, stickerVboIds[colorCell.ordinal])
                 GLES30.glVertexAttribPointer(0, 3, GLES30.GL_FLOAT, false, stride, 0)
                 GLES30.glVertexAttribPointer(1, 3, GLES30.GL_FLOAT, false, stride, 12)
                 GLES30.glDrawElements(GLES30.GL_TRIANGLES, HypercubeGeometry.INDICES.size, GLES30.GL_UNSIGNED_SHORT, 0)
@@ -441,7 +448,10 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         }
     }
 
-    /** Which [Cell4] a home direction along [axisIdx] with sign [homeCoord] represents. */
+    /** Which [Cell4] a direction along [axisIdx] with sign [homeCoord] represents -- a pure
+     * axis+sign lookup, so [onDrawFrame] reuses it for two different directions: the sticker's
+     * fixed home direction (its permanent color identity) and its current camera-space slot
+     * direction (which wall it's presently drawn on, for selection/highlighting). */
     private fun cellFor(axisIdx: Int, homeCoord: Int): Cell4 = when (axisIdx) {
         AXIS_X -> if (homeCoord > 0) Cell4.R else Cell4.L
         AXIS_Y -> if (homeCoord > 0) Cell4.U else Cell4.D
