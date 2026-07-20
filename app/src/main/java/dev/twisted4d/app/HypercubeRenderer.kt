@@ -59,15 +59,26 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
     /** Called (on the GL thread) right after a twist/scramble/reset with the new solved state. */
     @Volatile var onStateChanged: ((Boolean) -> Unit)? = null
 
-    /** Which [Cell4] to render brightened, e.g. while the gamepad left stick that selects it
-     * for the next twist is actively deflected (see `todo-controller-input.md`); null shows no
-     * highlight. Safe to set from the UI thread. */
-    @Volatile var highlightedCell: Cell4? = null
+    // Persistent left-stick selection state: which room *slot* (axis+sign), not which resolved
+    // cell, is selected -- see selectedCell4's doc for why. GL-thread-only (updateCell4Selection
+    // is only ever called via queueEvent; so is MainActivity's read of selectedCell4).
+    private var selectedRoomAxis = AXIS_Y
+    private var selectedRoomSign = 1
+    private var stickHeld = false
 
     /** Which [Cell4] the gamepad's left stick currently has selected for the next twist -- see
-     * [updateCell4Selection]. Only ever written on the GL thread, but safe to read from
-     * anywhere ([MainActivity]'s rotation-button handling reads it). */
-    @Volatile var selectedCell4: Cell4 = Cell4.U
+     * [updateCell4Selection]. A computed property, re-resolved against the *current*
+     * [cubeOrientation4] on every read, rather than a cached value -- otherwise, since a
+     * physical stick held perfectly steady fires no new motion events, rotating the room (e.g.
+     * via [requestCameraRotate90]) while a selection is being held wouldn't update it until the
+     * next stick nudge: the highlight and any subsequent twist would silently act on whichever
+     * cell used to be in that slot, not whichever cell is actually there now. */
+    val selectedCell4: Cell4 get() = nativeCellInRoomSlot(selectedRoomAxis, selectedRoomSign)
+
+    /** Which [Cell4] to render brightened -- [selectedCell4] while the left stick is held
+     * significantly deflected (see `todo-controller-input.md`), null otherwise. Also a computed
+     * property for the same live-resolution reason as [selectedCell4]. */
+    val highlightedCell: Cell4? get() = if (stickHeld) selectedCell4 else null
 
     // GL-thread-only edge-detection state for updateCell4Selection's snap-on-deflect behavior.
     private var stickWasSignificant = false
@@ -333,37 +344,37 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
      * doc); it has no bearing on which cell gets selected here.
      *
      * Below [SIGNIFICANT_STICK_MAGNITUDE], a nonzero-but-small deflection is ignored entirely
-     * rather than updating [selectedCell4] -- a real analog stick (especially wireless) rarely
-     * settles at exactly (0,0) once released, and without this, that residual noise would
-     * silently reassign the selected cell out from under the user between presses (e.g.
+     * rather than updating the selected slot -- a real analog stick (especially wireless)
+     * rarely settles at exactly (0,0) once released, and without this, that residual noise
+     * would silently reassign the selected cell out from under the user between presses (e.g.
      * selecting R, then having a twist button unexpectedly act on a totally different cell the
      * stick never intentionally pointed at).
      */
     fun updateCell4Selection(x: Float, y: Float) {
         if (x == 0f && y == 0f) {
             stickWasSignificant = false
-            highlightedCell = null
+            stickHeld = false
             return
         }
         val isSignificant = hypot(x, y) > SIGNIFICANT_STICK_MAGNITUDE
         if (!isSignificant) return
         if (!stickWasSignificant) snapViewToNearestCardinalOrientation()
         stickWasSignificant = true
+        stickHeld = true
 
         // AXIS_Y is negative when pushed up, so negate it to get a standard math angle (0 deg
         // = right, 90 deg = up, increasing counterclockwise).
         val deg = (Math.toDegrees(atan2(-y.toDouble(), x.toDouble())) + 360.0) % 360.0
-        selectedCell4 = when {
-            deg < 22.5 || deg >= 337.5 -> nativeCellInRoomSlot(AXIS_W, -1) // right: I's slot
-            deg < 67.5 -> nativeCellInRoomSlot(AXIS_Z, -1) // up-right: B's slot
-            deg < 112.5 -> nativeCellInRoomSlot(AXIS_Y, 1) // up: U's slot
-            deg < 157.5 -> nativeCellInRoomSlot(AXIS_X, -1) // up-left: L's slot
-            deg < 202.5 -> nativeCellInRoomSlot(AXIS_W, 1) // left: O's slot
-            deg < 247.5 -> nativeCellInRoomSlot(AXIS_Z, 1) // down-left: F's slot
-            deg < 292.5 -> nativeCellInRoomSlot(AXIS_Y, -1) // down: D's slot
-            else -> nativeCellInRoomSlot(AXIS_X, 1) // down-right: R's slot
+        when {
+            deg < 22.5 || deg >= 337.5 -> { selectedRoomAxis = AXIS_W; selectedRoomSign = -1 } // right: I's slot
+            deg < 67.5 -> { selectedRoomAxis = AXIS_Z; selectedRoomSign = -1 } // up-right: B's slot
+            deg < 112.5 -> { selectedRoomAxis = AXIS_Y; selectedRoomSign = 1 } // up: U's slot
+            deg < 157.5 -> { selectedRoomAxis = AXIS_X; selectedRoomSign = -1 } // up-left: L's slot
+            deg < 202.5 -> { selectedRoomAxis = AXIS_W; selectedRoomSign = 1 } // left: O's slot
+            deg < 247.5 -> { selectedRoomAxis = AXIS_Z; selectedRoomSign = 1 } // down-left: F's slot
+            deg < 292.5 -> { selectedRoomAxis = AXIS_Y; selectedRoomSign = -1 } // down: D's slot
+            else -> { selectedRoomAxis = AXIS_X; selectedRoomSign = 1 } // down-right: R's slot
         }
-        highlightedCell = selectedCell4
     }
 
     /** Which native [Cell4] currently occupies the room slot at ([roomAxis], [roomSign]) --
@@ -426,6 +437,10 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
     override fun onDrawFrame(gl: GL10?) {
         GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT or GLES30.GL_DEPTH_BUFFER_BIT)
         GLES30.glUseProgram(program)
+
+        // Resolved once per frame (not once per sticker below) since highlightedCell is a
+        // computed property now -- see its doc for why it needs to be live rather than cached.
+        val frameHighlightedCell = highlightedCell
 
         if (snapAnimating) {
             val snapT = ((System.nanoTime() - snapAnimStartNanos).toFloat() / SNAP_ANIM_DURATION_NANOS).coerceIn(0f, 1f)
@@ -534,7 +549,7 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
                 // stickers originally started on R, not whatever's actually on R right now.
                 val colorCell = cellFor(axisIdx, homeCoord)
                 val currentCell = cellFor(slotAxis, slotSign)
-                val isHighlighted = currentCell == highlightedCell
+                val isHighlighted = currentCell == frameHighlightedCell
                 GLES30.glUniform1f(uHighlightLoc, if (isHighlighted) 1f else 0f)
                 GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, stickerVboIds[colorCell.ordinal])
                 GLES30.glVertexAttribPointer(0, 3, GLES30.GL_FLOAT, false, stride, 0)

@@ -168,7 +168,6 @@ class MainActivity : AppCompatActivity() {
         )
         inputManager.registerInputDeviceListener(gamepadInput, null)
         gamepadInput.logAlreadyConnectedDevices()
-        renderer.highlightedCell = null
 
         val statusText = statusTextView()
         renderer.onStateChanged = { solved ->
