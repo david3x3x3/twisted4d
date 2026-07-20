@@ -15,6 +15,7 @@ import kotlin.math.cos
 import kotlin.math.hypot
 import kotlin.math.roundToInt
 import kotlin.math.sin
+import kotlin.math.sqrt
 
 /**
  * Renders a 3^4 hypercube using the same "unfolded" layout MagicCube4D/Hyperspeedcube default
@@ -123,6 +124,12 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
     private val deltaRotY3 = FloatArray(16)
     private val deltaCombined3 = FloatArray(16)
     private val newOrientation3 = FloatArray(16)
+
+    // In-flight snapViewToNearestCardinalOrientation animation state -- see that function's doc.
+    private var snapAnimating = false
+    private var snapAnimStartNanos = 0L
+    private val snapAnimFrom = FloatArray(16)
+    private val snapAnimTo = FloatArray(16)
 
     private val stickerModelMatrix = FloatArray(16)
     private val worldModelMatrix = FloatArray(16)
@@ -277,10 +284,13 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
     }
 
     /**
-     * Snaps [viewOrientation3] to whichever of the 24 symmetries of [INITIAL_VIEW_ORIENTATION]
-     * (see [CARDINAL_TARGETS]) requires the smallest rotation from the current one -- mirrors
-     * [CubeRenderer.snapToNearestCardinalOrientation] exactly (same "maximize the elementwise
-     * dot product of the 3x3 rotation parts" trick). Called (see [updateCell4Selection] and
+     * Starts animating [viewOrientation3] toward whichever of the 24 symmetries of
+     * [INITIAL_VIEW_ORIENTATION] (see [CARDINAL_TARGETS]) requires the smallest rotation from
+     * the current one -- the target-finding is identical to
+     * [CubeRenderer.snapToNearestCardinalOrientation] (same "maximize the elementwise dot
+     * product of the 3x3 rotation parts" trick), but unlike that instant snap, this eases into
+     * it over [SNAP_ANIM_DURATION_NANOS] (see [onDrawFrame]'s handling of [snapAnimating]) so a
+     * quick but visible rotation, not a jarring jump. Called (see [updateCell4Selection] and
      * [MainActivity]'s rotation-button wiring) whenever the puzzle is about to be interacted
      * with via the gamepad, so the view never stays at an arbitrary, ugly continuous drag angle
      * -- purely a visual realignment; unlike in 3D mode, it has no bearing on which cell a given
@@ -300,7 +310,10 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
                 best = candidate
             }
         }
-        System.arraycopy(best, 0, viewOrientation3, 0, 16)
+        System.arraycopy(viewOrientation3, 0, snapAnimFrom, 0, 16)
+        System.arraycopy(best, 0, snapAnimTo, 0, 16)
+        snapAnimStartNanos = System.nanoTime()
+        snapAnimating = true
     }
 
     /**
@@ -318,6 +331,13 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
      * the view (see [snapViewToNearestCardinalOrientation]) exactly once per press-and-hold
      * (tracked via [stickWasSignificant]) -- a purely visual realignment (see that function's
      * doc); it has no bearing on which cell gets selected here.
+     *
+     * Below [SIGNIFICANT_STICK_MAGNITUDE], a nonzero-but-small deflection is ignored entirely
+     * rather than updating [selectedCell4] -- a real analog stick (especially wireless) rarely
+     * settles at exactly (0,0) once released, and without this, that residual noise would
+     * silently reassign the selected cell out from under the user between presses (e.g.
+     * selecting R, then having a twist button unexpectedly act on a totally different cell the
+     * stick never intentionally pointed at).
      */
     fun updateCell4Selection(x: Float, y: Float) {
         if (x == 0f && y == 0f) {
@@ -326,8 +346,9 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
             return
         }
         val isSignificant = hypot(x, y) > SIGNIFICANT_STICK_MAGNITUDE
-        if (isSignificant && !stickWasSignificant) snapViewToNearestCardinalOrientation()
-        stickWasSignificant = isSignificant
+        if (!isSignificant) return
+        if (!stickWasSignificant) snapViewToNearestCardinalOrientation()
+        stickWasSignificant = true
 
         // AXIS_Y is negative when pushed up, so negate it to get a standard math angle (0 deg
         // = right, 90 deg = up, increasing counterclockwise).
@@ -405,6 +426,16 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
     override fun onDrawFrame(gl: GL10?) {
         GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT or GLES30.GL_DEPTH_BUFFER_BIT)
         GLES30.glUseProgram(program)
+
+        if (snapAnimating) {
+            val snapT = ((System.nanoTime() - snapAnimStartNanos).toFloat() / SNAP_ANIM_DURATION_NANOS).coerceIn(0f, 1f)
+            if (snapT >= 1f) {
+                System.arraycopy(snapAnimTo, 0, viewOrientation3, 0, 16)
+                snapAnimating = false
+            } else {
+                lerpAndOrthonormalizeRotation(viewOrientation3, snapAnimFrom, snapAnimTo, snapT)
+            }
+        }
 
         val (dragYaw, dragPitch) = drainDragDelta()
         var dYaw = dragYaw
@@ -595,6 +626,12 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
     companion object {
         private const val STICK_DEG_PER_FRAME = 1.2f
         private const val ANIM_DURATION_NANOS = 220_000_000L // 220ms
+
+        /** Duration of the eased view-realignment in [snapViewToNearestCardinalOrientation] --
+         * quick enough to not feel laggy, but long enough (a handful of frames at 60fps) to
+         * read as a motion rather than a jarring instant jump. */
+        private const val SNAP_ANIM_DURATION_NANOS = 100_000_000L // 100ms
+
         private const val INITIAL_YAW_DEG = -35f
         private const val INITIAL_PITCH_DEG = 25f
 
@@ -711,6 +748,43 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
                 for (col in 0 until 4) sum += m[row * 4 + col] * v[col]
                 out[row] = sum
             }
+        }
+
+        /**
+         * Fills [out] (column-major GL layout) with an approximation of the rotation [t] of the
+         * way from [from] to [to] (both column-major GL rotation matrices), for
+         * [snapViewToNearestCardinalOrientation]'s eased snap. A plain per-entry lerp of two
+         * rotation matrices isn't itself a rotation matrix (its columns won't stay unit length
+         * or perpendicular), so this re-orthonormalizes afterward: normalize column 0, subtract
+         * off column 1's projection onto it and normalize that, then take column 2 as their
+         * cross product -- guarantees a clean right-handed rotation every frame rather than a
+         * true constant-angular-velocity slerp, but for the small, quick snaps this is used for
+         * (a few hundred ms at most) the difference isn't visible.
+         */
+        private fun lerpAndOrthonormalizeRotation(out: FloatArray, from: FloatArray, to: FloatArray, t: Float) {
+            for (idx in ROTATION_PART_INDICES) {
+                out[idx] = from[idx] + (to[idx] - from[idx]) * t
+            }
+            out[3] = 0f; out[7] = 0f; out[11] = 0f
+            out[12] = 0f; out[13] = 0f; out[14] = 0f; out[15] = 1f
+
+            var c0x = out[0]; var c0y = out[1]; var c0z = out[2]
+            var len = sqrt(c0x * c0x + c0y * c0y + c0z * c0z)
+            if (len > 1e-6f) { c0x /= len; c0y /= len; c0z /= len }
+
+            var c1x = out[4]; var c1y = out[5]; var c1z = out[6]
+            val dot01 = c1x * c0x + c1y * c0y + c1z * c0z
+            c1x -= dot01 * c0x; c1y -= dot01 * c0y; c1z -= dot01 * c0z
+            len = sqrt(c1x * c1x + c1y * c1y + c1z * c1z)
+            if (len > 1e-6f) { c1x /= len; c1y /= len; c1z /= len }
+
+            val c2x = c0y * c1z - c0z * c1y
+            val c2y = c0z * c1x - c0x * c1z
+            val c2z = c0x * c1y - c0y * c1x
+
+            out[0] = c0x; out[1] = c0y; out[2] = c0z
+            out[4] = c1x; out[5] = c1y; out[6] = c1z
+            out[8] = c2x; out[9] = c2y; out[10] = c2z
         }
     }
 }
