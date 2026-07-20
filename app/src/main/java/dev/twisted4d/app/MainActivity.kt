@@ -1,5 +1,6 @@
 package dev.twisted4d.app
 
+import android.app.AlertDialog
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -7,6 +8,7 @@ import android.content.Intent
 import android.hardware.input.InputManager
 import android.opengl.GLSurfaceView
 import android.os.Bundle
+import android.text.Html
 import android.util.Log
 import android.view.Gravity
 import android.view.KeyEvent
@@ -16,6 +18,7 @@ import android.view.ViewGroup
 import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import org.json.JSONArray
@@ -225,8 +228,18 @@ class MainActivity : AppCompatActivity() {
         )
         surfaceView.setOnTouchListener { _, event -> handle4DDrag(surfaceView, renderer, event) }
 
+        // Mode 1 (default): left stick selects a cell continuously, matching the existing
+        // scheme. Mode 2: the left stick is unused; the dpad/L1/L2/select instead step a
+        // persistent selection one press at a time -- see HypercubeRenderer.navigateCell4Selection
+        // and NavigationButton's doc. UI-thread-local so the toggle button's label updates
+        // immediately; renderer.mode2Active is the GL-thread source of truth these closures defer
+        // to once queued.
+        var inputMode2Active = false
+
         gamepadInput = GamepadInputHandler(
-            onLeftStick = { x, y -> surfaceView.queueEvent { renderer.updateCell4Selection(x, y) } },
+            onLeftStick = { x, y ->
+                if (!inputMode2Active) surfaceView.queueEvent { renderer.updateCell4Selection(x, y) }
+            },
             onRightStick = { x, y -> renderer.stickX = x; renderer.stickY = y },
             onFaceButton = { _, _ -> },
             on4DRotationButton = { button ->
@@ -240,10 +253,29 @@ class MainActivity : AppCompatActivity() {
                     renderer.requestTwist(cell, fixAxis2, button.primaryPrime)
                 }
             },
-            on4DMoveSelectedToI = {
+            on4DNavigate = { button ->
                 surfaceView.queueEvent {
-                    renderer.snapViewToNearestCardinalOrientation()
-                    renderer.requestMoveSelectedCellToI()
+                    if (!renderer.mode2Active) {
+                        // Mode 1: only the trigger does anything, moving the stick-selected
+                        // cell to I (see HypercubeRenderer.requestMoveSelectedCellToI's doc).
+                        if (button == NavigationButton.TRIGGER_L) {
+                            renderer.snapViewToNearestCardinalOrientation()
+                            renderer.requestMoveSelectedCellToI()
+                        }
+                    } else {
+                        when (button) {
+                            NavigationButton.LEFT -> renderer.navigateCell4Selection(HypercubeRenderer.AXIS_X, -1)
+                            NavigationButton.RIGHT -> renderer.navigateCell4Selection(HypercubeRenderer.AXIS_X, 1)
+                            NavigationButton.UP -> renderer.navigateCell4Selection(HypercubeRenderer.AXIS_Y, 1)
+                            NavigationButton.DOWN -> renderer.navigateCell4Selection(HypercubeRenderer.AXIS_Y, -1)
+                            NavigationButton.BUMPER_L -> renderer.navigateCell4Selection(HypercubeRenderer.AXIS_Z, 1)
+                            NavigationButton.TRIGGER_L -> renderer.navigateCell4Selection(HypercubeRenderer.AXIS_Z, -1)
+                            NavigationButton.SELECT -> {
+                                renderer.snapViewToNearestCardinalOrientation()
+                                renderer.requestMoveSelectedCellToI()
+                            }
+                        }
+                    }
                 }
             },
         )
@@ -368,11 +400,27 @@ class MainActivity : AppCompatActivity() {
         // of 8+ buttons per side doesn't fit the available height at all. Each side is instead
         // two narrower sub-columns side by side, and every button here gets compactChildren()'s
         // reduced padding/text size so ~8 per sub-column still fits comfortably.
+        // Toggles between gamepad input mode 1 (stick-based selection) and mode 2 (dpad/L1/L2
+        // step navigation, see the on4DNavigate wiring above) -- purely a left-hand input scheme
+        // choice, so it only needs to update inputMode2Active (for these closures) and the
+        // renderer's own mirrored flag (for highlightedCell/navigateCell4Selection); nothing
+        // else about the screen changes.
+        val inputModeButton = Button(this).apply {
+            text = "Input: Stick"
+            setOnClickListener {
+                inputMode2Active = !inputMode2Active
+                text = if (inputMode2Active) "Input: Pad" else "Input: Stick"
+                surfaceView.queueEvent { renderer.setMode2Active(inputMode2Active) }
+            }
+        }
+
+        // filterColumn moved to the right side (was left) to leave the bottom-left corner clear
+        // for GamepadOverlayView, which now needs more room for its d-pad.
         val leftOuter = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             addView(modeToggleButton())
+            addView(inputModeButton)
             addView(rotateColumn)
-            addView(filterColumn)
         }
         val leftColumn = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -383,6 +431,7 @@ class MainActivity : AppCompatActivity() {
             orientation = LinearLayout.VERTICAL
             addView(utilityColumn)
             addView(axisColumn)
+            addView(filterColumn)
         }
         val rightColumn = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -453,7 +502,27 @@ class MainActivity : AppCompatActivity() {
             if (onExportMC4D != null) {
                 addView(Button(this@MainActivity).apply { text = "MC4D"; setOnClickListener { onExportMC4D() } })
             }
+            addView(Button(this@MainActivity).apply { text = "Help"; setOnClickListener { showHelpDialog() } })
         }
+
+    /** A scrollable documentation popup covering touch controls, both 3D and 4D gamepad schemes
+     * (including 4D's two selectable input modes), the on-screen buttons, and the gamepad
+     * overlay HUD -- the same content regardless of which screen the Help button was tapped
+     * from, so switching between 3D/4D doesn't need separate variants. */
+    private fun showHelpDialog() {
+        val scroll = ScrollView(this)
+        val textView = TextView(this).apply {
+            text = Html.fromHtml(HELP_HTML, Html.FROM_HTML_MODE_LEGACY)
+            textSize = 15f
+            setPadding(32, 24, 32, 24)
+        }
+        scroll.addView(textView)
+        AlertDialog.Builder(this)
+            .setTitle("Help")
+            .setView(scroll)
+            .setPositiveButton("Close", null)
+            .show()
+    }
 
     /** Shrinks every [Button] nested anywhere under this [ViewGroup] (recursing into nested
      * layouts, e.g. the small per-group columns build4DScreen nests into its two side columns) --
@@ -623,8 +692,8 @@ class MainActivity : AppCompatActivity() {
     ).apply { rightMargin = 12 }
 
     private fun bottomStartParams() = FrameLayout.LayoutParams(
-        (180 * resources.displayMetrics.density).toInt(),
-        (110 * resources.displayMetrics.density).toInt(),
+        (150 * resources.displayMetrics.density).toInt(),
+        (130 * resources.displayMetrics.density).toInt(),
         Gravity.BOTTOM or Gravity.START,
     ).apply { leftMargin = 12; bottomMargin = 12 }
 
@@ -656,7 +725,12 @@ class MainActivity : AppCompatActivity() {
         // face buttons like B with a synthetic BACK keycode for launcher-navigation
         // compatibility -- without consuming it, pressing B to twist R also exits the app via
         // the default Back behavior).
-        if (GamepadInputHandler.isGamepadSource(event.source)) {
+        // event.device?.sources, not event.source -- see GamepadInputHandler.handleKeyEvent's
+        // matching comment: a gamepad's own D-pad events individually classify as SOURCE_DPAD,
+        // not SOURCE_GAMEPAD, so checking only event.source let every D-pad press fall through
+        // to super.dispatchKeyEvent() here -- i.e. exactly the same default-focus-navigation bug
+        // this whole override exists to prevent, just for D-pad specifically.
+        if (GamepadInputHandler.isGamepadSource(event.device?.sources ?: event.source)) {
             return true
         }
         return super.dispatchKeyEvent(event)
@@ -760,5 +834,52 @@ class MainActivity : AppCompatActivity() {
         private const val SCRAMBLE_MOVE_COUNT_4D = 25
         private const val SOLVED_LABEL = "SOLVED"
         private const val SAVE_FILE_NAME = "puzzle_state.json"
+
+        private const val HELP_HTML = """
+<b>TOUCH CONTROLS</b><br>
+&#8226; Drag the puzzle to rotate the view<br>
+&#8226; Pinch to zoom<br>
+&#8226; Tap a cell/face button to twist; long-press for the reverse direction<br>
+<br>
+<b>3D MODE &#8212; GAMEPAD</b><br>
+&#8226; Left stick: rotate the view<br>
+&#8226; Y / A / X / B: twist U / D / L / R (screen-relative)<br>
+&#8226; L1 / R1: twist F / B<br>
+&#8226; Hold L2: reverse direction (prime) for any of the above<br>
+<br>
+<b>4D MODE &#8212; GAMEPAD</b><br>
+Two selectable input modes &#8212; switch with the on-screen "Input: Stick" / "Input: Pad" button.<br>
+<br>
+<b>Mode 1 &#8212; Stick Select (default)</b><br>
+&#8226; Left stick: select a cell (deflect toward it, release to keep the selection)<br>
+&#8226; Right stick: orbit the view<br>
+&#8226; Y / A / X / B: twist the selected cell (Up / Down / Left / Right)<br>
+&#8226; R1 / R2 (bumper / trigger): twist the selected cell around its third axis<br>
+&#8226; L2 (trigger): rotate the puzzle so the selected cell moves to I<br>
+<br>
+<b>Mode 2 &#8212; Pad Navigate</b><br>
+&#8226; Left stick: unused<br>
+&#8226; Right stick: orbit the view, same as mode 1<br>
+&#8226; Y / A / X / B, R1 / R2: same as mode 1 &#8212; twist the highlighted cell<br>
+&#8226; D-pad left / right: step the highlight between L, I, and R<br>
+&#8226; D-pad up / down: step the highlight between U, I, and D<br>
+&#8226; L1 (bumper): step the highlight toward F<br>
+&#8226; L2 (trigger): step the highlight toward B<br>
+&#8226; Each direction stops at its endpoint &#8212; no wraparound, and O can never be reached this way<br>
+&#8226; Select button: rotate the puzzle so the highlighted cell moves to I<br>
+&#8226; The highlighted cell is remembered separately per mode &#8212; switching away and back restores it<br>
+<br>
+<b>4D ON-SCREEN BUTTONS</b><br>
+&#8226; U / D / L / R / F / B / I / O: twist that cell around the selected axis (see the AXIS buttons); long-press for the reverse direction<br>
+&#8226; AXIS:X / Y / Z / W: choose which axis the on-screen cell buttons twist around<br>
+&#8226; XW / YW / ZW: rotate the whole puzzle 90&#176; in that plane (tap = forward, long-press = reverse)<br>
+&#8226; Hide 4c / Hide 3c: hide corner / edge pieces, useful early in a solve<br>
+&#8226; Scramble / Reset / Undo<br>
+&#8226; Log: copy/share the twist history in hypercubing.xyz notation (e.g. "RU'")<br>
+&#8226; MC4D: export the twist history as a real MagicCube4D .log file, openable in the actual MagicCube4D software<br>
+<br>
+<b>GAMEPAD OVERLAY</b><br>
+The small controller diagram in the bottom-left corner lights up buttons and sticks live as they're used &#8212; handy for confirming exactly which input produced a twist, e.g. when reviewing a screen recording.
+"""
     }
 }

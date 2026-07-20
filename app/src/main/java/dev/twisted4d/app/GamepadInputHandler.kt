@@ -28,6 +28,14 @@ enum class RotationButton(val literalAxis: Axis4, val primaryPrime: Boolean) {
     BUMPER_R(Axis4.Z, true),
 }
 
+/** The 7 left-hand physical buttons 4D mode's alternate "step navigation" input mode uses (see
+ * [on4DNavigate] and `todo-controller-input.md`) -- unlike [RotationButton], these don't twist
+ * anything themselves; [MainActivity] interprets them differently depending on which gamepad
+ * input mode is currently active (mode 1: only [TRIGGER_L] does anything, moving the
+ * stick-selected cell to I; mode 2: the dpad steps the highlight toward L/R/U/D, [BUMPER_L]/
+ * [TRIGGER_L] step it toward F/B, and [SELECT] moves the highlighted cell to I). */
+enum class NavigationButton { LEFT, RIGHT, UP, DOWN, BUMPER_L, TRIGGER_L, SELECT }
+
 /**
  * Detects connected gamepads, logs button/axis events, and reports left-stick/right-stick/
  * button input via callbacks -- deliberately renderer-agnostic so the same handler drives
@@ -43,23 +51,32 @@ enum class RotationButton(val literalAxis: Axis4, val primaryPrime: Boolean) {
  * has selected; direction is which button was pressed, not a held modifier. Both fire for any
  * relevant physical press regardless of which callback the active mode actually wires up.
  *
- * L2 (left trigger) is 3D mode's "prime" modifier ([invertHeld]) but otherwise unused there;
- * in 4D mode it instead fires [on4DMoveSelectedToI] on press, a puzzle *rotation* (not a twist)
- * that brings whichever cell is currently selected into the I slot.
+ * L2 (left trigger) is 3D mode's "prime" modifier ([invertHeld]) but otherwise unused there; in
+ * 4D mode, L2 and the rest of the left-hand buttons (dpad, L1, select) fire [on4DNavigate] --
+ * see [NavigationButton]'s doc for what they mean, which depends on the active input mode.
  *
- * Left stick = ordinary camera rotation in 3D mode, cell selection in 4D mode (per
- * `todo-controller-input.md`); right stick = 4D-specific rotation, i.e. camera orbit, in 4D
- * mode (ignored in 3D mode). D-pad stays reserved for camera control per the spec.
+ * Left stick = ordinary camera rotation in 3D mode, cell selection in 4D mode *when 4D's input
+ * mode 1 is active* (per `todo-controller-input.md`) -- ignored by [MainActivity] in mode 2,
+ * where the dpad/L1/L2 steps a persistent selection instead (see [NavigationButton]). Right
+ * stick = 4D-specific rotation, i.e. camera orbit, in 4D mode regardless of input mode (ignored
+ * in 3D mode).
  */
 class GamepadInputHandler(
     private val onLeftStick: (x: Float, y: Float) -> Unit,
     private val onRightStick: (x: Float, y: Float) -> Unit,
     private val onFaceButton: (index: Int, invert: Boolean) -> Unit,
     private val on4DRotationButton: (RotationButton) -> Unit = {},
-    private val on4DMoveSelectedToI: () -> Unit = {},
+    private val on4DNavigate: (NavigationButton) -> Unit = {},
 ) : InputManager.InputDeviceListener {
 
     @Volatile private var invertHeld = false
+
+    // Last-seen d-pad hat axis values, for edge-detecting a "press" out of AXIS_HAT_X/Y -- see
+    // handleMotionEvent's doc for why this exists alongside NAVIGATION_BUTTON_MAP's key-based
+    // handling. UI-thread-only (handleMotionEvent is only ever called from
+    // dispatchGenericMotionEvent), so no need for @Volatile here.
+    private var lastHatX = 0f
+    private var lastHatY = 0f
 
     /** Input device listener callbacks only fire on future connect/disconnect, so call this
      * once at startup to log any gamepad that was already connected before the app launched. */
@@ -104,13 +121,45 @@ class GamepadInputHandler(
         GamepadVisualState.rightStickX = rx
         GamepadVisualState.rightStickY = ry
 
+        handleHatAxes(event.getAxisValue(MotionEvent.AXIS_HAT_X), event.getAxisValue(MotionEvent.AXIS_HAT_Y))
+
         return true
+    }
+
+    /** Some controllers/compatibility modes (confirmed with a real device: an 8BitDo BSP-D3 in
+     * DualShock 4 mode) report the d-pad as a joystick hat switch (AXIS_HAT_X/Y, -1/0/+1 on each
+     * axis) via ordinary MotionEvents rather than discrete KEYCODE_DPAD_* KeyEvents -- so
+     * NAVIGATION_BUTTON_MAP's key-based handling alone missed the d-pad entirely on that
+     * hardware. This handles the hat-axis path too, edge-detected (fires [on4DNavigate] once per
+     * transition into a direction, not continuously while held) to match the key-based path's
+     * once-per-ACTION_DOWN behavior -- a real hat only ever reports -1/0/+1, so a 0.5 threshold
+     * cleanly separates "pressed" from "centered" with no risk of false triggers from noise. */
+    private fun handleHatAxes(hatX: Float, hatY: Float) {
+        if (hatX <= -0.5f && lastHatX > -0.5f) on4DNavigate(NavigationButton.LEFT)
+        if (hatX >= 0.5f && lastHatX < 0.5f) on4DNavigate(NavigationButton.RIGHT)
+        GamepadVisualState.dpadLeftHeld = hatX <= -0.5f
+        GamepadVisualState.dpadRightHeld = hatX >= 0.5f
+        lastHatX = hatX
+
+        if (hatY <= -0.5f && lastHatY > -0.5f) on4DNavigate(NavigationButton.UP)
+        if (hatY >= 0.5f && lastHatY < 0.5f) on4DNavigate(NavigationButton.DOWN)
+        GamepadVisualState.dpadUpHeld = hatY <= -0.5f
+        GamepadVisualState.dpadDownHeld = hatY >= 0.5f
+        lastHatY = hatY
     }
 
     /** Logs gamepad button presses and triggers the mapped twist, if any; never consumes the
      * event so system buttons (e.g. Back) keep working. */
     fun handleKeyEvent(event: KeyEvent) {
-        if (!isGamepadSource(event.source)) return
+        // event.device?.sources (the whole device's capabilities), not event.source (just this
+        // one event's) -- a gamepad's own D-pad button events individually classify as
+        // SOURCE_DPAD, a *different* bit than SOURCE_GAMEPAD, so checking only event.source made
+        // every D-pad press fail this check and fall through to dispatchKeyEvent's default
+        // view-focus-navigation handling instead of ever reaching NAVIGATION_BUTTON_MAP below --
+        // confirmed via real-device testing (mode 2's D-pad navigation silently did nothing).
+        // The device's overall sources reliably include SOURCE_GAMEPAD regardless of which
+        // specific button produced this event.
+        if (!isGamepadSource(event.device?.sources ?: event.source)) return
 
         if (event.keyCode == KeyEvent.KEYCODE_BUTTON_L2) {
             invertHeld = event.action == KeyEvent.ACTION_DOWN
@@ -130,6 +179,11 @@ class GamepadInputHandler(
                 KeyEvent.KEYCODE_BUTTON_R1 -> GamepadVisualState.r1Held = held
                 KeyEvent.KEYCODE_BUTTON_L2 -> GamepadVisualState.l2Held = held
                 KeyEvent.KEYCODE_BUTTON_R2 -> GamepadVisualState.r2Held = held
+                KeyEvent.KEYCODE_DPAD_LEFT -> GamepadVisualState.dpadLeftHeld = held
+                KeyEvent.KEYCODE_DPAD_RIGHT -> GamepadVisualState.dpadRightHeld = held
+                KeyEvent.KEYCODE_DPAD_UP -> GamepadVisualState.dpadUpHeld = held
+                KeyEvent.KEYCODE_DPAD_DOWN -> GamepadVisualState.dpadDownHeld = held
+                KeyEvent.KEYCODE_BUTTON_SELECT -> GamepadVisualState.selectHeld = held
             }
         }
 
@@ -151,9 +205,9 @@ class GamepadInputHandler(
             Log.i(TAG, "4D rotation button: $button (gamepad)")
             on4DRotationButton(button)
         }
-        if (event.keyCode == KeyEvent.KEYCODE_BUTTON_L2) {
-            Log.i(TAG, "4D move-selected-to-I (gamepad)")
-            on4DMoveSelectedToI()
+        NAVIGATION_BUTTON_MAP[event.keyCode]?.let { button ->
+            Log.i(TAG, "4D navigation button: $button (gamepad)")
+            on4DNavigate(button)
         }
     }
 
@@ -165,7 +219,8 @@ class GamepadInputHandler(
 
         fun isGamepadSource(sources: Int): Boolean =
             (sources and InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD ||
-                (sources and InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK
+                (sources and InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK ||
+                (sources and InputDevice.SOURCE_DPAD) == InputDevice.SOURCE_DPAD
 
         /** Index matches U/D/L/R/F/B's position (0-5) in both [Face] and [Cell4]'s enum order.
          * 3D mode only -- see [onFaceButton]. */
@@ -188,6 +243,17 @@ class GamepadInputHandler(
             KeyEvent.KEYCODE_BUTTON_B to RotationButton.RIGHT,
             KeyEvent.KEYCODE_BUTTON_R1 to RotationButton.BUMPER_R,
             KeyEvent.KEYCODE_BUTTON_R2 to RotationButton.TRIGGER_R,
+        )
+
+        /** The 7 left-hand buttons 4D mode's [on4DNavigate] fires for -- see [NavigationButton]. */
+        private val NAVIGATION_BUTTON_MAP = mapOf(
+            KeyEvent.KEYCODE_DPAD_LEFT to NavigationButton.LEFT,
+            KeyEvent.KEYCODE_DPAD_RIGHT to NavigationButton.RIGHT,
+            KeyEvent.KEYCODE_DPAD_UP to NavigationButton.UP,
+            KeyEvent.KEYCODE_DPAD_DOWN to NavigationButton.DOWN,
+            KeyEvent.KEYCODE_BUTTON_L1 to NavigationButton.BUMPER_L,
+            KeyEvent.KEYCODE_BUTTON_L2 to NavigationButton.TRIGGER_L,
+            KeyEvent.KEYCODE_BUTTON_SELECT to NavigationButton.SELECT,
         )
     }
 }

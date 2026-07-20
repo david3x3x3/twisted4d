@@ -87,6 +87,59 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
     private var selectedRoomSign = 1
     private var stickHeld = false
 
+    /** True while 4D input mode 2 (step navigation via dpad/L1/L2, see [navigateCell4Selection])
+     * is active, as opposed to mode 1's stick-based [updateCell4Selection]. Read from the UI
+     * thread (MainActivity's on4DNavigate/onLeftStick closures, both running inside their own
+     * queueEvent already) and written only via [setMode2Active], also GL-thread-only. */
+    @Volatile var mode2Active: Boolean = false
+        private set
+
+    // Mode 2 remembers its own selected room slot independently of mode 1's -- these hold
+    // whichever mode is *not* currently active's slot, swapped into/out of the single "live"
+    // selectedRoomAxis/selectedRoomSign pair above by setMode2Active, so flipping modes never
+    // disturbs the other mode's last selection. Mode 2 defaults to I the first time it activates.
+    private var parkedMode1Axis = AXIS_Y
+    private var parkedMode1Sign = 1
+    private var parkedMode2Axis = AXIS_W
+    private var parkedMode2Sign = -1
+
+    /** Swaps mode 2's remembered room slot into (or out of) the live selectedRoomAxis/Sign pair
+     * -- see the parked-state fields' doc. Must run on the GL thread (those fields aren't
+     * volatile) -- call via queueEvent, same as [updateCell4Selection]/[navigateCell4Selection]. */
+    fun setMode2Active(active: Boolean) {
+        if (active == mode2Active) return
+        if (active) {
+            parkedMode1Axis = selectedRoomAxis
+            parkedMode1Sign = selectedRoomSign
+            selectedRoomAxis = parkedMode2Axis
+            selectedRoomSign = parkedMode2Sign
+        } else {
+            parkedMode2Axis = selectedRoomAxis
+            parkedMode2Sign = selectedRoomSign
+            selectedRoomAxis = parkedMode1Axis
+            selectedRoomSign = parkedMode1Sign
+        }
+        mode2Active = active
+    }
+
+    /**
+     * Mode 2's step-based selection navigation (dpad/L1/L2, see [NavigationButton]), as opposed
+     * to mode 1's continuous stick-angle math in [updateCell4Selection]. [targetAxis]/
+     * [targetSign] is the pressed button's own room-slot endpoint (e.g. dpad-left -> AXIS_X,-1
+     * for L). Always steps toward that endpoint *through* I, one press at a time: already there
+     * -> no-op (no wrapping past an endpoint); currently at I -> jump straight to the endpoint;
+     * anywhere else (including that endpoint's own opposite, or a different track entirely) ->
+     * step back to I first. O is never reachable, since no button's endpoint is ever O.
+     */
+    fun navigateCell4Selection(targetAxis: Int, targetSign: Int) {
+        val atI = selectedRoomAxis == AXIS_W && selectedRoomSign < 0
+        when {
+            selectedRoomAxis == targetAxis && selectedRoomSign == targetSign -> return
+            atI -> { selectedRoomAxis = targetAxis; selectedRoomSign = targetSign }
+            else -> { selectedRoomAxis = AXIS_W; selectedRoomSign = -1 }
+        }
+    }
+
     /** Which [Cell4] the gamepad's left stick currently has selected for the next twist -- see
      * [updateCell4Selection]. A computed property, re-resolved against the *current*
      * [cubeOrientation4] on every read, rather than a cached value -- otherwise, since a
@@ -115,7 +168,7 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
      * would never match anything actually sitting in the selected wall; comparing against this
      * property (the wall's label) does.
      */
-    val highlightedCell: Cell4? get() = if (stickHeld) cellFor(selectedRoomAxis, selectedRoomSign) else null
+    val highlightedCell: Cell4? get() = if (stickHeld || mode2Active) cellFor(selectedRoomAxis, selectedRoomSign) else null
 
     // GL-thread-only edge-detection state for updateCell4Selection's snap-on-deflect behavior.
     private var stickWasSignificant = false

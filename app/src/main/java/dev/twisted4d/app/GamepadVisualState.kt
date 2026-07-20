@@ -20,4 +20,10 @@ object GamepadVisualState {
     @Volatile var r1Held = false
     @Volatile var l2Held = false
     @Volatile var r2Held = false
+
+    @Volatile var dpadLeftHeld = false
+    @Volatile var dpadRightHeld = false
+    @Volatile var dpadUpHeld = false
+    @Volatile var dpadDownHeld = false
+    @Volatile var selectHeld = false
 }

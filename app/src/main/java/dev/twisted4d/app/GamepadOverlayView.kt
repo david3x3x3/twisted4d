@@ -18,9 +18,10 @@ import kotlin.math.min
  * repaint loop rather than reacting to individual events, since it only ever needs "what's true
  * right now."
  *
- * Layout mirrors a standard Xbox-style pad (L2/R2 top corners, L1/R1 below them, stick circles
- * bottom-left/right, Y/X/B/A face buttons as a diamond in between) so it maps onto a viewer's
- * own physical controller at a glance rather than needing a legend.
+ * Layout mirrors a standard modern pad (8BitDo/Xbox-style): L2/R2 top corners, L1/R1 below them,
+ * SELECT top-center, left stick upper-left with the d-pad below it lower-left, and the Y/X/B/A
+ * face-button diamond upper-right with the right stick below it lower-right -- so it maps onto a
+ * viewer's own physical controller at a glance rather than needing a legend.
  */
 class GamepadOverlayView(context: Context) : View(context) {
 
@@ -71,24 +72,31 @@ class GamepadOverlayView(context: Context) : View(context) {
         val h = height.toFloat()
         if (w <= 0f || h <= 0f) return
         val unit = min(w, h)
-        labelPaint.textSize = unit * 0.11f
+        labelPaint.textSize = unit * 0.10f
 
-        rect.set(w * 0.04f, h * 0.06f, w * 0.96f, h * 0.94f)
-        canvas.drawRoundRect(rect, unit * 0.08f, unit * 0.08f, bodyPaint)
+        rect.set(w * 0.03f, h * 0.05f, w * 0.97f, h * 0.95f)
+        canvas.drawRoundRect(rect, unit * 0.07f, unit * 0.07f, bodyPaint)
 
-        drawShoulder(canvas, w * 0.14f, h * 0.18f, unit, GamepadVisualState.l2Held, "L2")
-        drawShoulder(canvas, w * 0.86f, h * 0.18f, unit, GamepadVisualState.r2Held, "R2")
-        drawShoulder(canvas, w * 0.14f, h * 0.34f, unit, GamepadVisualState.l1Held, "L1")
-        drawShoulder(canvas, w * 0.86f, h * 0.34f, unit, GamepadVisualState.r1Held, "R1")
+        drawShoulder(canvas, w * 0.13f, h * 0.13f, unit, GamepadVisualState.l2Held, "L2")
+        drawShoulder(canvas, w * 0.87f, h * 0.13f, unit, GamepadVisualState.r2Held, "R2")
+        drawShoulder(canvas, w * 0.13f, h * 0.24f, unit, GamepadVisualState.l1Held, "L1")
+        drawShoulder(canvas, w * 0.87f, h * 0.24f, unit, GamepadVisualState.r1Held, "R1")
+        drawShoulder(canvas, w * 0.50f, h * 0.17f, unit * 0.85f, GamepadVisualState.selectHeld, "SEL")
 
-        drawStick(canvas, w * 0.22f, h * 0.68f, unit * 0.17f, GamepadVisualState.leftStickX, GamepadVisualState.leftStickY)
-        drawStick(canvas, w * 0.78f, h * 0.68f, unit * 0.17f, GamepadVisualState.rightStickX, GamepadVisualState.rightStickY)
+        // Left cluster: stick above, d-pad below.
+        drawStick(canvas, w * 0.24f, h * 0.42f, unit * 0.135f, GamepadVisualState.leftStickX, GamepadVisualState.leftStickY)
+        drawDpad(canvas, w * 0.24f, h * 0.74f, unit)
 
-        val faceR = unit * 0.075f
-        drawFaceButton(canvas, w * 0.50f, h * 0.46f, faceR, GamepadVisualState.yHeld, "Y")
-        drawFaceButton(canvas, w * 0.40f, h * 0.63f, faceR, GamepadVisualState.xHeld, "X")
-        drawFaceButton(canvas, w * 0.60f, h * 0.63f, faceR, GamepadVisualState.bHeld, "B")
-        drawFaceButton(canvas, w * 0.50f, h * 0.80f, faceR, GamepadVisualState.aHeld, "A")
+        // Right cluster: face-button diamond above, stick below.
+        val faceR = unit * 0.07f
+        val faceCx = w * 0.76f
+        val faceCy = h * 0.42f
+        val faceSpread = unit * 0.105f
+        drawFaceButton(canvas, faceCx, faceCy - faceSpread, faceR, GamepadVisualState.yHeld, "Y")
+        drawFaceButton(canvas, faceCx - faceSpread, faceCy, faceR, GamepadVisualState.xHeld, "X")
+        drawFaceButton(canvas, faceCx + faceSpread, faceCy, faceR, GamepadVisualState.bHeld, "B")
+        drawFaceButton(canvas, faceCx, faceCy + faceSpread, faceR, GamepadVisualState.aHeld, "A")
+        drawStick(canvas, w * 0.76f, h * 0.74f, unit * 0.135f, GamepadVisualState.rightStickX, GamepadVisualState.rightStickY)
     }
 
     private fun drawShoulder(canvas: Canvas, cx: Float, cy: Float, unit: Float, held: Boolean, label: String) {
@@ -108,5 +116,23 @@ class GamepadOverlayView(context: Context) : View(context) {
         val dotX = cx + stickX.coerceIn(-1f, 1f) * (r - r * 0.25f)
         val dotY = cy + stickY.coerceIn(-1f, 1f) * (r - r * 0.25f)
         canvas.drawCircle(dotX, dotY, r * 0.22f, stickDotPaint)
+    }
+
+    /** Four independently-lighting arrow glyphs in a plus arrangement -- mode 2's step
+     * navigation (see NavigationButton) uses all four, so each needs its own indicator, unlike
+     * the single-button shoulders/face buttons. */
+    private fun drawDpad(canvas: Canvas, cx: Float, cy: Float, unit: Float) {
+        val offset = unit * 0.10f
+        drawDpadArrow(canvas, cx, cy - offset, unit, GamepadVisualState.dpadUpHeld, "▲")
+        drawDpadArrow(canvas, cx, cy + offset, unit, GamepadVisualState.dpadDownHeld, "▼")
+        drawDpadArrow(canvas, cx - offset, cy, unit, GamepadVisualState.dpadLeftHeld, "◀")
+        drawDpadArrow(canvas, cx + offset, cy, unit, GamepadVisualState.dpadRightHeld, "▶")
+    }
+
+    private fun drawDpadArrow(canvas: Canvas, cx: Float, cy: Float, unit: Float, held: Boolean, glyph: String) {
+        val r = unit * 0.05f
+        rect.set(cx - r, cy - r, cx + r, cy + r)
+        canvas.drawRoundRect(rect, unit * 0.015f, unit * 0.015f, if (held) litPaint else unlitPaint)
+        canvas.drawText(glyph, cx, cy + r * 0.4f, labelPaint)
     }
 }
