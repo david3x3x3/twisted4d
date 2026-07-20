@@ -151,7 +151,13 @@ class MainActivity : AppCompatActivity() {
         surfaceView.setOnTouchListener { _, event -> handle4DDrag(surfaceView, renderer, event) }
 
         gamepadInput = GamepadInputHandler(
-            onLeftStick = { x, y -> surfaceView.queueEvent { renderer.updateCell4Selection(x, y) } },
+            onLeftStick = { x, y ->
+                android.util.Log.i("TwistDiag", "raw stick x=$x y=$y")
+                surfaceView.queueEvent {
+                    renderer.updateCell4Selection(x, y)
+                    android.util.Log.i("TwistDiag", "resolved selectedCell4=${renderer.selectedCell4}")
+                }
+            },
             onRightStick = { x, y -> renderer.stickX = x; renderer.stickY = y },
             onFaceButton = { _, _ -> },
             on4DRotationButton = { button ->
@@ -162,6 +168,7 @@ class MainActivity : AppCompatActivity() {
                     renderer.snapViewToNearestCardinalOrientation()
                     val cell = renderer.selectedCell4
                     val fixAxis2 = if (button.literalAxis == cell.axis) Axis4.W else button.literalAxis
+                    android.util.Log.i("TwistDiag", "button=$button cell=$cell fixAxis2=$fixAxis2 prime=${button.primaryPrime}")
                     renderer.requestTwist(cell, fixAxis2, button.primaryPrime)
                 }
             },

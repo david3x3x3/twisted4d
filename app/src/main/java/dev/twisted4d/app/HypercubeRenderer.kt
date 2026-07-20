@@ -470,7 +470,11 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
      * another twist is still animating, or if [fixAxis2] equals [cell]'s own axis (invalid).
      */
     fun requestTwist(cell: Cell4, fixAxis2: Axis4, prime: Boolean) {
-        if (animating || fixAxis2 == cell.axis) return
+        android.util.Log.i("TwistDiag", "requestTwist ENTER cell=$cell fixAxis2=$fixAxis2 prime=$prime animating=$animating")
+        if (animating || fixAxis2 == cell.axis) {
+            android.util.Log.i("TwistDiag", "requestTwist BLOCKED")
+            return
+        }
 
         val before = currentTransforms
         NativeLib.cube4Twist(cell.nativeIndex, fixAxis2.nativeIndex, prime)
@@ -489,6 +493,7 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         animAfter = after
         animStartNanos = System.nanoTime()
         animating = true
+        android.util.Log.i("TwistDiag", "requestTwist APPLIED cellAxisIdx=$cellAxisIdx animPlaneA=$animPlaneA animPlaneB=$animPlaneB solvedAfter=${NativeLib.cube4IsSolved()}")
 
         onStateChanged?.invoke(NativeLib.cube4IsSolved())
     }
