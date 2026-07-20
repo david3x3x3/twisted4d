@@ -140,6 +140,25 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         }
     }
 
+    /**
+     * The actual entry point mode 2's dpad/L1/L2 use (see [MainActivity]'s on4DNavigate wiring)
+     * -- [defaultAxis]/[defaultSign] is the button's meaning under the *default*, un-rotated
+     * camera tilt (e.g. dpad-left -> AXIS_X,-1 for L), corrected for whichever of the 24 cardinal
+     * symmetries the view is *currently* snapped to before handing off to [navigateCell4Selection]
+     * -- the same correction mode 1's stick wedges apply (see [applyInverseSnapSymmetry]), just
+     * against the live [cameraSnapSymmetry] rather than a per-hold-frozen copy, since a discrete
+     * button press has no "hold" to freeze it at the start of. Without this, mode 2 wouldn't
+     * respect a camera rotation made earlier (via touch-drag + XW/YW/ZW, or mode 1's stick) --
+     * dpad-left would always target room slot L exactly, not whatever's actually on the left
+     * visually right now. Also snaps the view first, same as [MainActivity]'s on4DRotationButton
+     * wiring, so navigating keeps the puzzle visually tidy even without an active twist.
+     */
+    fun navigateMode2Selection(defaultAxis: Int, defaultSign: Int) {
+        snapViewToNearestCardinalOrientation()
+        val (targetAxis, targetSign) = inverseSnapSymmetryTarget(cameraSnapSymmetry, defaultAxis, defaultSign)
+        navigateCell4Selection(targetAxis, targetSign)
+    }
+
     /** Which [Cell4] the gamepad's left stick currently has selected for the next twist -- see
      * [updateCell4Selection]. A computed property, re-resolved against the *current*
      * [cubeOrientation4] on every read, rather than a cached value -- otherwise, since a
@@ -622,28 +641,36 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
      * ([defaultAxis], [defaultSign]) would be under the default (un-snapped) camera tilt --
      * i.e. corrects a wedge's default target for [holdSymmetry], the symmetry frozen at the
      * start of the current stick hold (*not* the live [cameraSnapSymmetry] -- see
-     * [holdSymmetry]'s doc for why that distinction matters). Since that symmetry only ever
-     * permutes/sign-flips the 3 spatial axes among themselves (never anything fractional -- it's
-     * always exactly one of 24 known rotations), this is exact, not an approximation: apply its
-     * *inverse* (its transpose, since it's orthogonal) to the default axis vector to find which
-     * room axis now maps onto it.
+     * [holdSymmetry]'s doc for why that distinction matters). See [inverseSnapSymmetryTarget]
+     * for the underlying math, shared with mode 2's [navigateMode2Selection].
      */
     private fun applyInverseSnapSymmetry(defaultAxis: Int, defaultSign: Int) {
+        val (axis, sign) = inverseSnapSymmetryTarget(holdSymmetry, defaultAxis, defaultSign)
+        selectedRoomAxis = axis
+        selectedRoomSign = sign
+    }
+
+    /**
+     * Which room axis/sign ([defaultAxis], [defaultSign]) -- a direction under the *default*,
+     * un-rotated camera tilt -- currently maps to, given [symmetry] (always one of the 24
+     * cardinal rotations). Since such a symmetry only ever permutes/sign-flips the 3 spatial
+     * axes among themselves (never anything fractional), this is exact, not an approximation:
+     * apply its *inverse* (its transpose, since it's orthogonal) to the default axis vector.
+     */
+    private fun inverseSnapSymmetryTarget(symmetry: FloatArray, defaultAxis: Int, defaultSign: Int): Pair<Int, Int> {
         snapSymmetryVecScratch[0] = 0f; snapSymmetryVecScratch[1] = 0f; snapSymmetryVecScratch[2] = 0f
         snapSymmetryVecScratch[defaultAxis] = defaultSign.toFloat()
         for (row in 0 until 3) {
             var sum = 0f
-            for (col in 0 until 3) sum += holdSymmetry[row * 4 + col] * snapSymmetryVecScratch[col]
+            for (col in 0 until 3) sum += symmetry[row * 4 + col] * snapSymmetryVecScratch[col]
             snapSymmetryOutScratch[row] = sum
         }
         for (axis in 0 until 3) {
             if (abs(snapSymmetryOutScratch[axis]) > 0.5f) {
-                selectedRoomAxis = axis
-                selectedRoomSign = if (snapSymmetryOutScratch[axis] > 0) 1 else -1
-                return
+                return axis to (if (snapSymmetryOutScratch[axis] > 0) 1 else -1)
             }
         }
-        error("holdSymmetry should always map every axis to exactly one other axis")
+        error("symmetry should always map every axis to exactly one other axis")
     }
 
     /**

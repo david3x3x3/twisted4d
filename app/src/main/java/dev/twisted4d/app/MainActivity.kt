@@ -264,12 +264,12 @@ class MainActivity : AppCompatActivity() {
                         }
                     } else {
                         when (button) {
-                            NavigationButton.LEFT -> renderer.navigateCell4Selection(HypercubeRenderer.AXIS_X, -1)
-                            NavigationButton.RIGHT -> renderer.navigateCell4Selection(HypercubeRenderer.AXIS_X, 1)
-                            NavigationButton.UP -> renderer.navigateCell4Selection(HypercubeRenderer.AXIS_Y, 1)
-                            NavigationButton.DOWN -> renderer.navigateCell4Selection(HypercubeRenderer.AXIS_Y, -1)
-                            NavigationButton.BUMPER_L -> renderer.navigateCell4Selection(HypercubeRenderer.AXIS_Z, 1)
-                            NavigationButton.TRIGGER_L -> renderer.navigateCell4Selection(HypercubeRenderer.AXIS_Z, -1)
+                            NavigationButton.LEFT -> renderer.navigateMode2Selection(HypercubeRenderer.AXIS_X, -1)
+                            NavigationButton.RIGHT -> renderer.navigateMode2Selection(HypercubeRenderer.AXIS_X, 1)
+                            NavigationButton.UP -> renderer.navigateMode2Selection(HypercubeRenderer.AXIS_Y, 1)
+                            NavigationButton.DOWN -> renderer.navigateMode2Selection(HypercubeRenderer.AXIS_Y, -1)
+                            NavigationButton.BUMPER_L -> renderer.navigateMode2Selection(HypercubeRenderer.AXIS_Z, 1)
+                            NavigationButton.TRIGGER_L -> renderer.navigateMode2Selection(HypercubeRenderer.AXIS_Z, -1)
                             NavigationButton.SELECT -> {
                                 renderer.snapViewToNearestCardinalOrientation()
                                 renderer.requestMoveSelectedCellToI()
