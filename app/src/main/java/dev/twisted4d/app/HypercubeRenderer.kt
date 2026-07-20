@@ -66,11 +66,6 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
     private var selectedRoomSign = 1
     private var stickHeld = false
 
-    /** TEMP diagnostic-only: the raw wedge state, to distinguish "the wedge itself changed"
-     * from "the wedge stayed the same but cubeOrientation4 changed underneath it" when read
-     * alongside selectedCell4. */
-    val debugWedgeState: String get() = "axis=$selectedRoomAxis sign=$selectedRoomSign"
-
     /** Which [Cell4] the gamepad's left stick currently has selected for the next twist -- see
      * [updateCell4Selection]. A computed property, re-resolved against the *current*
      * [cubeOrientation4] on every read, rather than a cached value -- otherwise, since a
@@ -331,7 +326,6 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
      * matrix, keeping the per-sticker slot resolution in [onDrawFrame] exact.
      */
     fun requestCameraRotate90(axisA: Int, axisB: Int, reverse: Boolean) {
-        android.util.Log.i("TwistDiag", "requestCameraRotate90 CALLED axisA=$axisA axisB=$axisB reverse=$reverse")
         setPlaneRotation4(deltaRot4A, axisA, axisB, if (reverse) -90f else 90f)
         mat4MatMul(newOrientation4, deltaRot4A, cubeOrientation4)
         System.arraycopy(newOrientation4, 0, cubeOrientation4, 0, 16)
@@ -494,11 +488,7 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
      * another twist is still animating, or if [fixAxis2] equals [cell]'s own axis (invalid).
      */
     fun requestTwist(cell: Cell4, fixAxis2: Axis4, prime: Boolean) {
-        android.util.Log.i("TwistDiag", "requestTwist ENTER cell=$cell fixAxis2=$fixAxis2 prime=$prime animating=$animating")
-        if (animating || fixAxis2 == cell.axis) {
-            android.util.Log.i("TwistDiag", "requestTwist BLOCKED")
-            return
-        }
+        if (animating || fixAxis2 == cell.axis) return
 
         val before = currentTransforms
         NativeLib.cube4Twist(cell.nativeIndex, fixAxis2.nativeIndex, prime)
@@ -517,7 +507,6 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         animAfter = after
         animStartNanos = System.nanoTime()
         animating = true
-        android.util.Log.i("TwistDiag", "requestTwist APPLIED cellAxisIdx=$cellAxisIdx animPlaneA=$animPlaneA animPlaneB=$animPlaneB solvedAfter=${NativeLib.cube4IsSolved()}")
 
         onStateChanged?.invoke(NativeLib.cube4IsSolved())
     }
