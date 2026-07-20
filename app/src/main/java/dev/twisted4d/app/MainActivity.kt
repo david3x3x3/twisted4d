@@ -339,6 +339,10 @@ class MainActivity : AppCompatActivity() {
                 shareTwistLog(formatTwistLog4D(snapshot))
             },
             orientation = LinearLayout.VERTICAL,
+            onExportMC4D = {
+                val snapshot = synchronized(moveHistory4D) { moveHistory4D.toList() }
+                shareTwistLog(mc4dLogFile(snapshot))
+            },
         )
 
         val filterColumn = LinearLayout(this).apply {
@@ -438,6 +442,7 @@ class MainActivity : AppCompatActivity() {
         onUndo: () -> Unit,
         onShareLog: () -> Unit,
         orientation: Int = LinearLayout.HORIZONTAL,
+        onExportMC4D: (() -> Unit)? = null,
     ): LinearLayout =
         LinearLayout(this).apply {
             this.orientation = orientation
@@ -445,6 +450,9 @@ class MainActivity : AppCompatActivity() {
             addView(Button(this@MainActivity).apply { text = "Reset"; setOnClickListener { onReset() } })
             addView(Button(this@MainActivity).apply { text = "Undo"; setOnClickListener { onUndo() } })
             addView(Button(this@MainActivity).apply { text = "Log"; setOnClickListener { onShareLog() } })
+            if (onExportMC4D != null) {
+                addView(Button(this@MainActivity).apply { text = "MC4D"; setOnClickListener { onExportMC4D() } })
+            }
         }
 
     /** Shrinks every [Button] nested anywhere under this [ViewGroup] (recursing into nested
@@ -481,16 +489,102 @@ class MainActivity : AppCompatActivity() {
         startActivity(Intent.createChooser(shareIntent, "Share move log"))
     }
 
-    /** e.g. "R F' U" -- standard face notation, prime marks a counterclockwise twist. */
-    private fun formatTwistLog3D(history: List<Pair<Face, Boolean>>): String =
-        history.joinToString(" ") { (face, prime) -> face.label + (if (prime) "'" else "") }
-
-    /** e.g. "F +x R' +w" -- cell twisted, prime marks counterclockwise, then the fixed axis
-     * (see `todo-controller-input.md`'s milestone-6 notes: our own notation, not MC4D's). */
-    private fun formatTwistLog4D(history: List<Triple<Cell4, Axis4, Boolean>>): String =
-        history.joinToString(" ") { (cell, fixAxis2, prime) ->
-            cell.label + (if (prime) "'" else "") + " +" + fixAxis2.label
+    /** Collapses exactly-two-consecutive-*identical* moves (same move, same prime) into a single
+     * "&lt;base&gt;2" token -- e.g. two "RU" moves in a row become "RU2" -- matching standard
+     * twisty-puzzle double-turn notation. Two consecutive *opposite*-prime moves on the same
+     * axis aren't a double turn (they're most of a cancellation), so those are deliberately left
+     * alone: only exact repeats consolidate. */
+    private fun <T> consolidateDoubles(moves: List<T>, baseNotation: (T) -> String): List<String> {
+        val out = mutableListOf<String>()
+        var i = 0
+        while (i < moves.size) {
+            if (i + 1 < moves.size && moves[i] == moves[i + 1]) {
+                out.add(baseNotation(moves[i]).trimEnd('\'') + "2")
+                i += 2
+            } else {
+                out.add(baseNotation(moves[i]))
+                i += 1
+            }
         }
+        return out
+    }
+
+    /** e.g. "R F' U2" -- standard face notation, prime marks a counterclockwise twist, doubled
+     * moves collapse via [consolidateDoubles]. */
+    private fun formatTwistLog3D(history: List<Pair<Face, Boolean>>): String =
+        consolidateDoubles(history) { (face, prime) -> face.label + (if (prime) "'" else "") }
+            .joinToString(" ")
+
+    /** Canonical single-cell representative for each axis, used to name fixAxis2 in
+     * hypercubing.xyz notation -- an arbitrary but consistent choice, since either of an axis's
+     * two cells names the same physical twist (just with the prime flipped). */
+    private fun axisRepresentativeCell(axis: Axis4): Cell4 = when (axis) {
+        Axis4.X -> Cell4.R
+        Axis4.Y -> Cell4.U
+        Axis4.Z -> Cell4.F
+        Axis4.W -> Cell4.O
+    }
+
+    /** MC4D's own cell order, empirically reverse-engineered (not documented in MC4D's source --
+     * it comes from an external geometry library's traversal order): both the "which 27-grip
+     * block" index for a cell *and* the within-block ordering of ridge-piece grips (see
+     * [mc4dGrip]) are positions in this exact sequence. */
+    private val MC4D_CELL_ORDER = listOf(Cell4.I, Cell4.D, Cell4.F, Cell4.L, Cell4.R, Cell4.B, Cell4.U, Cell4.O)
+
+    private fun mc4dOpposite(cell: Cell4): Cell4 = Cell4.entries.first { it.axis == cell.axis && it.sign == -cell.sign }
+
+    /** MC4D's grip index for the "2c ridge" piece straddling [cell] and [axisRepresentativeCell]
+     * of [fixAxis2] -- reverse-engineered from real MC4D log files (see the mc4d_log_compatibility
+     * memory for the full derivation): `cellIndex*27 + 20 + position`, where 20 is the fixed
+     * offset to the 6-slot "ridge" tier within a cell's 27-grip block, and position is where the
+     * representative cell falls in [MC4D_CELL_ORDER] once [cell] and its own opposite are
+     * removed (both cell index and ridge position use that same master order). */
+    private fun mc4dGrip(cell: Cell4, fixAxis2: Axis4): Int {
+        val cellIndex = MC4D_CELL_ORDER.indexOf(cell)
+        val opposite = mc4dOpposite(cell)
+        val remaining = MC4D_CELL_ORDER.filter { it != cell && it != opposite }
+        val position = remaining.indexOf(axisRepresentativeCell(fixAxis2))
+        return cellIndex * 27 + 20 + position
+    }
+
+    /** A real MagicCube4D `.log` file for [history], byte-for-byte in the format MC4D itself
+     * reads/writes (confirmed against real MC4D output) -- unlike [formatTwistLog4D], this is
+     * meant to be opened directly in MagicCube4D, not read by a person. Always uses the same
+     * canonical representative cell per axis ([axisRepresentativeCell]) for every twist, since
+     * `dir`'s sign is relative to *which grip* was clicked, not a universal CW/CCW -- e.g. `RD`
+     * (non-prime) is `RU`'s (non-prime) inverse, confirmed against real MC4D, so consistently
+     * using the same representative (never switching between an axis's two cells) is what keeps
+     * this app's own `prime` flag mapping to a consistent `dir` sign throughout. `slicemask` is
+     * always 1 (a single outer-layer twist, this app's only twist granularity). A 180-degree
+     * double twist is two separate identical triples, not a special encoding -- confirmed real
+     * MC4D does the same and doesn't consolidate them, even though its own turn counter and this
+     * app's [formatTwistLog4D] both display doubled moves as a single "X2" for readability. The
+     * view-orientation lines MC4D's header expects are filled with a fixed identity matrix --
+     * they only restore the camera angle on load, not puzzle state, so any valid orientation
+     * works. */
+    private fun mc4dLogFile(history: List<Triple<Cell4, Axis4, Boolean>>): String {
+        val header = "MagicCube4D 3 0 ${history.size} {4,3,3} 3"
+        val identityViewMatrix = listOf(
+            "1.0 0.0 0.0 0.0",
+            "0.0 1.0 0.0 0.0",
+            "0.0 0.0 1.0 0.0",
+            "0.0 0.0 0.0 1.0",
+        )
+        val moves = history.joinToString(" ") { (cell, fixAxis2, prime) ->
+            "${mc4dGrip(cell, fixAxis2)},${if (prime) 1 else -1},1"
+        }
+        return (listOf(header) + identityViewMatrix + listOf("*", "$moves.")).joinToString("\n")
+    }
+
+    /** e.g. "RU' RF RU2" -- hypercubing.xyz community notation: the twisted cell, then a
+     * representative cell for the fixed second axis, prime for counterclockwise, doubled moves
+     * collapsed via [consolidateDoubles]. Our own notation for undo/clipboard/share purposes --
+     * see [mc4dLogFile] for actual MagicCube4D file compatibility, which needs MC4D's own
+     * internal grip numbering, not this. */
+    private fun formatTwistLog4D(history: List<Triple<Cell4, Axis4, Boolean>>): String =
+        consolidateDoubles(history) { (cell, fixAxis2, prime) ->
+            cell.label + axisRepresentativeCell(fixAxis2).label + (if (prime) "'" else "")
+        }.joinToString(" ")
 
     private fun topCenterParams() = FrameLayout.LayoutParams(
         FrameLayout.LayoutParams.WRAP_CONTENT,
