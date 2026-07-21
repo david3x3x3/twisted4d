@@ -81,6 +81,13 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
      * must be a plain field set before [setRenderer], not a `queueEvent` call afterward. */
     @Volatile var pendingRestoreState: IntArray? = null
 
+    // Whether onSurfaceCreated has already run once for *this* renderer instance -- see that
+    // method's doc for why this matters: without it, onSurfaceCreated can't tell "genuinely new
+    // instance, no restore pending" (a mode switch or fresh launch, which should reset to solved)
+    // apart from "this same instance's surface got recreated mid-session" (e.g. a share-sheet
+    // Intent covering the activity, which should leave the puzzle state alone).
+    private var hasCreatedSurfaceBefore = false
+
     // Piece-type filtering: hides whole pieces (all their stickers) by how many of the piece's
     // HOME_POSITIONS coordinates are nonzero -- 4 = corner, 3 = "edge" -- a solve aid for early
     // stages. Sticker count is a permanent piece-type identity (see onDrawFrame), so this is a
@@ -431,13 +438,24 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
             GLES30.glBufferData(GLES30.GL_ARRAY_BUFFER, vertices.size * 4, buffer, GLES30.GL_STATIC_DRAW)
         }
 
+        // The native puzzle state lives in a process-lifetime Rust singleton (see cube4() in
+        // lib.rs), not anything tied to this GL surface -- so a reset is only correct the first
+        // time *this instance* creates a surface (a fresh launch or a mode switch, both of which
+        // construct a brand new HypercubeRenderer and expect a solved start, matching
+        // MainActivity.build4DScreen's own moveHistory4D.clear()), not on a later re-creation of
+        // the same instance's surface (e.g. the GL context getting torn down while an
+        // Intent.createChooser share sheet covers the activity -- confirmed via real-device
+        // testing: exporting a scrambled puzzle was silently resetting it to solved, because this
+        // used to reset unconditionally whenever no restore was pending, which is also true on
+        // that second, spurious call).
         val restore = pendingRestoreState
         if (restore != null) {
             NativeLib.cube4SetState(restore)
             pendingRestoreState = null
-        } else {
+        } else if (!hasCreatedSurfaceBefore) {
             NativeLib.cube4Reset()
         }
+        hasCreatedSurfaceBefore = true
         currentTransforms = NativeLib.cube4GetTransforms()
 
         setIdentity4(cubeOrientation4)

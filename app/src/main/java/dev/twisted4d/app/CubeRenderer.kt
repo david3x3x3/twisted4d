@@ -68,6 +68,10 @@ class CubeRenderer : GLSurfaceView.Renderer {
      * the race entirely -- thread-start already guarantees the GL thread sees it. */
     @Volatile var pendingRestoreState: IntArray? = null
 
+    // Whether onSurfaceCreated has already run once for *this* renderer instance -- see
+    // HypercubeRenderer.hasCreatedSurfaceBefore's matching doc for why this matters.
+    private var hasCreatedSurfaceBefore = false
+
     private var program = 0
     private var uMvpLoc = 0
 
@@ -168,13 +172,19 @@ class CubeRenderer : GLSurfaceView.Renderer {
             )
         }
 
+        // See HypercubeRenderer.onSurfaceCreated's matching comment: a reset is only correct the
+        // first time *this instance* creates a surface, not on a later re-creation of the same
+        // instance's surface (e.g. an Intent.createChooser share sheet covering the activity) --
+        // resetting unconditionally whenever no restore was pending was wiping out perfectly
+        // valid in-memory state on that second, spurious call.
         val restore = pendingRestoreState
         if (restore != null) {
             NativeLib.cubeSetState(restore)
             pendingRestoreState = null
-        } else {
+        } else if (!hasCreatedSurfaceBefore) {
             NativeLib.cubeReset()
         }
+        hasCreatedSurfaceBefore = true
         currentTransforms = NativeLib.cubeGetTransforms()
 
         Matrix.setIdentityM(cubeOrientation, 0)
