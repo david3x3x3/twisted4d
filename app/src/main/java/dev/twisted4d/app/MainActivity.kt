@@ -258,7 +258,7 @@ class MainActivity : AppCompatActivity() {
                     // there, since setInputMode pins selectedRoomAxis/Sign to R's slot.
                     renderer.snapViewToNearestCardinalOrientation()
                     val cell = renderer.selectedCell4
-                    val fixAxis2 = if (button.literalAxis == cell.axis) Axis4.W else button.literalAxis
+                    val fixAxis2 = renderer.resolveRotationButtonFixAxis2(button.literalAxis)
                     val prime = button.primaryPrime != rotationInvertedForCell(button, cell)
                     renderer.requestTwist(cell, fixAxis2, prime)
                 }
@@ -299,12 +299,12 @@ class MainActivity : AppCompatActivity() {
                         // that adapts to match an external notation convention).
                         GamepadInputMode.RKT ->
                             when (button) {
-                                NavigationButton.LEFT -> renderer.requestRktITwist(Axis4.Y, false)
-                                NavigationButton.RIGHT -> renderer.requestRktITwist(Axis4.Y, true)
-                                NavigationButton.UP -> renderer.requestRktITwist(Axis4.X, true)
-                                NavigationButton.DOWN -> renderer.requestRktITwist(Axis4.X, false)
-                                NavigationButton.BUMPER_L -> renderer.requestRktITwist(Axis4.Z, true)
-                                NavigationButton.TRIGGER_L -> renderer.requestRktITwist(Axis4.Z, false)
+                                NavigationButton.LEFT -> renderer.requestRktITwist(HypercubeRenderer.AXIS_Y, false)
+                                NavigationButton.RIGHT -> renderer.requestRktITwist(HypercubeRenderer.AXIS_Y, true)
+                                NavigationButton.UP -> renderer.requestRktITwist(HypercubeRenderer.AXIS_X, true)
+                                NavigationButton.DOWN -> renderer.requestRktITwist(HypercubeRenderer.AXIS_X, false)
+                                NavigationButton.BUMPER_L -> renderer.requestRktITwist(HypercubeRenderer.AXIS_Z, true)
+                                NavigationButton.TRIGGER_L -> renderer.requestRktITwist(HypercubeRenderer.AXIS_Z, false)
                                 NavigationButton.SELECT -> Unit
                             }
                     }

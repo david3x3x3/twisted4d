@@ -190,6 +190,49 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
     val selectedCell4: Cell4 get() = nativeCellInRoomSlot(selectedRoomAxis, selectedRoomSign)
 
     /**
+     * Resolves a rotation button's screen/room-relative axis (e.g. "Up" always means room axis X)
+     * to the actual *native* axis [requestTwist] needs for `fixAxis2`, given the currently
+     * selected room slot and however [cubeOrientation4] has been rotated so far.
+     *
+     * Two steps: first, resolve entirely in room terms -- if [buttonLiteralAxis] collides with
+     * the selected room slot's own axis ([selectedRoomAxis], *not* [selectedCell4]'s native axis
+     * -- see below for why that distinction matters), fall back to the room's W axis, matching
+     * how a cell's own screen wall never doubles as its own fixAxis2; otherwise use
+     * [buttonLiteralAxis] directly. Second, translate that *room* axis to whichever *native* axis
+     * currently occupies it.
+     *
+     * Both steps matter, and both must stay room-relative until the final translation -- confirmed
+     * via real testing: selecting F, moving it to I (room-rotating the Z/W pair), then selecting L
+     * and twisting should give a screen-relative "LO", but resolving fixAxis2 from
+     * [selectedCell4]'s *native* axis (as this used to) gave a twist that visually behaved like
+     * "LF" instead, because native W had by then rotated to sit at the room's F/B wall -- L's own
+     * *native* axis (X) happened to still equal its *room slot's* axis in that specific case (L's
+     * slot was untouched by the F/I rotation), so the collision check alone wasn't the bug; the
+     * fixAxis2 *value itself* (a bare native `Axis4.W`) was being used as if it always meant "the
+     * room's I/O direction," which stops being true the moment the room's been rotated. Using
+     * [selectedRoomAxis] for the collision check too (not just the translation) is required in
+     * general, though: it and [selectedCell4]'s native axis can differ once the room's been
+     * rotated enough that the *selected slot itself* holds a cell whose native axis isn't the
+     * slot's own -- e.g. selecting I right after the same F-to-I rotation above.
+     */
+    fun resolveRotationButtonFixAxis2(buttonLiteralAxis: Axis4): Axis4 {
+        val roomFixAxis2 = if (buttonLiteralAxis.nativeIndex == selectedRoomAxis) AXIS_W else buttonLiteralAxis.nativeIndex
+        return Axis4.entries.first { it.nativeIndex == nativeAxisAtRoomAxis(roomFixAxis2) }
+    }
+
+    /** Which native axis currently occupies room axis [roomAxis] (sign-agnostic) -- e.g. if the
+     * room's been rotated so native F now displays at the I/O wall, this returns F's own axis (Z)
+     * for `roomAxis = AXIS_W`, not W itself. `cubeOrientation4[roomAxis][nativeAxis]` is nonzero
+     * for exactly one nativeAxis, since it's always a signed permutation matrix (see the class
+     * doc) -- same reasoning as [nativeCellInRoomSlot], just axis-only (no sign/cell lookup). */
+    private fun nativeAxisAtRoomAxis(roomAxis: Int): Int {
+        for (nativeAxis in 0 until 4) {
+            if (abs(cubeOrientation4[roomAxis * 4 + nativeAxis]) > 0.5f) return nativeAxis
+        }
+        error("cubeOrientation4 should always map every room axis to exactly one native axis")
+    }
+
+    /**
      * Which [Cell4] to render brightened -- the selected room slot, while the left stick is
      * held significantly deflected (see `todo-controller-input.md`), null otherwise. Also a
      * computed property for the same live-resolution reason as [selectedCell4] -- but
@@ -216,13 +259,19 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
      * slot *currently* holds (not necessarily literal [Cell4.I], if the room's been rotated
      * earlier -- same room-slot-relative treatment [selectedCell4] gives R for RKT's right-hand
      * buttons, since a memorized algorithm should act on "whatever's in I/R right now", not a
-     * specific native cell identity). [fixAxis2]/[prime] are given directly by the caller, already
-     * resolved to the exact community-notation twist wanted (e.g. IU/IU') -- unlike
-     * [MainActivity]'s on4DRotationButton handling, this doesn't go through a screen-consistency
-     * correction, since these are fixed, explicit moves for a known algorithm rather than a
-     * "make this button feel the same on every cell" mapping. */
-    fun requestRktITwist(fixAxis2: Axis4, prime: Boolean) {
+     * specific native cell identity). [roomFixAxis2] is a *room* axis (e.g. `AXIS_Y` for the "U"
+     * in "IU"), translated to the native axis [requestTwist] needs the same way
+     * [resolveRotationButtonFixAxis2] does for on4DRotationButton -- without this, "IU" would only
+     * actually mean IU when the room happens to be at its default orientation, drifting to some
+     * other twist entirely once it's been rotated (e.g. via mode 1/2's "move to I"), the same bug
+     * that on4DRotationButton had. [prime] is given directly by the caller, already resolved to
+     * the exact community-notation twist wanted (e.g. IU vs IU') -- unlike on4DRotationButton,
+     * this doesn't go through [MainActivity]'s screen-consistency correction table, since these
+     * are fixed, explicit moves for a known algorithm rather than a "make this button feel the
+     * same on every cell" mapping. */
+    fun requestRktITwist(roomFixAxis2: Int, prime: Boolean) {
         snapViewToNearestCardinalOrientation()
+        val fixAxis2 = Axis4.entries.first { it.nativeIndex == nativeAxisAtRoomAxis(roomFixAxis2) }
         requestTwist(nativeCellInRoomSlot(AXIS_W, -1), fixAxis2, prime)
     }
 
