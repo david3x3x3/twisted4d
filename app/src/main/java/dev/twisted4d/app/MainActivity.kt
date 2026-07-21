@@ -35,10 +35,6 @@ class MainActivity : AppCompatActivity() {
     private var glSurfaceView: GLSurfaceView? = null
     private var is4DMode = true
 
-    // Which of the 3 valid axes is used as fixAxis2 for the next 4D cell twist (on-screen UI
-    // only -- the gamepad scheme resolves fixAxis2 itself, see HypercubeRenderer.updateCell4Selection).
-    private var selectedAxis4 = Axis4.W
-
     private var lastTouchX = 0f
     private var lastTouchY = 0f
     private lateinit var scaleGestureDetector: ScaleGestureDetector
@@ -289,72 +285,6 @@ class MainActivity : AppCompatActivity() {
 
         renderer.onTwistApplied = { cell, fixAxis2, prime -> moveHistory4D.add(Triple(cell, fixAxis2, prime)) }
 
-        // All the controls below sit in two vertical columns along the screen's left/right
-        // edges rather than stacked rows at the top/bottom -- the isometric hexagon view (see
-        // HypercubeRenderer's default orientation) occupies a squarish region in the middle,
-        // leaving the sides mostly empty, so this maximizes how much of that shape is unobscured
-        // top-to-bottom. Cell4.entries' 8 buttons are split in half (first 4 / last 4) between
-        // the two columns purely to keep either column's height reasonable.
-        fun cellButton(cell: Cell4): Button = Button(this@MainActivity).apply {
-            text = cell.label
-            setOnClickListener {
-                surfaceView.queueEvent { renderer.requestTwist(cell, selectedAxis4, false) }
-            }
-            setOnLongClickListener {
-                surfaceView.queueEvent { renderer.requestTwist(cell, selectedAxis4, true) }
-                true
-            }
-        }
-        val cellColumnLeft = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            Cell4.entries.take(4).forEach { addView(cellButton(it)) }
-        }
-        val cellColumnRight = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            Cell4.entries.drop(4).forEach { addView(cellButton(it)) }
-        }
-
-        lateinit var axisButtons: Map<Axis4, Button>
-        val axisColumn = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            axisButtons = Axis4.entries.associateWith { axis ->
-                Button(this@MainActivity).apply {
-                    text = "axis:${axis.label}"
-                    setOnClickListener {
-                        selectedAxis4 = axis
-                        axisButtons.forEach { (a, b) -> b.alpha = if (a == axis) 1f else 0.5f }
-                    }
-                }.also { addView(it) }
-            }
-            axisButtons.forEach { (a, b) -> b.alpha = if (a == selectedAxis4) 1f else 0.5f }
-        }
-
-        // The actual "4D camera" control: 90-degree rotation shortcuts, e.g. tapping "ZW" cycles
-        // F->I->B->O->F (see HypercubeRenderer's class doc) -- tap = +90, long-press = -90.
-        // Continuous free 4D rotation is deliberately not offered: it's hard to control by
-        // dragging and not needed here, since these shortcuts can reach any arrangement.
-        val rotateColumn = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            listOf(
-                Triple("XW", HypercubeRenderer.AXIS_X, HypercubeRenderer.AXIS_W),
-                Triple("YW", HypercubeRenderer.AXIS_Y, HypercubeRenderer.AXIS_W),
-                Triple("ZW", HypercubeRenderer.AXIS_Z, HypercubeRenderer.AXIS_W),
-            ).forEach { (label, axisA, axisB) ->
-                addView(
-                    Button(this@MainActivity).apply {
-                        text = label
-                        setOnClickListener {
-                            surfaceView.queueEvent { renderer.requestCameraRotate90(axisA, axisB, false) }
-                        }
-                        setOnLongClickListener {
-                            surfaceView.queueEvent { renderer.requestCameraRotate90(axisA, axisB, true) }
-                            true
-                        }
-                    },
-                )
-            }
-        }
-
         val utilityColumn = utilityRow(
             onScramble = { surfaceView.queueEvent { renderer.requestScramble(SCRAMBLE_MOVE_COUNT_4D) }; moveHistory4D.clear() },
             onReset = { surfaceView.queueEvent { renderer.requestReset() }; moveHistory4D.clear() },
@@ -395,11 +325,12 @@ class MainActivity : AppCompatActivity() {
             filterToggle("Hide 3c") { renderer.hideEdges = it }
         }
 
-        // This device's actual target form factor (handhelds like the Retroid Pocket, per the
-        // project's gamepad focus) is landscape -- wide but short -- so a single vertical column
-        // of 8+ buttons per side doesn't fit the available height at all. Each side is instead
-        // two narrower sub-columns side by side, and every button here gets compactChildren()'s
-        // reduced padding/text size so ~8 per sub-column still fits comfortably.
+        // Cell twists, camera rotation, and axis selection are gamepad-only now (see
+        // GamepadInputHandler) -- the on-screen buttons for them were dropped because their
+        // fixed two-sub-column-per-side layout didn't fit shorter/wider screens like the Retroid
+        // Pocket (see retroid-twisted.png). What's left is just the handful of actions gamepad
+        // input doesn't cover: mode switch, input scheme toggle, piece filtering, and the
+        // scramble/reset/undo/export utility row.
         // Toggles between gamepad input mode 1 (stick-based selection) and mode 2 (dpad/L1/L2
         // step navigation, see the on4DNavigate wiring above) -- purely a left-hand input scheme
         // choice, so it only needs to update inputMode2Active (for these closures) and the
@@ -414,31 +345,17 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // filterColumn moved to the right side (was left) to leave the bottom-left corner clear
-        // for GamepadOverlayView, which now needs more room for its d-pad.
-        val leftOuter = LinearLayout(this).apply {
+        val leftColumn = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             addView(modeToggleButton())
             addView(inputModeButton)
-            addView(rotateColumn)
-        }
-        val leftColumn = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            addView(leftOuter)
-            addView(cellColumnLeft)
-        }
-        val rightOuter = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            addView(utilityColumn)
-            addView(axisColumn)
-            addView(filterColumn)
         }
         val rightColumn = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            addView(cellColumnRight)
-            addView(rightOuter)
+            orientation = LinearLayout.VERTICAL
+            addView(utilityColumn)
+            addView(filterColumn)
         }
-        listOf(leftOuter, cellColumnLeft, cellColumnRight, rightOuter).forEach { it.compactChildren() }
+        listOf(leftColumn, rightColumn).forEach { it.compactChildren() }
 
         rootLayout.addView(surfaceView)
         rootLayout.addView(statusText, topCenterParams())
@@ -870,9 +787,7 @@ Two selectable input modes &#8212; switch with the on-screen "Input: Stick" / "I
 &#8226; The highlighted cell is remembered separately per mode &#8212; switching away and back restores it<br>
 <br>
 <b>4D ON-SCREEN BUTTONS</b><br>
-&#8226; U / D / L / R / F / B / I / O: twist that cell around the selected axis (see the AXIS buttons); long-press for the reverse direction<br>
-&#8226; AXIS:X / Y / Z / W: choose which axis the on-screen cell buttons twist around<br>
-&#8226; XW / YW / ZW: rotate the whole puzzle 90&#176; in that plane (tap = forward, long-press = reverse)<br>
+Cell twists and puzzle rotation are gamepad-only (see above) -- what's left on screen:<br>
 &#8226; Hide 4c / Hide 3c: hide corner / edge pieces, useful early in a solve<br>
 &#8226; Scramble / Reset / Undo<br>
 &#8226; Log: copy/share the twist history in hypercubing.xyz notation (e.g. "RU'")<br>
