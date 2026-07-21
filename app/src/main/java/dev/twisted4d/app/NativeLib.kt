@@ -31,7 +31,11 @@ object NativeLib {
     external fun cube4Reset()
     external fun cube4Twist(cell: Int, fixAxis2: Int, prime: Boolean)
     external fun cube4IsSolved(): Boolean
-    external fun cube4Scramble(moveCount: Int)
+
+    /** The moves actually applied, flattened as (cellIndex, axisIndex, primeFlag) triples --
+     * see [HypercubeRenderer.requestScramble], which decodes this back into (Cell4, Axis4,
+     * Boolean) so MainActivity can record the scramble into its own twist history. */
+    external fun cube4Scramble(moveCount: Int): IntArray
 
     /**
      * 80 pieces x 20 floats: [x, y, z, w, m00..m33 (16 floats, row-major)]. Piece order matches

@@ -47,6 +47,14 @@ class MainActivity : AppCompatActivity() {
     private val moveHistory3D = Collections.synchronizedList(mutableListOf<Pair<Face, Boolean>>())
     private val moveHistory4D = Collections.synchronizedList(mutableListOf<Triple<Cell4, Axis4, Boolean>>())
 
+    // How many of moveHistory4D's *leading* entries are scramble moves (see requestScramble) as
+    // opposed to moves the player actually made -- lets mc4dLogFile mark that boundary with a
+    // real MC4D-style "m|" token, matching what Edit > Go to Beginning jumps to in real MC4D, and
+    // lets formatTwistLog4D's human-readable notation skip the scramble entirely. Written from
+    // the GL thread inside onScramble's queueEvent block, read from the UI thread -- @Volatile
+    // for the same reason moveHistory4D itself is a synchronizedList.
+    @Volatile private var scrambleMoveCount4D = 0
+
     // Set by loadState() (called once, before the first rebuildUi()) when a saved puzzle state
     // exists for that mode; consumed (and nulled) by build3DScreen/build4DScreen the first time
     // they run afterward, restoring native state instead of the fresh solved() reset that
@@ -200,6 +208,7 @@ class MainActivity : AppCompatActivity() {
         val initiallySolved: Boolean
         if (pendingRestoreState4D == null) {
             moveHistory4D.clear()
+            scrambleMoveCount4D = 0
             initiallySolved = true
         } else {
             renderer.pendingRestoreState = pendingRestoreState4D
@@ -224,17 +233,19 @@ class MainActivity : AppCompatActivity() {
         )
         surfaceView.setOnTouchListener { _, event -> handle4DDrag(surfaceView, renderer, event) }
 
-        // Mode 1 (default): left stick selects a cell continuously, matching the existing
-        // scheme. Mode 2: the left stick is unused; the dpad/L1/L2/select instead step a
-        // persistent selection one press at a time -- see HypercubeRenderer.navigateCell4Selection
-        // and NavigationButton's doc. UI-thread-local so the toggle button's label updates
-        // immediately; renderer.mode2Active is the GL-thread source of truth these closures defer
-        // to once queued.
-        var inputMode2Active = false
+        // STICK (default): left stick selects a cell continuously. PAD: the left stick is unused;
+        // the dpad/L1/L2/select instead step a persistent selection one press at a time -- see
+        // HypercubeRenderer.navigateCell4Selection and NavigationButton's doc. RKT: no selection
+        // at all -- the left stick is unused and dpad/L1/L2 twist the room's current I slot
+        // directly, right-hand buttons act on R as if it were selected -- see
+        // HypercubeRenderer.requestRktITwist and GamepadInputMode's doc. UI-thread-local so the
+        // toggle button's label updates immediately; renderer.inputMode is the GL-thread source of
+        // truth these closures defer to once queued.
+        var inputMode = GamepadInputMode.STICK
 
         gamepadInput = GamepadInputHandler(
             onLeftStick = { x, y ->
-                if (!inputMode2Active) surfaceView.queueEvent { renderer.updateCell4Selection(x, y) }
+                if (inputMode == GamepadInputMode.STICK) surfaceView.queueEvent { renderer.updateCell4Selection(x, y) }
             },
             onRightStick = { x, y -> renderer.stickX = x; renderer.stickY = y },
             onFaceButton = { _, _ -> },
@@ -243,34 +254,59 @@ class MainActivity : AppCompatActivity() {
                     // Twisting without actively re-selecting via the stick (e.g. pressing a
                     // rotation button while it's centered, reusing the last selection) should
                     // still realign the view -- see HypercubeRenderer.snapViewToNearestCardinalOrientation.
+                    // Works unchanged for RKT too: renderer.selectedCell4 already resolves to R
+                    // there, since setInputMode pins selectedRoomAxis/Sign to R's slot.
                     renderer.snapViewToNearestCardinalOrientation()
                     val cell = renderer.selectedCell4
                     val fixAxis2 = if (button.literalAxis == cell.axis) Axis4.W else button.literalAxis
-                    renderer.requestTwist(cell, fixAxis2, button.primaryPrime)
+                    val prime = button.primaryPrime != rotationInvertedForCell(button, cell)
+                    renderer.requestTwist(cell, fixAxis2, prime)
                 }
             },
             on4DNavigate = { button ->
                 surfaceView.queueEvent {
-                    if (!renderer.mode2Active) {
-                        // Mode 1: only the trigger does anything, moving the stick-selected
-                        // cell to I (see HypercubeRenderer.requestMoveSelectedCellToI's doc).
-                        if (button == NavigationButton.TRIGGER_L) {
-                            renderer.snapViewToNearestCardinalOrientation()
-                            renderer.requestMoveSelectedCellToI()
-                        }
-                    } else {
-                        when (button) {
-                            NavigationButton.LEFT -> renderer.navigateMode2Selection(HypercubeRenderer.AXIS_X, -1)
-                            NavigationButton.RIGHT -> renderer.navigateMode2Selection(HypercubeRenderer.AXIS_X, 1)
-                            NavigationButton.UP -> renderer.navigateMode2Selection(HypercubeRenderer.AXIS_Y, 1)
-                            NavigationButton.DOWN -> renderer.navigateMode2Selection(HypercubeRenderer.AXIS_Y, -1)
-                            NavigationButton.BUMPER_L -> renderer.navigateMode2Selection(HypercubeRenderer.AXIS_Z, 1)
-                            NavigationButton.TRIGGER_L -> renderer.navigateMode2Selection(HypercubeRenderer.AXIS_Z, -1)
-                            NavigationButton.SELECT -> {
+                    when (inputMode) {
+                        GamepadInputMode.STICK ->
+                            // Only the trigger does anything, moving the stick-selected cell to I
+                            // (see HypercubeRenderer.requestMoveSelectedCellToI's doc).
+                            if (button == NavigationButton.TRIGGER_L) {
                                 renderer.snapViewToNearestCardinalOrientation()
                                 renderer.requestMoveSelectedCellToI()
                             }
-                        }
+                        GamepadInputMode.PAD ->
+                            when (button) {
+                                NavigationButton.LEFT -> renderer.navigateMode2Selection(HypercubeRenderer.AXIS_X, -1)
+                                NavigationButton.RIGHT -> renderer.navigateMode2Selection(HypercubeRenderer.AXIS_X, 1)
+                                NavigationButton.UP -> renderer.navigateMode2Selection(HypercubeRenderer.AXIS_Y, 1)
+                                NavigationButton.DOWN -> renderer.navigateMode2Selection(HypercubeRenderer.AXIS_Y, -1)
+                                NavigationButton.BUMPER_L -> renderer.navigateMode2Selection(HypercubeRenderer.AXIS_Z, 1)
+                                NavigationButton.TRIGGER_L -> renderer.navigateMode2Selection(HypercubeRenderer.AXIS_Z, -1)
+                                NavigationButton.SELECT -> {
+                                    renderer.snapViewToNearestCardinalOrientation()
+                                    renderer.requestMoveSelectedCellToI()
+                                }
+                            }
+                        // Community notation: LEFT=IU, RIGHT=IU', UP=IR, DOWN=IR', BUMPER_L(L1)=IF,
+                        // TRIGGER_L(L2)=IF'. SELECT is unbound -- no role specified for RKT mode.
+                        // The X/Z axis pairs need prime flipped relative to what their label would
+                        // naively suggest -- real-device-confirmed: Y (LEFT/RIGHT) was already
+                        // correct, but X (UP/DOWN) and Z (BUMPER_L/TRIGGER_L) both twisted the
+                        // right plane in the wrong direction until flipped. Requesting a "non-prime"
+                        // twist on I doesn't consistently mean the same rotation sense across
+                        // different fixAxis2 choices -- same root cause as the other per-cell/
+                        // per-axis correction tables in this file (Cube4::twist's rotating-axis
+                        // handedness is a mechanical function of axis index order, not something
+                        // that adapts to match an external notation convention).
+                        GamepadInputMode.RKT ->
+                            when (button) {
+                                NavigationButton.LEFT -> renderer.requestRktITwist(Axis4.Y, false)
+                                NavigationButton.RIGHT -> renderer.requestRktITwist(Axis4.Y, true)
+                                NavigationButton.UP -> renderer.requestRktITwist(Axis4.X, true)
+                                NavigationButton.DOWN -> renderer.requestRktITwist(Axis4.X, false)
+                                NavigationButton.BUMPER_L -> renderer.requestRktITwist(Axis4.Z, true)
+                                NavigationButton.TRIGGER_L -> renderer.requestRktITwist(Axis4.Z, false)
+                                NavigationButton.SELECT -> Unit
+                            }
                     }
                 }
             },
@@ -286,8 +322,21 @@ class MainActivity : AppCompatActivity() {
         renderer.onTwistApplied = { cell, fixAxis2, prime -> moveHistory4D.add(Triple(cell, fixAxis2, prime)) }
 
         val utilityColumn = utilityRow(
-            onScramble = { surfaceView.queueEvent { renderer.requestScramble(SCRAMBLE_MOVE_COUNT_4D) }; moveHistory4D.clear() },
-            onReset = { surfaceView.queueEvent { renderer.requestReset() }; moveHistory4D.clear() },
+            onScramble = {
+                surfaceView.queueEvent {
+                    val scrambleMoves = renderer.requestScramble(SCRAMBLE_MOVE_COUNT_4D)
+                    synchronized(moveHistory4D) {
+                        moveHistory4D.clear()
+                        moveHistory4D.addAll(scrambleMoves)
+                    }
+                    scrambleMoveCount4D = scrambleMoves.size
+                }
+            },
+            onReset = {
+                surfaceView.queueEvent { renderer.requestReset() }
+                moveHistory4D.clear()
+                scrambleMoveCount4D = 0
+            },
             onUndo = {
                 synchronized(moveHistory4D) {
                     if (moveHistory4D.isNotEmpty()) {
@@ -297,13 +346,16 @@ class MainActivity : AppCompatActivity() {
                 }
             },
             onShareLog = {
+                // Solve moves only -- hypercubing.xyz-style notation is for documenting/sharing a
+                // solve, so this drops the scramble prefix (see mc4dLogFile for the file format
+                // that does include it, marked with "m|").
                 val snapshot = synchronized(moveHistory4D) { moveHistory4D.toList() }
-                shareTwistLog(formatTwistLog4D(snapshot))
+                shareTwistLog(formatTwistLog4D(snapshot.drop(scrambleMoveCount4D.coerceAtMost(snapshot.size))))
             },
             orientation = LinearLayout.VERTICAL,
             onExportMC4D = {
                 val snapshot = synchronized(moveHistory4D) { moveHistory4D.toList() }
-                shareTwistLog(mc4dLogFile(snapshot))
+                shareTwistLog(mc4dLogFile(snapshot, scrambleMoveCount4D.coerceAtMost(snapshot.size)))
             },
         )
 
@@ -331,17 +383,25 @@ class MainActivity : AppCompatActivity() {
         // Pocket (see retroid-twisted.png). What's left is just the handful of actions gamepad
         // input doesn't cover: mode switch, input scheme toggle, piece filtering, and the
         // scramble/reset/undo/export utility row.
-        // Toggles between gamepad input mode 1 (stick-based selection) and mode 2 (dpad/L1/L2
-        // step navigation, see the on4DNavigate wiring above) -- purely a left-hand input scheme
-        // choice, so it only needs to update inputMode2Active (for these closures) and the
-        // renderer's own mirrored flag (for highlightedCell/navigateCell4Selection); nothing
-        // else about the screen changes.
+        // Cycles STICK -> PAD -> RKT -> STICK (see GamepadInputMode's doc for what each does) --
+        // purely a left-hand input scheme choice, so it only needs to update inputMode (for these
+        // closures) and the renderer's own mirrored state (for highlightedCell/
+        // navigateCell4Selection/requestRktITwist); nothing else about the screen changes.
+        fun inputModeLabel(mode: GamepadInputMode) = when (mode) {
+            GamepadInputMode.STICK -> "Input: Stick"
+            GamepadInputMode.PAD -> "Input: Pad"
+            GamepadInputMode.RKT -> "Input: RKT"
+        }
         val inputModeButton = Button(this).apply {
-            text = "Input: Stick"
+            text = inputModeLabel(inputMode)
             setOnClickListener {
-                inputMode2Active = !inputMode2Active
-                text = if (inputMode2Active) "Input: Pad" else "Input: Stick"
-                surfaceView.queueEvent { renderer.setMode2Active(inputMode2Active) }
+                inputMode = when (inputMode) {
+                    GamepadInputMode.STICK -> GamepadInputMode.PAD
+                    GamepadInputMode.PAD -> GamepadInputMode.RKT
+                    GamepadInputMode.RKT -> GamepadInputMode.STICK
+                }
+                text = inputModeLabel(inputMode)
+                surfaceView.queueEvent { renderer.setInputMode(inputMode) }
             }
         }
 
@@ -501,6 +561,51 @@ class MainActivity : AppCompatActivity() {
         consolidateDoubles(history) { (face, prime) -> face.label + (if (prime) "'" else "") }
             .joinToString(" ")
 
+    /** Whether [button]'s resolved twist needs its prime flipped to look screen-consistent for
+     * [cell] -- [RotationButton]'s literalAxis/primaryPrime scheme picks a single native rotation
+     * formula per button and applies it uniformly to whichever cell is selected, but the room
+     * rendering isn't symmetric across cells (each wall's "depth" axis is always W, regardless of
+     * that wall's own axis -- see HypercubeRenderer.onDrawFrame's screenPos computation), so the
+     * *same* formula produces opposite on-screen rotation senses for different cells. There's no
+     * clean closed-form correction (checked: doesn't reduce to a simple function of axis, sign, or
+     * fixAxis2 alone) -- both sets below were derived by simulating HypercubeRenderer's exact
+     * projection math (piece rotation -> room slot -> screenPos -> the isometric default view3
+     * matrix) for all 8 cells and comparing against a reference convention, then flipping prime for
+     * whichever cells didn't already match it.
+     *
+     * UP's reference is real-device-confirmed: the user reported `UP` already looks correct on `U`
+     * and `B`, backwards on the rest. The simulation reproduced that split exactly (U/B alone came
+     * out clockwise; D/L/R/F/I -- and O by the same rotating-axis-pair grouping as L/R/I, though O
+     * itself is never rendered to check directly -- all came out counterclockwise), and flipping
+     * prime for that same set made all 8 clockwise. DOWN shares the set for a structural reason,
+     * not a separately-confirmed one: it has the same literalAxis as UP and only flips
+     * primaryPrime, so it's *defined* as UP's exact opposite for every cell already -- simulated
+     * confirmation that DOWN is the opposite of UP's sense at all 7 checkable cells, both before
+     * and after applying this same correction, so reusing it keeps that relationship intact rather
+     * than re-deriving it from scratch.
+     *
+     * RIGHT/LEFT's reference is weaker -- not live-tested like UP was, but read off the original
+     * `todo-controller-input.md` spec's stated target ("Right button: rotates so the positive X
+     * axis moves away from the user, i.e. positive X -> negative Z"). U and D are RIGHT's
+     * "collision" cells (literalAxis=Y collides with their own axis, forcing fixAxis2=W, the clean
+     * case), and simulating RIGHT's *current, unmodified* formula on them produces exactly that
+     * +X->-Z rotation -- so U/D (plus L/F/I, which already independently matched U/D's resulting
+     * screen sense) were treated as the reference, and only R/B (and O by extension) get flipped.
+     * LEFT reuses the same set for the same structural reason DOWN reuses UP's. **Needs real
+     * controller confirmation** -- unlike UP, nobody has tested RIGHT/LEFT on hardware yet, this is
+     * only as good as the old spec doc's wording and the simulation.
+     *
+     * BUMPER_R/TRIGGER_R's reference is real-device-confirmed, like UP's: the user reported both
+     * already look correct on `R` and `D`, backwards on the rest. Simulated confirmation matched
+     * that split exactly (R/D alone were already internally consistent between TRIGGER_R and
+     * BUMPER_R as an opposite pair; U/L/F/B/I -- and O by extension -- all came out backwards on
+     * both), and flipping prime for that set made all 8 cells consistent for both buttons. */
+    private fun rotationInvertedForCell(button: RotationButton, cell: Cell4): Boolean = when (button) {
+        RotationButton.UP, RotationButton.DOWN -> cell in setOf(Cell4.D, Cell4.L, Cell4.R, Cell4.F, Cell4.I, Cell4.O)
+        RotationButton.LEFT, RotationButton.RIGHT -> cell in setOf(Cell4.R, Cell4.B, Cell4.O)
+        RotationButton.TRIGGER_R, RotationButton.BUMPER_R -> cell in setOf(Cell4.U, Cell4.L, Cell4.F, Cell4.B, Cell4.I, Cell4.O)
+    }
+
     /** Canonical single-cell representative for each axis, used to name fixAxis2 in
      * hypercubing.xyz notation -- an arbitrary but consistent choice, since either of an axis's
      * two cells names the same physical twist (just with the prime flipped). */
@@ -533,6 +638,10 @@ class MainActivity : AppCompatActivity() {
         return cellIndex * 27 + 20 + position
     }
 
+    /** Which cells need `dir` flipped for an O-representative (`fixAxis2 == W`) twist in
+     * [mc4dLogFile] -- see that function's doc for the real-MC4D-confirmed data this came from. */
+    private val MC4D_O_DIR_FLIP_CELLS = setOf(Cell4.R, Cell4.D, Cell4.F)
+
     /** A real MagicCube4D `.log` file for [history], byte-for-byte in the format MC4D itself
      * reads/writes (confirmed against real MC4D output) -- unlike [formatTwistLog4D], this is
      * meant to be opened directly in MagicCube4D, not read by a person. Always uses the same
@@ -540,26 +649,48 @@ class MainActivity : AppCompatActivity() {
      * `dir`'s sign is relative to *which grip* was clicked, not a universal CW/CCW -- e.g. `RD`
      * (non-prime) is `RU`'s (non-prime) inverse, confirmed against real MC4D, so consistently
      * using the same representative (never switching between an axis's two cells) is what keeps
-     * this app's own `prime` flag mapping to a consistent `dir` sign throughout. `slicemask` is
-     * always 1 (a single outer-layer twist, this app's only twist granularity). A 180-degree
-     * double twist is two separate identical triples, not a special encoding -- confirmed real
-     * MC4D does the same and doesn't consolidate them, even though its own turn counter and this
-     * app's [formatTwistLog4D] both display doubled moves as a single "X2" for readability. The
-     * view-orientation lines MC4D's header expects are filled with a fixed identity matrix --
-     * they only restore the camera angle on load, not puzzle state, so any valid orientation
-     * works. */
-    private fun mc4dLogFile(history: List<Triple<Cell4, Axis4, Boolean>>): String {
-        val header = "MagicCube4D 3 0 ${history.size} {4,3,3} 3"
+     * this app's own `prime` flag mapping to a consistent `dir` sign throughout -- *except* for
+     * O-representative (`fixAxis2 == W`) twists on three specific cells, which come out with the
+     * opposite chirality from the rest: confirmed against real MC4D from a solved puzzle, `RO`/
+     * `DO`/`FO` (non-prime) replay correctly, but `UO`/`BO`/`LO` (non-prime) replay as their prime.
+     * [MC4D_O_DIR_FLIP_CELLS] holds that exact set (R/D/F) -- there's no clean formula (checked:
+     * doesn't reduce to sign alone, or representative-vs-opposite alone -- R and F are each axis's
+     * *representative* cell, but D is Y's *opposite* of the representative, U), likely for the same
+     * underlying reason the on-screen rotation-button screen-consistency fixes needed their own
+     * empirical per-cell tables elsewhere in this file: W has no natural real-3D right-hand-rule
+     * equivalent the way X/Y/Z do, so whatever internal geometry library MC4D uses for W-involving
+     * grips (not present in the MC4D repo) doesn't necessarily follow a simple pattern. `slicemask`
+     * is always 1 (a single outer-layer twist, this app's only twist granularity). A 180-degree double twist is two separate identical
+     * triples, not a special encoding -- confirmed real MC4D does the same and doesn't consolidate
+     * them, even though its own turn counter and this app's [formatTwistLog4D] both display
+     * doubled moves as a single "X2" for readability. The view-orientation lines MC4D's header
+     * expects are filled with a fixed identity matrix -- they only restore the camera angle on
+     * load, not puzzle state, so any valid orientation works.
+     *
+     * [scrambleCount] leading entries of [history] are the scramble, not moves the player made --
+     * real MC4D marks that boundary inline with a literal "m|" token in the move list, which is
+     * where its Edit > Go to Beginning / Redo lands, and the header's move-count field counts only
+     * the post-mark moves, not the file's full replay -- confirmed two ways: reading a real MC4D
+     * log (`f2l.log`) that had this shape already, and round-tripping our own scramble+twists
+     * export back through real MC4D (`retroid.log`), where Edit > Go to Beginning and single-step
+     * Redo both worked as expected. The header's second field is `2` whenever a mark is present
+     * (vs. `0` with none), also confirmed by both files. */
+    private fun mc4dLogFile(history: List<Triple<Cell4, Axis4, Boolean>>, scrambleCount: Int): String {
+        val solveCount = history.size - scrambleCount
+        val header = "MagicCube4D 3 ${if (scrambleCount > 0) 2 else 0} $solveCount {4,3,3} 3"
         val identityViewMatrix = listOf(
             "1.0 0.0 0.0 0.0",
             "0.0 1.0 0.0 0.0",
             "0.0 0.0 1.0 0.0",
             "0.0 0.0 0.0 1.0",
         )
-        val moves = history.joinToString(" ") { (cell, fixAxis2, prime) ->
-            "${mc4dGrip(cell, fixAxis2)},${if (prime) 1 else -1},1"
-        }
-        return (listOf(header) + identityViewMatrix + listOf("*", "$moves.")).joinToString("\n")
+        val tokens = history.map { (cell, fixAxis2, prime) ->
+            val flip = fixAxis2 == Axis4.W && cell in MC4D_O_DIR_FLIP_CELLS
+            val dir = if (flip) (if (prime) -1 else 1) else (if (prime) 1 else -1)
+            "${mc4dGrip(cell, fixAxis2)},$dir,1"
+        }.toMutableList()
+        if (scrambleCount > 0) tokens.add(scrambleCount, "m|")
+        return (listOf(header) + identityViewMatrix + listOf("*", "${tokens.joinToString(" ")}.")).joinToString("\n")
     }
 
     /** e.g. "RU' RF RU2" -- hypercubing.xyz community notation: the twisted cell, then a
@@ -695,6 +826,7 @@ class MainActivity : AppCompatActivity() {
                 .put("state", stateJson)
                 .put("history", historyJson)
                 .put("solved", solved)
+                .put("scrambleCount4D", scrambleMoveCount4D)
             File(filesDir, SAVE_FILE_NAME).writeText(root.toString())
         } catch (e: Exception) {
             Log.w(TAG, "Failed to save puzzle state", e)
@@ -718,6 +850,7 @@ class MainActivity : AppCompatActivity() {
             if (is4DMode) {
                 pendingRestoreState4D = state
                 pendingRestoreSolved4D = solved
+                scrambleMoveCount4D = root.optInt("scrambleCount4D", 0)
                 for (i in 0 until historyJson.length()) {
                     val entry = historyJson.getJSONArray(i)
                     moveHistory4D.add(
@@ -765,7 +898,8 @@ class MainActivity : AppCompatActivity() {
 &#8226; Hold L2: reverse direction (prime) for any of the above<br>
 <br>
 <b>4D MODE &#8212; GAMEPAD</b><br>
-Two selectable input modes &#8212; switch with the on-screen "Input: Stick" / "Input: Pad" button.<br>
+Three selectable input modes &#8212; cycle with the on-screen "Input: Stick" / "Input: Pad" /
+"Input: RKT" button.<br>
 <br>
 <b>Mode 1 &#8212; Stick Select (default)</b><br>
 &#8226; Left stick: select a cell (deflect toward it, release to keep the selection)<br>
@@ -785,6 +919,17 @@ Two selectable input modes &#8212; switch with the on-screen "Input: Stick" / "I
 &#8226; Each direction stops at its endpoint &#8212; no wraparound, and O can never be reached this way<br>
 &#8226; Select button: rotate the puzzle so the highlighted cell moves to I<br>
 &#8226; The highlighted cell is remembered separately per mode &#8212; switching away and back restores it<br>
+<br>
+<b>Mode 3 &#8212; RKT</b><br>
+For the final phase of a solve, where every twist is either an I-cell rotation or R itself &#8212;
+no cell selection needed, so nothing is highlighted.<br>
+&#8226; Left stick: unused<br>
+&#8226; Right stick: orbit the view, same as the other modes<br>
+&#8226; Y / A / X / B, R1 / R2: twist R, same as if it were selected in mode 1/2<br>
+&#8226; D-pad left / right: twist I as IU / IU'<br>
+&#8226; D-pad up / down: twist I as IR / IR'<br>
+&#8226; L1 / L2 (bumper / trigger): twist I as IF / IF'<br>
+&#8226; Select button: unused<br>
 <br>
 <b>4D ON-SCREEN BUTTONS</b><br>
 Cell twists and puzzle rotation are gamepad-only (see above) -- what's left on screen:<br>

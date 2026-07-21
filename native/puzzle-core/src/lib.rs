@@ -156,13 +156,28 @@ pub extern "system" fn Java_dev_twisted4d_app_NativeLib_cube4IsSolved<'local>(
     }
 }
 
+/// Returns the moves actually applied, flattened as (cellIndex, axisIndex, primeFlag) triples --
+/// the caller needs these (not just the resulting state) to record the scramble into its own
+/// twist history, so exported logs can mark where the scramble ends (see MainActivity.mc4dLogFile).
 #[no_mangle]
 pub extern "system" fn Java_dev_twisted4d_app_NativeLib_cube4Scramble<'local>(
-    _env: JNIEnv<'local>,
+    env: JNIEnv<'local>,
     _class: JClass<'local>,
     move_count: jint,
-) {
-    cube4().lock().unwrap().scramble(move_count.max(0) as u32);
+) -> jintArray {
+    let moves = cube4().lock().unwrap().scramble(move_count.max(0) as u32);
+    let mut flat = Vec::with_capacity(moves.len() * 3);
+    for (cell, axis, prime) in moves {
+        flat.push(cell as i32);
+        flat.push(axis.index() as i32);
+        flat.push(prime as i32);
+    }
+    let array = env
+        .new_int_array(flat.len() as i32)
+        .expect("failed to allocate int array");
+    env.set_int_array_region(&array, 0, &flat)
+        .expect("failed to fill int array");
+    array.into_raw()
 }
 
 #[no_mangle]

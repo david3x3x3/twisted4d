@@ -45,6 +45,14 @@ import kotlin.math.sqrt
  * make the discrete "which wall is this sticker on" threshold below flip abruptly mid-drag, and
  * (b) never rotate the sticker meshes themselves, since only their positions depended on it.
  */
+
+/** The 4D screen's 3 gamepad left-hand input schemes -- see [HypercubeRenderer.setInputMode].
+ * [STICK]: continuous stick-angle cell selection ([HypercubeRenderer.updateCell4Selection]).
+ * [PAD]: discrete dpad/L1/L2 step navigation ([HypercubeRenderer.navigateCell4Selection]).
+ * [RKT]: no selection at all -- the left-hand controls twist the room's current I slot directly
+ * (see [HypercubeRenderer.requestRktITwist]), for executing a fixed, memorized last-phase-of-solve
+ * algorithm (hypercube OLL/PLL equivalent) without needing to reselect a cell between twists. */
+enum class GamepadInputMode { STICK, PAD, RKT }
 class HypercubeRenderer : GLSurfaceView.Renderer {
 
     // Scaled up from the room's plain size to compensate for the narrower FOV in
@@ -87,39 +95,41 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
     private var selectedRoomSign = 1
     private var stickHeld = false
 
-    /** True while 4D input mode 2 (step navigation via dpad/L1/L2, see [navigateCell4Selection])
-     * is active, as opposed to mode 1's stick-based [updateCell4Selection]. Read from the UI
-     * thread (MainActivity's on4DNavigate/onLeftStick closures, both running inside their own
-     * queueEvent already) and written only via [setMode2Active], also GL-thread-only. */
-    @Volatile var mode2Active: Boolean = false
+    /** Which of the 3 left-hand input schemes is active -- see [GamepadInputMode]. Read from the
+     * UI thread (MainActivity's on4DNavigate/onLeftStick closures, both running inside their own
+     * queueEvent already) and written only via [setInputMode], also GL-thread-only. */
+    @Volatile var inputMode: GamepadInputMode = GamepadInputMode.STICK
         private set
 
-    // Mode 2 remembers its own selected room slot independently of mode 1's -- these hold
-    // whichever mode is *not* currently active's slot, swapped into/out of the single "live"
-    // selectedRoomAxis/selectedRoomSign pair above by setMode2Active, so flipping modes never
-    // disturbs the other mode's last selection. Mode 2 defaults to I the first time it activates.
-    private var parkedMode1Axis = AXIS_Y
-    private var parkedMode1Sign = 1
-    private var parkedMode2Axis = AXIS_W
-    private var parkedMode2Sign = -1
+    // STICK and PAD each remember their own selected room slot independently -- these hold
+    // whichever of those two modes *isn't* currently active's slot, swapped into/out of the
+    // single "live" selectedRoomAxis/selectedRoomSign pair above by setInputMode, so switching
+    // modes never disturbs the other mode's last selection. PAD defaults to I the first time it
+    // activates. RKT doesn't need a parked slot of its own -- its selection is always pinned to R
+    // (see setInputMode), never remembered/restored.
+    private var parkedStickAxis = AXIS_Y
+    private var parkedStickSign = 1
+    private var parkedPadAxis = AXIS_W
+    private var parkedPadSign = -1
 
-    /** Swaps mode 2's remembered room slot into (or out of) the live selectedRoomAxis/Sign pair
-     * -- see the parked-state fields' doc. Must run on the GL thread (those fields aren't
-     * volatile) -- call via queueEvent, same as [updateCell4Selection]/[navigateCell4Selection]. */
-    fun setMode2Active(active: Boolean) {
-        if (active == mode2Active) return
-        if (active) {
-            parkedMode1Axis = selectedRoomAxis
-            parkedMode1Sign = selectedRoomSign
-            selectedRoomAxis = parkedMode2Axis
-            selectedRoomSign = parkedMode2Sign
-        } else {
-            parkedMode2Axis = selectedRoomAxis
-            parkedMode2Sign = selectedRoomSign
-            selectedRoomAxis = parkedMode1Axis
-            selectedRoomSign = parkedMode1Sign
+    /** Swaps the outgoing mode's room slot into its own parked field (STICK/PAD only -- RKT has
+     * none, see the parked-state fields' doc) and sets up the incoming mode's slot: STICK/PAD
+     * restore their own parked slot, RKT always pins to R (AXIS_X, +1) -- see [GamepadInputMode]'s
+     * doc for why R specifically. Must run on the GL thread (those fields aren't volatile) --
+     * call via queueEvent, same as [updateCell4Selection]/[navigateCell4Selection]. */
+    fun setInputMode(mode: GamepadInputMode) {
+        if (mode == inputMode) return
+        when (inputMode) {
+            GamepadInputMode.STICK -> { parkedStickAxis = selectedRoomAxis; parkedStickSign = selectedRoomSign }
+            GamepadInputMode.PAD -> { parkedPadAxis = selectedRoomAxis; parkedPadSign = selectedRoomSign }
+            GamepadInputMode.RKT -> Unit
         }
-        mode2Active = active
+        when (mode) {
+            GamepadInputMode.STICK -> { selectedRoomAxis = parkedStickAxis; selectedRoomSign = parkedStickSign }
+            GamepadInputMode.PAD -> { selectedRoomAxis = parkedPadAxis; selectedRoomSign = parkedPadSign }
+            GamepadInputMode.RKT -> { selectedRoomAxis = AXIS_X; selectedRoomSign = 1 }
+        }
+        inputMode = mode
     }
 
     /**
@@ -185,9 +195,29 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
      * native I into the "R" wall, that sticker's currentCell is `R` (the wall it's now on), not
      * `I` (what it natively is). Comparing against [selectedCell4] (I's own native identity)
      * would never match anything actually sitting in the selected wall; comparing against this
-     * property (the wall's label) does.
+     * property (the wall's label) does. Always null in [GamepadInputMode.RKT] -- its selection is
+     * fixed and never meant to draw attention to itself (see [GamepadInputMode]'s doc).
      */
-    val highlightedCell: Cell4? get() = if (stickHeld || mode2Active) cellFor(selectedRoomAxis, selectedRoomSign) else null
+    val highlightedCell: Cell4?
+        get() = when {
+            inputMode == GamepadInputMode.RKT -> null
+            stickHeld || inputMode == GamepadInputMode.PAD -> cellFor(selectedRoomAxis, selectedRoomSign)
+            else -> null
+        }
+
+    /** [GamepadInputMode.RKT]'s left-hand controls -- twists whichever native cell the room's I
+     * slot *currently* holds (not necessarily literal [Cell4.I], if the room's been rotated
+     * earlier -- same room-slot-relative treatment [selectedCell4] gives R for RKT's right-hand
+     * buttons, since a memorized algorithm should act on "whatever's in I/R right now", not a
+     * specific native cell identity). [fixAxis2]/[prime] are given directly by the caller, already
+     * resolved to the exact community-notation twist wanted (e.g. IU/IU') -- unlike
+     * [MainActivity]'s on4DRotationButton handling, this doesn't go through a screen-consistency
+     * correction, since these are fixed, explicit moves for a known algorithm rather than a
+     * "make this button feel the same on every cell" mapping. */
+    fun requestRktITwist(fixAxis2: Axis4, prime: Boolean) {
+        snapViewToNearestCardinalOrientation()
+        requestTwist(nativeCellInRoomSlot(AXIS_W, -1), fixAxis2, prime)
+    }
 
     // GL-thread-only edge-detection state for updateCell4Selection's snap-on-deflect behavior.
     private var stickWasSignificant = false
@@ -714,12 +744,22 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         return true
     }
 
-    /** Instantly re-randomizes the puzzle (no animation) and refreshes solved state. */
-    fun requestScramble(moveCount: Int) {
-        if (animating) return
-        NativeLib.cube4Scramble(moveCount)
+    /** Instantly re-randomizes the puzzle (no animation), refreshes solved state, and returns
+     * the moves actually applied -- MainActivity records these into its own twist history (see
+     * [NativeLib.cube4Scramble]'s doc) so an exported MC4D log can mark where the scramble ends,
+     * matching real MagicCube4D's own "m|" convention. */
+    fun requestScramble(moveCount: Int): List<Triple<Cell4, Axis4, Boolean>> {
+        if (animating) return emptyList()
+        val raw = NativeLib.cube4Scramble(moveCount)
         currentTransforms = NativeLib.cube4GetTransforms()
         onStateChanged?.invoke(NativeLib.cube4IsSolved())
+        return (raw.indices step 3).map { i ->
+            Triple(
+                Cell4.entries.first { it.nativeIndex == raw[i] },
+                Axis4.entries.first { it.nativeIndex == raw[i + 1] },
+                raw[i + 2] != 0,
+            )
+        }
     }
 
     /** Instantly resets to solved (no animation) and refreshes solved state. */
