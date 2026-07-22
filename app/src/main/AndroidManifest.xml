@@ -12,15 +12,21 @@
         android:theme="@style/Theme.Twisted4D">
 
         <activity
-            android:name=".MainActivity"
+            android:name=".SplashActivity"
             android:exported="true"
             android:screenOrientation="landscape"
-            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout">
+            android:theme="@style/Theme.Twisted4D">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="false"
+            android:screenOrientation="landscape"
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout" />
 
         <!-- Lets MainActivity.shareLogFile share a real, properly-named/extensioned file (e.g.
              "twisted4d.log") via a content:// Uri, instead of loose clipboard text that every

@@ -84,7 +84,10 @@ class GamepadOverlayView(context: Context) : View(context) {
         drawShoulder(canvas, w * 0.50f, h * 0.17f, unit * 0.85f, GamepadVisualState.selectHeld, "SEL")
 
         // Left cluster: stick above, d-pad below.
-        drawStick(canvas, w * 0.24f, h * 0.42f, unit * 0.135f, GamepadVisualState.leftStickX, GamepadVisualState.leftStickY)
+        drawStick(
+            canvas, w * 0.24f, h * 0.42f, unit * 0.135f,
+            GamepadVisualState.leftStickX, GamepadVisualState.leftStickY, GamepadVisualState.thumbLHeld,
+        )
         drawDpad(canvas, w * 0.24f, h * 0.74f, unit)
 
         // Right cluster: face-button diamond above, stick below.
@@ -110,12 +113,23 @@ class GamepadOverlayView(context: Context) : View(context) {
         canvas.drawText(label, cx, cy + r * 0.4f, labelPaint)
     }
 
-    /** [stickX]/[stickY] are in the same -1..1 range [GamepadInputHandler] already deadzones. */
-    private fun drawStick(canvas: Canvas, cx: Float, cy: Float, r: Float, stickX: Float, stickY: Float) {
+    /** [stickX]/[stickY] are in the same -1..1 range [GamepadInputHandler] already deadzones.
+     * [clickHeld] lights the center dot the same blue as every other held control, for sticks
+     * whose click (L3/R3) this app actually binds to something -- omitted (always unlit) for
+     * sticks with no click binding. */
+    private fun drawStick(
+        canvas: Canvas,
+        cx: Float,
+        cy: Float,
+        r: Float,
+        stickX: Float,
+        stickY: Float,
+        clickHeld: Boolean = false,
+    ) {
         canvas.drawCircle(cx, cy, r, unlitPaint)
         val dotX = cx + stickX.coerceIn(-1f, 1f) * (r - r * 0.25f)
         val dotY = cy + stickY.coerceIn(-1f, 1f) * (r - r * 0.25f)
-        canvas.drawCircle(dotX, dotY, r * 0.22f, stickDotPaint)
+        canvas.drawCircle(dotX, dotY, r * 0.22f, if (clickHeld) litPaint else stickDotPaint)
     }
 
     /** Four independently-lighting arrow glyphs in a plus arrangement -- mode 2's step

@@ -43,6 +43,11 @@ android {
 dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.appcompat:appcompat:1.7.0")
+    testImplementation("org.junit.jupiter:junit-jupiter:5.10.2")
+}
+
+tasks.withType<Test> {
+    useJUnitPlatform()
 }
 
 // --- Native (Rust) build wiring -------------------------------------------

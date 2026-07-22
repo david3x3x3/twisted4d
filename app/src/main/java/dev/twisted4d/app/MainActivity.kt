@@ -1,10 +1,12 @@
 package dev.twisted4d.app
 
 import android.app.AlertDialog
+import android.content.BroadcastReceiver
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.hardware.input.InputManager
 import android.opengl.GLSurfaceView
 import android.os.Bundle
@@ -21,6 +23,7 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import org.json.JSONArray
 import org.json.JSONObject
@@ -36,6 +39,29 @@ class MainActivity : AppCompatActivity() {
     private var glSurfaceView: GLSurfaceView? = null
     private var is4DMode = true
 
+    // Set by build4DScreen, read by sceneDumpReceiver -- lets an adb-triggered broadcast query
+    // the live scene without any on-screen debug button (see sceneDumpReceiver's doc). Null in 3D
+    // mode/before build4DScreen has run.
+    private var hypercubeRenderer: HypercubeRenderer? = null
+
+    /** Testing hook, not a user feature: `adb shell am broadcast -a dev.twisted4d.app.DUMP_SCENE`
+     * logs every currently-visible sticker's room position and color (via
+     * HypercubeRenderer.currentSceneColors), so a test can verify what's actually on screen from
+     * native+orientation state directly -- no screenshot, no manual reading required. Added after
+     * a debugging session where confirming a fix meant repeatedly asking the user to read specific
+     * sticker colors off their own screen; this makes that queryable by adb instead. */
+    private val sceneDumpReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            val surfaceView = glSurfaceView ?: return
+            val renderer = hypercubeRenderer ?: return
+            surfaceView.queueEvent {
+                renderer.currentSceneColors().forEach { s ->
+                    Log.i(TAG, "SCENEDUMP wall=(${s.roomAxis},${s.roomSign}) pos=(${s.x},${s.y},${s.z}) color=${s.colorCell}")
+                }
+            }
+        }
+    }
+
     private var lastTouchX = 0f
     private var lastTouchY = 0f
     private lateinit var scaleGestureDetector: ScaleGestureDetector
@@ -46,7 +72,7 @@ class MainActivity : AppCompatActivity() {
     // check-then-act sequences. Instance fields (not locals inside build3DScreen/build4DScreen)
     // so onPause can read the active mode's history to persist it -- see saveState/loadState.
     private val moveHistory3D = Collections.synchronizedList(mutableListOf<Pair<Face, Boolean>>())
-    private val moveHistory4D = Collections.synchronizedList(mutableListOf<Triple<Cell4, Axis4, Boolean>>())
+    private val moveHistory4D = Collections.synchronizedList(mutableListOf<TwistRecord>())
 
     // How many of moveHistory4D's *leading* entries are scramble moves (see requestScramble) as
     // opposed to moves the player actually made -- lets mc4dLogFile mark that boundary with a
@@ -79,6 +105,13 @@ class MainActivity : AppCompatActivity() {
         rootLayout = FrameLayout(this)
         setContentView(rootLayout)
         rebuildUi()
+        // EXPORTED, not NOT_EXPORTED -- adb's `am broadcast` couldn't reach a non-exported
+        // receiver on this device/API level. Fine for what this is: a debug-only, read-only
+        // logging hook (dumps sticker colors to logcat, never touches puzzle state), so another
+        // app being able to trigger it is a non-issue.
+        ContextCompat.registerReceiver(
+            this, sceneDumpReceiver, IntentFilter("dev.twisted4d.app.DUMP_SCENE"), ContextCompat.RECEIVER_EXPORTED,
+        )
     }
 
     /** Tears down and rebuilds the whole screen for the current mode. GLSurfaceView only
@@ -95,6 +128,7 @@ class MainActivity : AppCompatActivity() {
     // --- 3D mode ---------------------------------------------------------------------------
 
     private fun build3DScreen() {
+        hypercubeRenderer = null
         val renderer = CubeRenderer()
         val initiallySolved: Boolean
         if (pendingRestoreState3D == null) {
@@ -179,6 +213,7 @@ class MainActivity : AppCompatActivity() {
         rootLayout.addView(modeToggleButton(), topStartParams())
         rootLayout.addView(utilityRow, topEndParams())
         rootLayout.addView(gamepadOverlayView(), bottomStartParams())
+        rootLayout.addView(buildNumberLabel(), bottomEndParams())
     }
 
     private fun handle3DDrag(surfaceView: GLSurfaceView, renderer: CubeRenderer, event: MotionEvent): Boolean {
@@ -206,6 +241,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun build4DScreen() {
         val renderer = HypercubeRenderer()
+        hypercubeRenderer = renderer
         val initiallySolved: Boolean
         if (pendingRestoreState4D == null) {
             moveHistory4D.clear()
@@ -255,13 +291,28 @@ class MainActivity : AppCompatActivity() {
                     // Twisting without actively re-selecting via the stick (e.g. pressing a
                     // rotation button while it's centered, reusing the last selection) should
                     // still realign the view -- see HypercubeRenderer.snapViewToNearestCardinalOrientation.
-                    // Works unchanged for RKT too: renderer.selectedCell4 already resolves to R
-                    // there, since setInputMode pins selectedRoomAxis/Sign to R's slot.
+                    // Works unchanged for RKT too: renderer.selectedCell4/selectedRoomCell both
+                    // already resolve to R there, since setInputMode pins selectedRoomAxis/Sign to
+                    // R's slot.
                     renderer.snapViewToNearestCardinalOrientation()
                     val cell = renderer.selectedCell4
                     val fixAxis2 = renderer.resolveRotationButtonFixAxis2(button.literalAxis)
-                    val prime = button.primaryPrime != rotationInvertedForCell(button, cell)
-                    renderer.requestTwist(cell, fixAxis2, prime)
+                    // rotationInvertedForCell corrects for a rendering property of the *wall* the
+                    // twist is happening in, not the native cell occupying it -- see
+                    // HypercubeRenderer.selectedRoomCell's doc for why this must be the room slot,
+                    // not `cell` (native), once the room's been rotated away from default.
+                    val roomCell = renderer.selectedRoomCell
+                    val roomFixAxis2 = renderer.roomFixAxis2For(button.literalAxis)
+                    val rawPrime = button.primaryPrime != Notation.rotationInvertedForCell(button, roomCell)
+                    // rawPrime is the room-level, orientation-independent community-notation
+                    // intent -- correctedPrimeForDisplay resolves it into that intent once here;
+                    // correctedNativePrimeForRoomTwist then finds whichever native prime actually
+                    // renders that intent for the *current* orientation (see its own doc for why a
+                    // room-keyed table alone isn't enough once reoriented -- the confirmed
+                    // reoriented-LU-renders-CCW bug).
+                    val displayApostrophe = Notation.correctedPrimeForDisplay(roomCell, roomFixAxis2, rawPrime)
+                    val prime = renderer.correctedNativePrimeForRoomTwist(cell, fixAxis2, roomCell, roomFixAxis2, displayApostrophe)
+                    renderer.requestTwist(cell, fixAxis2, prime, roomCell, roomFixAxis2, displayApostrophe)
                 }
             },
             on4DNavigate = { button ->
@@ -330,16 +381,22 @@ class MainActivity : AppCompatActivity() {
             setPadding(24, 8, 24, 8)
         }
 
-        renderer.onTwistApplied = { cell, fixAxis2, prime ->
-            moveHistory4D.add(Triple(cell, fixAxis2, prime))
-            val label = communityNotation(cell, fixAxis2, prime)
+        renderer.onTwistApplied = { cell, fixAxis2, prime, roomCell, roomFixAxis2, displayApostrophe ->
+            val record = TwistRecord(cell, fixAxis2, prime, roomCell, roomFixAxis2, displayApostrophe)
+            moveHistory4D.add(record)
+            val label = Notation.communityNotation(record)
             runOnUiThread { lastMoveText.text = label }
         }
 
         val utilityColumn = utilityRow(
             onScramble = {
                 surfaceView.queueEvent {
-                    val scrambleMoves = renderer.requestScramble(SCRAMBLE_MOVE_COUNT_4D)
+                    // Scrambles have no button/room context of their own -- treat room as native
+                    // (a reasonable fallback since a scramble always starts from a fresh, default
+                    // orientation anyway; see the orientation-not-persisted memory note).
+                    val scrambleMoves = renderer.requestScramble(SCRAMBLE_MOVE_COUNT_4D).map { (cell, fixAxis2, prime) ->
+                        TwistRecord(cell, fixAxis2, prime, cell, fixAxis2.nativeIndex, Notation.correctedPrime(cell, fixAxis2, prime))
+                    }
                     synchronized(moveHistory4D) {
                         moveHistory4D.clear()
                         moveHistory4D.addAll(scrambleMoves)
@@ -356,8 +413,8 @@ class MainActivity : AppCompatActivity() {
             onUndo = {
                 synchronized(moveHistory4D) {
                     if (moveHistory4D.isNotEmpty()) {
-                        val (cell, fixAxis2, prime) = moveHistory4D.removeAt(moveHistory4D.size - 1)
-                        surfaceView.queueEvent { renderer.undoTwist(cell, fixAxis2, prime) }
+                        val record = moveHistory4D.removeAt(moveHistory4D.size - 1)
+                        surfaceView.queueEvent { renderer.undoTwist(record.cell, record.fixAxis2, record.prime) }
                     }
                 }
             },
@@ -366,12 +423,12 @@ class MainActivity : AppCompatActivity() {
                 // solve, so this drops the scramble prefix (see mc4dLogFile for the file format
                 // that does include it, marked with "m|").
                 val snapshot = synchronized(moveHistory4D) { moveHistory4D.toList() }
-                shareTwistLog(formatTwistLog4D(snapshot.drop(scrambleMoveCount4D.coerceAtMost(snapshot.size))))
+                shareTwistLog(Notation.formatTwistLog4D(snapshot.drop(scrambleMoveCount4D.coerceAtMost(snapshot.size))))
             },
             orientation = LinearLayout.VERTICAL,
             onExportMC4D = {
                 val snapshot = synchronized(moveHistory4D) { moveHistory4D.toList() }
-                shareLogFile("twisted4d.log", mc4dLogFile(snapshot, scrambleMoveCount4D.coerceAtMost(snapshot.size)))
+                shareLogFile("twisted4d.log", Notation.mc4dLogFile(snapshot, scrambleMoveCount4D.coerceAtMost(snapshot.size)))
             },
         )
 
@@ -439,6 +496,7 @@ class MainActivity : AppCompatActivity() {
         rootLayout.addView(leftColumn, centerStartParams())
         rootLayout.addView(rightColumn, centerEndParams())
         rootLayout.addView(gamepadOverlayView(), bottomStartParams())
+        rootLayout.addView(buildNumberLabel(), bottomEndParams())
     }
 
     /** Drag on the main view controls the ordinary 3D-feeling rotation, same as [handle3DDrag]. */
@@ -572,209 +630,10 @@ class MainActivity : AppCompatActivity() {
         startActivity(Intent.createChooser(shareIntent, "Share $filename"))
     }
 
-    /** Collapses exactly-two-consecutive-*identical* moves (same move, same prime) into a single
-     * "&lt;base&gt;2" token -- e.g. two "RU" moves in a row become "RU2" -- matching standard
-     * twisty-puzzle double-turn notation. Two consecutive *opposite*-prime moves on the same
-     * axis aren't a double turn (they're most of a cancellation), so those are deliberately left
-     * alone: only exact repeats consolidate. */
-    private fun <T> consolidateDoubles(moves: List<T>, baseNotation: (T) -> String): List<String> {
-        val out = mutableListOf<String>()
-        var i = 0
-        while (i < moves.size) {
-            if (i + 1 < moves.size && moves[i] == moves[i + 1]) {
-                out.add(baseNotation(moves[i]).trimEnd('\'') + "2")
-                i += 2
-            } else {
-                out.add(baseNotation(moves[i]))
-                i += 1
-            }
-        }
-        return out
-    }
-
     /** e.g. "R F' U2" -- standard face notation, prime marks a counterclockwise twist, doubled
-     * moves collapse via [consolidateDoubles]. */
+     * moves collapse via [Notation.consolidateDoubles]. */
     private fun formatTwistLog3D(history: List<Pair<Face, Boolean>>): String =
-        consolidateDoubles(history) { (face, prime) -> face.label + (if (prime) "'" else "") }
-            .joinToString(" ")
-
-    /** Whether [button]'s resolved twist needs its prime flipped to look screen-consistent for
-     * [cell] -- [RotationButton]'s literalAxis/primaryPrime scheme picks a single native rotation
-     * formula per button and applies it uniformly to whichever cell is selected, but the room
-     * rendering isn't symmetric across cells (each wall's "depth" axis is always W, regardless of
-     * that wall's own axis -- see HypercubeRenderer.onDrawFrame's screenPos computation), so the
-     * *same* formula produces opposite on-screen rotation senses for different cells. There's no
-     * clean closed-form correction (checked: doesn't reduce to a simple function of axis, sign, or
-     * fixAxis2 alone) -- both sets below were derived by simulating HypercubeRenderer's exact
-     * projection math (piece rotation -> room slot -> screenPos -> the isometric default view3
-     * matrix) for all 8 cells and comparing against a reference convention, then flipping prime for
-     * whichever cells didn't already match it.
-     *
-     * UP's reference is real-device-confirmed: the user reported `UP` already looks correct on `U`
-     * and `B`, backwards on the rest. The simulation reproduced that split exactly (U/B alone came
-     * out clockwise; D/L/R/F/I -- and O by the same rotating-axis-pair grouping as L/R/I, though O
-     * itself is never rendered to check directly -- all came out counterclockwise), and flipping
-     * prime for that same set made all 8 clockwise. DOWN shares the set for a structural reason,
-     * not a separately-confirmed one: it has the same literalAxis as UP and only flips
-     * primaryPrime, so it's *defined* as UP's exact opposite for every cell already -- simulated
-     * confirmation that DOWN is the opposite of UP's sense at all 7 checkable cells, both before
-     * and after applying this same correction, so reusing it keeps that relationship intact rather
-     * than re-deriving it from scratch.
-     *
-     * RIGHT/LEFT's reference is weaker -- not live-tested like UP was, but read off the original
-     * `todo-controller-input.md` spec's stated target ("Right button: rotates so the positive X
-     * axis moves away from the user, i.e. positive X -> negative Z"). U and D are RIGHT's
-     * "collision" cells (literalAxis=Y collides with their own axis, forcing fixAxis2=W, the clean
-     * case), and simulating RIGHT's *current, unmodified* formula on them produces exactly that
-     * +X->-Z rotation -- so U/D (plus L/F/I, which already independently matched U/D's resulting
-     * screen sense) were treated as the reference, and only R/B (and O by extension) get flipped.
-     * LEFT reuses the same set for the same structural reason DOWN reuses UP's. **Needs real
-     * controller confirmation** -- unlike UP, nobody has tested RIGHT/LEFT on hardware yet, this is
-     * only as good as the old spec doc's wording and the simulation.
-     *
-     * BUMPER_R/TRIGGER_R's reference is real-device-confirmed, like UP's: the user reported both
-     * already look correct on `R` and `D`, backwards on the rest. Simulated confirmation matched
-     * that split exactly (R/D alone were already internally consistent between TRIGGER_R and
-     * BUMPER_R as an opposite pair; U/L/F/B/I -- and O by extension -- all came out backwards on
-     * both), and flipping prime for that set made all 8 cells consistent for both buttons. */
-    private fun rotationInvertedForCell(button: RotationButton, cell: Cell4): Boolean = when (button) {
-        RotationButton.UP, RotationButton.DOWN -> cell in setOf(Cell4.D, Cell4.L, Cell4.R, Cell4.F, Cell4.I, Cell4.O)
-        RotationButton.LEFT, RotationButton.RIGHT -> cell in setOf(Cell4.R, Cell4.B, Cell4.O)
-        RotationButton.TRIGGER_R, RotationButton.BUMPER_R -> cell in setOf(Cell4.U, Cell4.L, Cell4.F, Cell4.B, Cell4.I, Cell4.O)
-    }
-
-    /** Canonical single-cell representative for each axis, used to name fixAxis2 in
-     * hypercubing.xyz notation -- an arbitrary but consistent choice, since either of an axis's
-     * two cells names the same physical twist (just with the prime flipped). */
-    private fun axisRepresentativeCell(axis: Axis4): Cell4 = when (axis) {
-        Axis4.X -> Cell4.R
-        Axis4.Y -> Cell4.U
-        Axis4.Z -> Cell4.F
-        Axis4.W -> Cell4.O
-    }
-
-    /** MC4D's own cell order, empirically reverse-engineered (not documented in MC4D's source --
-     * it comes from an external geometry library's traversal order): both the "which 27-grip
-     * block" index for a cell *and* the within-block ordering of ridge-piece grips (see
-     * [mc4dGrip]) are positions in this exact sequence. */
-    private val MC4D_CELL_ORDER = listOf(Cell4.I, Cell4.D, Cell4.F, Cell4.L, Cell4.R, Cell4.B, Cell4.U, Cell4.O)
-
-    private fun mc4dOpposite(cell: Cell4): Cell4 = Cell4.entries.first { it.axis == cell.axis && it.sign == -cell.sign }
-
-    /** MC4D's grip index for the "2c ridge" piece straddling [cell] and [axisRepresentativeCell]
-     * of [fixAxis2] -- reverse-engineered from real MC4D log files (see the mc4d_log_compatibility
-     * memory for the full derivation): `cellIndex*27 + 20 + position`, where 20 is the fixed
-     * offset to the 6-slot "ridge" tier within a cell's 27-grip block, and position is where the
-     * representative cell falls in [MC4D_CELL_ORDER] once [cell] and its own opposite are
-     * removed (both cell index and ridge position use that same master order). */
-    private fun mc4dGrip(cell: Cell4, fixAxis2: Axis4): Int {
-        val cellIndex = MC4D_CELL_ORDER.indexOf(cell)
-        val opposite = mc4dOpposite(cell)
-        val remaining = MC4D_CELL_ORDER.filter { it != cell && it != opposite }
-        val position = remaining.indexOf(axisRepresentativeCell(fixAxis2))
-        return cellIndex * 27 + 20 + position
-    }
-
-    /** `(cell, fixAxis2)` pairs where the raw native `prime` bit needs flipping before it means
-     * what [communityNotation] and [mc4dLogFile] need it to mean -- `Cube4::twist`'s
-     * rotating-axis-pair handedness is a mechanical function of native axis index order (see
-     * `plane_rotation` in `cube4.rs`), not something that adapts to match hypercubing.xyz's or
-     * MC4D's community/grip conventions, so this doesn't reduce to a formula (checked: not sign
-     * alone, not representative-vs-opposite alone, not axis-ascending-vs-descending alone -- same
-     * kind of irreducibility as the on-screen rotation-button screen-consistency tables elsewhere
-     * in this file, which is a separate, unrelated correction -- see [[discuss_theories_before_acting]]
-     * memory for why, and don't conflate the two).
-     *
-     * Confirmed 2026-07-21 via an on-screen per-twist community-notation survey covering every
-     * (cell, fixAxis2) combination (real controller, STICK mode): every wrong case was purely a
-     * flipped prime on the correct cell+representative, never a wrong cell or grip. The three
-     * O-as-twisted-cell entries (`OR`/`OU`/`OF`) were derived by a symmetry guess first (O shares
-     * I's axis, W, with the opposite sign, and every other axis pair has exactly one of its two
-     * signed cells flip while the other doesn't -- I flips for R/F reps not U, so O was guessed to
-     * flip for U not R/F) and then confirmed for real: O selected, one twist on each of its three
-     * axes (X/Y/Z), exported and re-imported into real MC4D, whose rendering matched twisted4d's.
-     *
-     * The `(R,W)`/`(D,W)`/`(F,W)` entries (O as *representative*, not as the twisted cell) are a
-     * separate subset with their own independent real-MC4D confirmation from earlier this session
-     * (see the mc4d_log_compatibility memory): from a solved puzzle, `RO`/`DO`/`FO` (non-prime)
-     * replay correctly, but `UO`/`BO`/`LO` (non-prime) replay as their prime -- consistent with the
-     * on-screen survey redone here. */
-    private val PRIME_FLIP_TWISTS: Set<Pair<Cell4, Axis4>> = setOf(
-        Cell4.U to Axis4.Z, // UF
-        Cell4.D to Axis4.X, // DR
-        Cell4.L to Axis4.Z, // LF
-        Cell4.R to Axis4.Y, // RU
-        Cell4.F to Axis4.X, // FR
-        Cell4.B to Axis4.Y, // BU
-        Cell4.I to Axis4.X, // IR
-        Cell4.I to Axis4.Z, // IF
-        Cell4.R to Axis4.W, // RO
-        Cell4.D to Axis4.W, // DO
-        Cell4.F to Axis4.W, // FO
-        Cell4.O to Axis4.Y, // OU
-    )
-
-    /** [prime] corrected so it means what [communityNotation]/[mc4dLogFile] need -- see
-     * [PRIME_FLIP_TWISTS]'s doc. */
-    private fun correctedPrime(cell: Cell4, fixAxis2: Axis4, prime: Boolean): Boolean =
-        prime != ((cell to fixAxis2) in PRIME_FLIP_TWISTS)
-
-    /** A real MagicCube4D `.log` file for [history], byte-for-byte in the format MC4D itself
-     * reads/writes (confirmed against real MC4D output) -- unlike [formatTwistLog4D], this is
-     * meant to be opened directly in MagicCube4D, not read by a person. Always uses the same
-     * canonical representative cell per axis ([axisRepresentativeCell]) for every twist, since
-     * `dir`'s sign is relative to *which grip* was clicked, not a universal CW/CCW -- e.g. `RD`
-     * (non-prime) is `RU`'s (non-prime) inverse, confirmed against real MC4D, so consistently
-     * using the same representative (never switching between an axis's two cells) is what keeps
-     * this app's own `prime` flag mapping to a consistent `dir` sign throughout, *after* correcting
-     * `prime` via [correctedPrime] -- see [PRIME_FLIP_TWISTS]'s doc for which twists need that and
-     * why. `slicemask` is always 1 (a single outer-layer twist, this app's only twist granularity).
-     * A 180-degree double twist is two separate identical
-     * triples, not a special encoding -- confirmed real MC4D does the same and doesn't consolidate
-     * them, even though its own turn counter and this app's [formatTwistLog4D] both display
-     * doubled moves as a single "X2" for readability. The view-orientation lines MC4D's header
-     * expects are filled with a fixed identity matrix -- they only restore the camera angle on
-     * load, not puzzle state, so any valid orientation works.
-     *
-     * [scrambleCount] leading entries of [history] are the scramble, not moves the player made --
-     * real MC4D marks that boundary inline with a literal "m|" token in the move list, which is
-     * where its Edit > Go to Beginning / Redo lands, and the header's move-count field counts only
-     * the post-mark moves, not the file's full replay -- confirmed two ways: reading a real MC4D
-     * log (`f2l.log`) that had this shape already, and round-tripping our own scramble+twists
-     * export back through real MC4D (`retroid.log`), where Edit > Go to Beginning and single-step
-     * Redo both worked as expected. The header's second field is `2` whenever a mark is present
-     * (vs. `0` with none), also confirmed by both files. */
-    private fun mc4dLogFile(history: List<Triple<Cell4, Axis4, Boolean>>, scrambleCount: Int): String {
-        val solveCount = history.size - scrambleCount
-        val header = "MagicCube4D 3 ${if (scrambleCount > 0) 2 else 0} $solveCount {4,3,3} 3"
-        val identityViewMatrix = listOf(
-            "1.0 0.0 0.0 0.0",
-            "0.0 1.0 0.0 0.0",
-            "0.0 0.0 1.0 0.0",
-            "0.0 0.0 0.0 1.0",
-        )
-        val tokens = history.map { (cell, fixAxis2, prime) ->
-            val dir = if (correctedPrime(cell, fixAxis2, prime)) 1 else -1
-            "${mc4dGrip(cell, fixAxis2)},$dir,1"
-        }.toMutableList()
-        if (scrambleCount > 0) tokens.add(scrambleCount, "m|")
-        return (listOf(header) + identityViewMatrix + listOf("*", "${tokens.joinToString(" ")}.")).joinToString("\n")
-    }
-
-    /** e.g. "RU'" -- a single twist in hypercubing.xyz community notation: the twisted cell, then
-     * a representative cell for the fixed second axis, prime for counterclockwise ([correctedPrime]
-     * -- see [PRIME_FLIP_TWISTS]'s doc for why the raw native `prime` alone isn't enough). Also
-     * drives the on-screen "last move" indicator (see build4DScreen). */
-    private fun communityNotation(cell: Cell4, fixAxis2: Axis4, prime: Boolean): String =
-        cell.label + axisRepresentativeCell(fixAxis2).label +
-            (if (correctedPrime(cell, fixAxis2, prime)) "'" else "")
-
-    /** e.g. "RU' RF RU2" -- a whole move sequence in [communityNotation], doubled moves collapsed
-     * via [consolidateDoubles]. Our own notation for undo/clipboard/share purposes -- see
-     * [mc4dLogFile] for actual MagicCube4D file compatibility, which needs MC4D's own internal
-     * grip numbering, not this. */
-    private fun formatTwistLog4D(history: List<Triple<Cell4, Axis4, Boolean>>): String =
-        consolidateDoubles(history) { (cell, fixAxis2, prime) -> communityNotation(cell, fixAxis2, prime) }
+        Notation.consolidateDoubles(history) { (face, prime) -> face.label + (if (prime) "'" else "") }
             .joinToString(" ")
 
     private fun topCenterParams() = FrameLayout.LayoutParams(
@@ -818,6 +677,23 @@ class MainActivity : AppCompatActivity() {
         (130 * resources.displayMetrics.density).toInt(),
         Gravity.BOTTOM or Gravity.START,
     ).apply { leftMargin = 12; bottomMargin = 12 }
+
+    private fun bottomEndParams() = FrameLayout.LayoutParams(
+        FrameLayout.LayoutParams.WRAP_CONTENT,
+        FrameLayout.LayoutParams.WRAP_CONTENT,
+        Gravity.BOTTOM or Gravity.END,
+    ).apply { bottomMargin = 12; rightMargin = 12 }
+
+    /** Small, always-present "Build N" label -- bump [BUILD_NUMBER] on every debug deploy and
+     * report the number alongside the deploy, so the tester can confirm on-screen that the build
+     * they're looking at is actually the one just installed, instead of an unnoticed stale/
+     * not-yet-synced APK (see the discuss_theories_before_acting memory for why that ambiguity is
+     * worth eliminating). Deliberately dim/unobtrusive -- this is a testing aid, not a feature. */
+    private fun buildNumberLabel(): TextView = TextView(this).apply {
+        text = "Build $BUILD_NUMBER"
+        textSize = 11f
+        alpha = 0.4f
+    }
 
     /** A low-detail live gamepad HUD (see [GamepadOverlayView]) for confirming, after the fact
      * from a screen recording, exactly which physical control produced a given twist -- both
@@ -881,9 +757,12 @@ class MainActivity : AppCompatActivity() {
             val historyJson = JSONArray()
             if (is4DMode) {
                 NativeLib.cube4GetState().forEach { stateJson.put(it) }
+                // Only the native fields round-trip -- room context isn't persisted (orientation
+                // itself isn't restored across launches either; see the orientation-not-persisted
+                // memory note), so restored history falls back to room==native, same as scrambles.
                 synchronized(moveHistory4D) {
-                    moveHistory4D.forEach { (cell, fixAxis2, prime) ->
-                        historyJson.put(JSONArray().put(cell.ordinal).put(fixAxis2.ordinal).put(prime))
+                    moveHistory4D.forEach { record ->
+                        historyJson.put(JSONArray().put(record.cell.ordinal).put(record.fixAxis2.ordinal).put(record.prime))
                     }
                 }
             } else {
@@ -927,9 +806,10 @@ class MainActivity : AppCompatActivity() {
                 scrambleMoveCount4D = root.optInt("scrambleCount4D", 0)
                 for (i in 0 until historyJson.length()) {
                     val entry = historyJson.getJSONArray(i)
-                    moveHistory4D.add(
-                        Triple(Cell4.entries[entry.getInt(0)], Axis4.entries[entry.getInt(1)], entry.getBoolean(2)),
-                    )
+                    val cell = Cell4.entries[entry.getInt(0)]
+                    val fixAxis2 = Axis4.entries[entry.getInt(1)]
+                    val prime = entry.getBoolean(2)
+                    moveHistory4D.add(TwistRecord(cell, fixAxis2, prime, cell, fixAxis2.nativeIndex, Notation.correctedPrime(cell, fixAxis2, prime)))
                 }
             } else {
                 pendingRestoreState3D = state
@@ -948,11 +828,14 @@ class MainActivity : AppCompatActivity() {
         if (::gamepadInput.isInitialized) {
             inputManager.unregisterInputDeviceListener(gamepadInput)
         }
+        unregisterReceiver(sceneDumpReceiver)
         super.onDestroy()
     }
 
     companion object {
         private const val TAG = "Twisted4D"
+        // Bump this on every debug deploy -- see buildNumberLabel's doc.
+        private const val BUILD_NUMBER = 9
         private const val DRAG_SENSITIVITY = 0.4f
         private const val SCRAMBLE_MOVE_COUNT_3D = 25
         private const val SCRAMBLE_MOVE_COUNT_4D = 250

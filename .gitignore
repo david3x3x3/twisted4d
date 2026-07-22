@@ -10,6 +10,7 @@ captures/
 .cxx/
 app/src/main/jniLibs/
 native/*/target/
+__pycache__/
 
 # Gradle wrapper jar is fetched by `gradle wrapper`, not hand-written; keep it though
 !gradle/wrapper/gradle-wrapper.jar

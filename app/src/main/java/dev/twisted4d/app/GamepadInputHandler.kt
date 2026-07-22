@@ -184,6 +184,7 @@ class GamepadInputHandler(
                 KeyEvent.KEYCODE_DPAD_UP -> GamepadVisualState.dpadUpHeld = held
                 KeyEvent.KEYCODE_DPAD_DOWN -> GamepadVisualState.dpadDownHeld = held
                 KeyEvent.KEYCODE_BUTTON_SELECT -> GamepadVisualState.selectHeld = held
+                KeyEvent.KEYCODE_BUTTON_THUMBL -> GamepadVisualState.thumbLHeld = held
             }
         }
 

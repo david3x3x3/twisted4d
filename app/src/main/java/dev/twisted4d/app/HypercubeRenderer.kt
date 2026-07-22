@@ -72,8 +72,14 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
 
     /** Called (on the GL thread) right after a twist is applied via [requestTwist] -- not fired
      * by [undoTwist], so a caller (MainActivity) using this to build an undo/log history doesn't
-     * see its own undo moves recorded back into that same history. */
-    @Volatile var onTwistApplied: ((Cell4, Axis4, Boolean) -> Unit)? = null
+     * see its own undo moves recorded back into that same history. Args 4/5 are [requestTwist]'s
+     * own [roomCell]/[roomFixAxis2] passed straight through -- room-relative context for
+     * community-notation labeling, alongside the native `cell`/`fixAxis2`/`prime` that
+     * [Cube4.twist]/undo/MC4D export need (see MainActivity.communityNotation's doc for why both
+     * are necessary and different). The last arg is [requestTwist]'s own `displayApostrophe`,
+     * likewise passed straight through -- see [TwistRecord.displayApostrophe]'s doc for why it
+     * can't just be re-derived from `prime` here. */
+    @Volatile var onTwistApplied: ((Cell4, Axis4, Boolean, Cell4, Int, Boolean) -> Unit)? = null
 
     /** If set (by MainActivity, *before* `setRenderer` is called -- see build4DScreen), consumed
      * by [onSurfaceCreated] instead of its usual [NativeLib.cube4Reset] -- restores a puzzle
@@ -189,6 +195,18 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
      */
     val selectedCell4: Cell4 get() = nativeCellInRoomSlot(selectedRoomAxis, selectedRoomSign)
 
+    /** The currently selected room slot's own fixed label (e.g. "the wall at +X is always R"),
+     * *not* whichever native cell currently occupies it -- same distinction [highlightedCell]
+     * makes via [cellFor], and the one [MainActivity]'s `rotationInvertedForCell` needs: that
+     * table corrects for a rendering property of the *wall* ("each wall's depth axis is always
+     * W" -- see [onDrawFrame]'s screenPos computation), not of the native cell sitting in it, so
+     * looking it up by [selectedCell4] (native identity) silently breaks once the room's been
+     * rotated -- e.g. after moving some other cell to I, pressing a rotation button on a cell
+     * that's now sitting in a *different* wall than its own name got the wrong on-screen
+     * direction, because the correction table was consulted for the cell's native identity
+     * instead of the wall it's actually rendering in. */
+    val selectedRoomCell: Cell4 get() = cellFor(selectedRoomAxis, selectedRoomSign)
+
     /**
      * Resolves a rotation button's screen/room-relative axis (e.g. "Up" always means room axis X)
      * to the actual *native* axis [requestTwist] needs for `fixAxis2`, given the currently
@@ -216,8 +234,71 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
      * slot's own -- e.g. selecting I right after the same F-to-I rotation above.
      */
     fun resolveRotationButtonFixAxis2(buttonLiteralAxis: Axis4): Axis4 {
-        val roomFixAxis2 = if (buttonLiteralAxis.nativeIndex == selectedRoomAxis) AXIS_W else buttonLiteralAxis.nativeIndex
+        val roomFixAxis2 = roomFixAxis2For(buttonLiteralAxis)
         return Axis4.entries.first { it.nativeIndex == nativeAxisAtRoomAxis(roomFixAxis2) }
+    }
+
+    /** The first (room-only) step of [resolveRotationButtonFixAxis2] -- [buttonLiteralAxis]'s
+     * *room* axis, before translating to native. [resolveRotationButtonFixAxis2] needs the native
+     * result for the actual twist; [MainActivity]'s room-relative community-notation labeling
+     * needs *this* instead, since the representative letter a human reads off the screen is
+     * "whichever wall this axis currently is," not whichever native axis happens to be there --
+     * see the mc4d_log_compatibility memory for why native identity is still exactly right for
+     * the MC4D file export, just not for what's shown on screen. */
+    fun roomFixAxis2For(buttonLiteralAxis: Axis4): Int =
+        if (buttonLiteralAxis.nativeIndex == selectedRoomAxis) AXIS_W else buttonLiteralAxis.nativeIndex
+
+    /** One rendered sticker's current room position and color, as computed by [currentSceneColors]
+     * -- [roomAxis]/[roomSign] is which wall it's on (or [AXIS_W]/`-1` for the I slot; the O slot
+     * is never included, matching [onDrawFrame]'s own skip), [x]/[y]/[z] is its room-space position
+     * (same units [onDrawFrame] uses before the `SPACING`/`ROOM_HALF` layout scale-up, so two
+     * stickers on the same wall with the same x/y/z-minus-the-wall's-own-axis share a piece), and
+     * [colorCell] is the sticker's own fixed color (which cell it was originally part of --
+     * doesn't change with rotation, only its position does). */
+    data class VisibleSticker(val roomAxis: Int, val roomSign: Int, val colorCell: Cell4, val x: Float, val y: Float, val z: Float)
+
+    /** A queryable snapshot of every sticker currently visible in the room, computed the same way
+     * [onDrawFrame] positions them for rendering (piece transform -> [cubeOrientation4] -> which
+     * wall/I-slot -> that wall's local position) but returned as plain data instead of drawn --
+     * for verifying test results directly against native+orientation state instead of reading
+     * screenshots (see the "trackable state of what's visible" ask that motivated this). Ignores
+     * any in-progress twist/room-rotation animation -- always reflects the settled, post-twist
+     * state, same as [currentTransforms]/[cubeOrientation4] themselves. */
+    fun currentSceneColors(): List<VisibleSticker> {
+        val out = mutableListOf<VisibleSticker>()
+        for (i in HypercubeGeometry.HOME_POSITIONS.indices) {
+            val home = HypercubeGeometry.HOME_POSITIONS[i]
+            val base = i * 20
+            for (k in 0 until 4) pos4[k] = currentTransforms[base + k]
+            for (k in 0 until 16) pieceOrient4[k] = currentTransforms[base + 4 + k]
+            mat4VecMul(cameraPos4, cubeOrientation4, pos4)
+
+            val homeCoords = intArrayOf(home.x, home.y, home.z, home.w)
+            for (axisIdx in 0 until 4) {
+                val homeCoord = homeCoords[axisIdx]
+                if (homeCoord == 0) continue
+
+                homeDir4[0] = 0f; homeDir4[1] = 0f; homeDir4[2] = 0f; homeDir4[3] = 0f
+                homeDir4[axisIdx] = homeCoord.toFloat()
+                mat4VecMul(currentDir4, pieceOrient4, homeDir4)
+                mat4VecMul(cameraDir4, cubeOrientation4, currentDir4)
+
+                var slotAxis = -1
+                var slotSign = 0
+                for (j in 0 until 4) {
+                    if (abs(cameraDir4[j]) > 0.5f) {
+                        slotAxis = j
+                        slotSign = if (cameraDir4[j] > 0) 1 else -1
+                        break
+                    }
+                }
+                if (slotAxis == AXIS_W && slotSign > 0) continue // O slot: never rendered
+
+                val colorCell = Cell4.entries.first { it.axis.nativeIndex == axisIdx && it.sign == homeCoord }
+                out.add(VisibleSticker(slotAxis, slotSign, colorCell, cameraPos4[0], cameraPos4[1], cameraPos4[2]))
+            }
+        }
+        return out
     }
 
     /** Which native axis currently occupies room axis [roomAxis] (sign-agnostic) -- e.g. if the
@@ -230,6 +311,60 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
             if (abs(cubeOrientation4[roomAxis * 4 + nativeAxis]) > 0.5f) return nativeAxis
         }
         error("cubeOrientation4 should always map every room axis to exactly one native axis")
+    }
+
+    /** The reverse of [nativeAxisAtRoomAxis]: which room axis + sign [nativeAxis] currently maps
+     * to, via [cubeOrientation4] -- e.g. if native F now displays at the I/O wall with reversed
+     * polarity, this returns (AXIS_W, -1). Needed by [correctedNativePrimeForRoomTwist] to work
+     * out how a native rotation's handedness reads once conjugated into room space. */
+    private fun roomAxisAndSignForNative(nativeAxis: Int): Pair<Int, Int> {
+        for (roomAxis in 0 until 4) {
+            val v = cubeOrientation4[roomAxis * 4 + nativeAxis]
+            if (abs(v) > 0.5f) return roomAxis to (if (v > 0f) 1 else -1)
+        }
+        error("cubeOrientation4 should always map every native axis to exactly one room axis")
+    }
+
+    /**
+     * The native `prime` bit that, applied to [nativeCell]/[nativeFixAxis2] (the physical layer a
+     * twist actually acts on, already resolved for the *current* orientation), renders on screen
+     * as [desiredApostrophe] for the room-relative ([roomCell], [roomFixAxis2]) grip -- the
+     * reorientation-aware replacement for applying a button's raw per-cell-corrected prime
+     * directly, which is what caused the confirmed "reoriented LU renders CCW while labeled CW"
+     * bug (see [[mc4d_log_compatibility]] memory and `tools/sim/adjacency_cw_report.py`'s doc for
+     * the full repro).
+     *
+     * Why a simple lookup isn't enough: `Cube4::twist`'s "clockwise" flag has no inherent
+     * real-world handedness (see `plane_rotation`'s doc in `cube4.rs`) -- [Notation.
+     * PRIME_FLIP_TWISTS] only tells us, for a given (cell, fixAxis2) pair, which native prime
+     * looks correct *when unreoriented* (native == room). Once reoriented, the same room slot can
+     * be reached via a *different* native axis pair, and reusing the room-keyed table as-is (what
+     * the old apostrophe-only fix did) silently assumes that relationship is orientation-
+     * independent -- it isn't: conjugating a native rotation through [cubeOrientation4] can flip
+     * its rendered handedness even though [cubeOrientation4] is always a proper (determinant +1)
+     * rotation, because a proper 4D rotation can still reverse one 2-plane's orientation as long
+     * as it compensates in the complementary plane.
+     *
+     * This is just the plumbing (resolving the rotating native axis pair and where
+     * [cubeOrientation4] currently maps each of them) -- see [Notation.correctedNativePrime] for
+     * the actual math, kept there so it's unit-testable without any Android/GL dependency.
+     */
+    fun correctedNativePrimeForRoomTwist(
+        nativeCell: Cell4,
+        nativeFixAxis2: Axis4,
+        roomCell: Cell4,
+        roomFixAxis2: Int,
+        desiredApostrophe: Boolean,
+    ): Boolean {
+        val cellAxis = nativeCell.axis.nativeIndex
+        val rotating = Axis4.entries
+            .map { it.nativeIndex }
+            .filter { it != cellAxis && it != nativeFixAxis2.nativeIndex }
+            .sorted()
+        val (roomR0, s0) = roomAxisAndSignForNative(rotating[0])
+        val (roomR1, s1) = roomAxisAndSignForNative(rotating[1])
+        val roomFixAxis2Axis = Axis4.entries.first { it.nativeIndex == roomFixAxis2 }
+        return Notation.correctedNativePrime(roomR0, s0, roomR1, s1, roomCell, roomFixAxis2Axis, desiredApostrophe)
     }
 
     /**
@@ -264,15 +399,19 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
      * [resolveRotationButtonFixAxis2] does for on4DRotationButton -- without this, "IU" would only
      * actually mean IU when the room happens to be at its default orientation, drifting to some
      * other twist entirely once it's been rotated (e.g. via mode 1/2's "move to I"), the same bug
-     * that on4DRotationButton had. [prime] is given directly by the caller, already resolved to
-     * the exact community-notation twist wanted (e.g. IU vs IU') -- unlike on4DRotationButton,
-     * this doesn't go through [MainActivity]'s screen-consistency correction table, since these
-     * are fixed, explicit moves for a known algorithm rather than a "make this button feel the
-     * same on every cell" mapping. */
-    fun requestRktITwist(roomFixAxis2: Int, prime: Boolean) {
+     * that on4DRotationButton had. [desiredApostrophe] is given directly by the caller, already
+     * resolved to the exact community-notation twist wanted (e.g. IU vs IU') -- unlike
+     * on4DRotationButton, this doesn't go through [MainActivity]'s screen-consistency correction
+     * table, since these are fixed, explicit moves for a known algorithm rather than a "make this
+     * button feel the same on every cell" mapping. Still needs [correctedNativePrimeForRoomTwist]
+     * though: the room's I slot can be reached via any native cell, same reorientation-dependent
+     * handedness issue as on4DRotationButton. */
+    fun requestRktITwist(roomFixAxis2: Int, desiredApostrophe: Boolean) {
         snapViewToNearestCardinalOrientation()
         val fixAxis2 = Axis4.entries.first { it.nativeIndex == nativeAxisAtRoomAxis(roomFixAxis2) }
-        requestTwist(nativeCellInRoomSlot(AXIS_W, -1), fixAxis2, prime)
+        val cell = nativeCellInRoomSlot(AXIS_W, -1)
+        val prime = correctedNativePrimeForRoomTwist(cell, fixAxis2, Cell4.I, roomFixAxis2, desiredApostrophe)
+        requestTwist(cell, fixAxis2, prime, Cell4.I, roomFixAxis2, desiredApostrophe)
     }
 
     // GL-thread-only edge-detection state for updateCell4Selection's snap-on-deflect behavior.
@@ -774,10 +913,24 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
      * Applies [cell]/[fixAxis2]/[prime] to native puzzle state immediately, then animates the
      * affected cell's pieces from their pre-twist transforms to the new ones. Ignored if
      * another twist is still animating, or if [fixAxis2] equals [cell]'s own axis (invalid).
+     *
+     * [roomCell]/[roomFixAxis2]/[displayApostrophe] are purely passed through to [onTwistApplied],
+     * not used by the twist itself -- so callers that already resolved a room context (and the
+     * community-notation apostrophe it implies) when deciding what to twist (e.g. [MainActivity]'s
+     * on4DRotationButton, or [requestRktITwist] above) don't have to re-derive it later just for
+     * notation labeling -- see [TwistRecord.displayApostrophe]'s doc for why it can't safely be
+     * re-derived later anyway.
      */
-    fun requestTwist(cell: Cell4, fixAxis2: Axis4, prime: Boolean) {
+    fun requestTwist(
+        cell: Cell4,
+        fixAxis2: Axis4,
+        prime: Boolean,
+        roomCell: Cell4,
+        roomFixAxis2: Int,
+        displayApostrophe: Boolean,
+    ) {
         if (!applyTwistInternal(cell, fixAxis2, prime)) return
-        onTwistApplied?.invoke(cell, fixAxis2, prime)
+        onTwistApplied?.invoke(cell, fixAxis2, prime, roomCell, roomFixAxis2, displayApostrophe)
     }
 
     /** Re-applies [cell]/[fixAxis2] with [prime] inverted, without notifying [onTwistApplied] --

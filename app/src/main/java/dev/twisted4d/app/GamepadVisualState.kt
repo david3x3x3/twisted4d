@@ -26,4 +26,5 @@ object GamepadVisualState {
     @Volatile var dpadUpHeld = false
     @Volatile var dpadDownHeld = false
     @Volatile var selectHeld = false
+    @Volatile var thumbLHeld = false
 }
