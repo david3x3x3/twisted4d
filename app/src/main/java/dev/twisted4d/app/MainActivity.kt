@@ -381,11 +381,32 @@ class MainActivity : AppCompatActivity() {
             setPadding(24, 8, 24, 8)
         }
 
+        // Troubleshooting aid: which room the app will actually twist right now, and which native
+        // cell currently occupies it -- see HypercubeRenderer.onSelectedCellChanged's doc. This
+        // MUST always agree with the next twist's community-notation first letter, since both
+        // come from the same selectedRoomCell value -- confirmed via a real repro where an
+        // earlier version (showing the stick's raw, uncorrected wedge instead) visibly diverged
+        // from the actual rotation. Updated live in any input mode, not just on twists.
+        val selectedCellText = TextView(this).apply {
+            textSize = 14f
+            alpha = 0.6f
+            setPadding(24, 0, 24, 8)
+        }
+        renderer.onSelectedCellChanged = { roomCell, nativeCell ->
+            runOnUiThread { selectedCellText.text = "Selected ${roomCell.label}: showing ${nativeCell.label}" }
+        }
+
         renderer.onTwistApplied = { cell, fixAxis2, prime, roomCell, roomFixAxis2, displayApostrophe ->
             val record = TwistRecord(cell, fixAxis2, prime, roomCell, roomFixAxis2, displayApostrophe)
             moveHistory4D.add(record)
             val label = Notation.communityNotation(record)
             runOnUiThread { lastMoveText.text = label }
+        }
+
+        val lastMoveColumn = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(lastMoveText)
+            addView(selectedCellText)
         }
 
         val utilityColumn = utilityRow(
@@ -492,7 +513,7 @@ class MainActivity : AppCompatActivity() {
 
         rootLayout.addView(surfaceView)
         rootLayout.addView(statusText, topCenterParams())
-        rootLayout.addView(lastMoveText, topStartParams())
+        rootLayout.addView(lastMoveColumn, topStartParams())
         rootLayout.addView(leftColumn, centerStartParams())
         rootLayout.addView(rightColumn, centerEndParams())
         rootLayout.addView(gamepadOverlayView(), bottomStartParams())
