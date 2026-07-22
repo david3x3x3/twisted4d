@@ -684,13 +684,16 @@ class MainActivity : AppCompatActivity() {
         Gravity.BOTTOM or Gravity.END,
     ).apply { bottomMargin = 12; rightMargin = 12 }
 
-    /** Small, always-present "Build N" label -- bump [BUILD_NUMBER] on every debug deploy and
-     * report the number alongside the deploy, so the tester can confirm on-screen that the build
-     * they're looking at is actually the one just installed, instead of an unnoticed stale/
-     * not-yet-synced APK (see the discuss_theories_before_acting memory for why that ambiguity is
-     * worth eliminating). Deliberately dim/unobtrusive -- this is a testing aid, not a feature. */
+    /** Small, always-present build-identity label -- [BuildConfig.GIT_VERSION] is the exact
+     * commit this APK was built from (short hash, "-dirty" suffix if the working tree had
+     * uncommitted changes at build time -- see build.gradle.kts's `gitVersion`), so a bug report
+     * that includes it can be traced straight back to source, and a tester can confirm on-screen
+     * that the build they're looking at is actually the one just installed, instead of an
+     * unnoticed stale/not-yet-synced APK (see the discuss_theories_before_acting memory for why
+     * that ambiguity is worth eliminating). Deliberately dim/unobtrusive -- this is a testing aid,
+     * not a feature. */
     private fun buildNumberLabel(): TextView = TextView(this).apply {
-        text = "Build $BUILD_NUMBER"
+        text = "Build ${BuildConfig.GIT_VERSION}"
         textSize = 11f
         alpha = 0.4f
     }
@@ -834,8 +837,6 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         private const val TAG = "Twisted4D"
-        // Bump this on every debug deploy -- see buildNumberLabel's doc.
-        private const val BUILD_NUMBER = 9
         private const val DRAG_SENSITIVITY = 0.4f
         private const val SCRAMBLE_MOVE_COUNT_3D = 25
         private const val SCRAMBLE_MOVE_COUNT_4D = 250

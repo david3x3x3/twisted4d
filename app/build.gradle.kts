@@ -3,6 +3,23 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+// Runs `git <args>` in the repo root and returns trimmed stdout -- used below to stamp each build
+// with the exact commit it came from, so a bug report's on-screen build label ("Build a1b2c3d4",
+// or "...-dirty" for an uncommitted working tree) can be traced straight back to source instead of
+// needing a hand-bumped counter kept in sync with commits by memory.
+fun gitCommand(vararg args: String): String {
+    val process = ProcessBuilder(listOf("git") + args)
+        .directory(rootDir)
+        .redirectErrorStream(true)
+        .start()
+    val output = process.inputStream.bufferedReader().readText().trim()
+    process.waitFor()
+    return output
+}
+
+val gitVersion = gitCommand("rev-parse", "--short=8", "HEAD") +
+    if (gitCommand("status", "--porcelain").isNotEmpty()) "-dirty" else ""
+
 android {
     namespace = "dev.twisted4d.app"
     compileSdk = 34
@@ -14,6 +31,11 @@ android {
         targetSdk = 34
         versionCode = 1
         versionName = "0.1"
+        buildConfigField("String", "GIT_VERSION", "\"$gitVersion\"")
+    }
+
+    buildFeatures {
+        buildConfig = true
     }
 
     buildTypes {
