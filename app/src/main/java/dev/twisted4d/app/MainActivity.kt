@@ -396,15 +396,30 @@ class MainActivity : AppCompatActivity() {
             runOnUiThread { selectedCellText.text = "Selected ${roomCell.label}: showing ${nativeCell.label}" }
         }
 
+        // Twists made since the scramble (moveHistory4D's *trailing* entries -- see
+        // scrambleMoveCount4D's doc for why its leading entries don't count as turns the player
+        // made). coerceAtLeast(0) covers undoing back past the scramble boundary itself, where
+        // moveHistory4D shrinks below scrambleMoveCount4D.
+        val turnCountText = TextView(this).apply {
+            textSize = 14f
+            alpha = 0.6f
+            setPadding(24, 8, 24, 0)
+        }
+        fun updateTurnCount() {
+            turnCountText.text = "Turns: ${(moveHistory4D.size - scrambleMoveCount4D).coerceAtLeast(0)}"
+        }
+        updateTurnCount()
+
         renderer.onTwistApplied = { cell, fixAxis2, prime, roomCell, roomFixAxis2, displayApostrophe ->
             val record = TwistRecord(cell, fixAxis2, prime, roomCell, roomFixAxis2, displayApostrophe)
             moveHistory4D.add(record)
             val label = Notation.communityNotation(record)
-            runOnUiThread { lastMoveText.text = label }
+            runOnUiThread { lastMoveText.text = label; updateTurnCount() }
         }
 
         val lastMoveColumn = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
+            addView(turnCountText)
             addView(lastMoveText)
             addView(selectedCellText)
         }
@@ -423,6 +438,7 @@ class MainActivity : AppCompatActivity() {
                         moveHistory4D.addAll(scrambleMoves)
                     }
                     scrambleMoveCount4D = scrambleMoves.size
+                    runOnUiThread { updateTurnCount() }
                 }
             },
             onReset = {
@@ -430,6 +446,7 @@ class MainActivity : AppCompatActivity() {
                 moveHistory4D.clear()
                 scrambleMoveCount4D = 0
                 lastMoveText.text = ""
+                updateTurnCount()
             },
             onUndo = {
                 synchronized(moveHistory4D) {
@@ -438,6 +455,7 @@ class MainActivity : AppCompatActivity() {
                         surfaceView.queueEvent { renderer.undoTwist(record.cell, record.fixAxis2, record.prime) }
                     }
                 }
+                updateTurnCount()
             },
             onShareLog = {
                 // Solve moves only -- hypercubing.xyz-style notation is for documenting/sharing a
