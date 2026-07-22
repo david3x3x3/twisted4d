@@ -21,6 +21,7 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.FileProvider
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -319,7 +320,19 @@ class MainActivity : AppCompatActivity() {
             runOnUiThread { statusText.text = if (solved) SOLVED_LABEL else "" }
         }
 
-        renderer.onTwistApplied = { cell, fixAxis2, prime -> moveHistory4D.add(Triple(cell, fixAxis2, prime)) }
+        // Shows the most recent twist in community notation (e.g. "IF'") -- lets the notation
+        // convention (see communityNotation's doc) be surveyed twist-by-twist directly against
+        // what's on screen, without an MC4D export/import round trip for every single move.
+        val lastMoveText = TextView(this).apply {
+            textSize = 22f
+            setPadding(24, 8, 24, 8)
+        }
+
+        renderer.onTwistApplied = { cell, fixAxis2, prime ->
+            moveHistory4D.add(Triple(cell, fixAxis2, prime))
+            val label = communityNotation(cell, fixAxis2, prime)
+            runOnUiThread { lastMoveText.text = label }
+        }
 
         val utilityColumn = utilityRow(
             onScramble = {
@@ -336,6 +349,7 @@ class MainActivity : AppCompatActivity() {
                 surfaceView.queueEvent { renderer.requestReset() }
                 moveHistory4D.clear()
                 scrambleMoveCount4D = 0
+                lastMoveText.text = ""
             },
             onUndo = {
                 synchronized(moveHistory4D) {
@@ -355,7 +369,7 @@ class MainActivity : AppCompatActivity() {
             orientation = LinearLayout.VERTICAL,
             onExportMC4D = {
                 val snapshot = synchronized(moveHistory4D) { moveHistory4D.toList() }
-                shareTwistLog(mc4dLogFile(snapshot, scrambleMoveCount4D.coerceAtMost(snapshot.size)))
+                shareLogFile("twisted4d.log", mc4dLogFile(snapshot, scrambleMoveCount4D.coerceAtMost(snapshot.size)))
             },
         )
 
@@ -419,6 +433,7 @@ class MainActivity : AppCompatActivity() {
 
         rootLayout.addView(surfaceView)
         rootLayout.addView(statusText, topCenterParams())
+        rootLayout.addView(lastMoveText, topStartParams())
         rootLayout.addView(leftColumn, centerStartParams())
         rootLayout.addView(rightColumn, centerEndParams())
         rootLayout.addView(gamepadOverlayView(), bottomStartParams())
@@ -535,6 +550,26 @@ class MainActivity : AppCompatActivity() {
         startActivity(Intent.createChooser(shareIntent, "Share move log"))
     }
 
+    /** Like [shareTwistLog], but shares [content] as an actual file named [filename] (via
+     * [FileProvider], declared in AndroidManifest.xml/res/xml/file_paths.xml) instead of loose
+     * clipboard text -- for the MC4D export specifically, where every receiving app having to
+     * invent its own filename/extension for plain text meant it always came out as "....txt",
+     * requiring a manual rename before MC4D would recognize it. Still also copies to the
+     * clipboard, same as [shareTwistLog], since that's still handy on its own. */
+    private fun shareLogFile(filename: String, content: String) {
+        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.setPrimaryClip(ClipData.newPlainText(filename, content))
+        val file = File(cacheDir, filename)
+        file.writeText(content)
+        val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
+        val shareIntent = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_STREAM, uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        startActivity(Intent.createChooser(shareIntent, "Share $filename"))
+    }
+
     /** Collapses exactly-two-consecutive-*identical* moves (same move, same prime) into a single
      * "&lt;base&gt;2" token -- e.g. two "RU" moves in a row become "RU2" -- matching standard
      * twisty-puzzle double-turn notation. Two consecutive *opposite*-prime moves on the same
@@ -638,9 +673,49 @@ class MainActivity : AppCompatActivity() {
         return cellIndex * 27 + 20 + position
     }
 
-    /** Which cells need `dir` flipped for an O-representative (`fixAxis2 == W`) twist in
-     * [mc4dLogFile] -- see that function's doc for the real-MC4D-confirmed data this came from. */
-    private val MC4D_O_DIR_FLIP_CELLS = setOf(Cell4.R, Cell4.D, Cell4.F)
+    /** `(cell, fixAxis2)` pairs where the raw native `prime` bit needs flipping before it means
+     * what [communityNotation] and [mc4dLogFile] need it to mean -- `Cube4::twist`'s
+     * rotating-axis-pair handedness is a mechanical function of native axis index order (see
+     * `plane_rotation` in `cube4.rs`), not something that adapts to match hypercubing.xyz's or
+     * MC4D's community/grip conventions, so this doesn't reduce to a formula (checked: not sign
+     * alone, not representative-vs-opposite alone, not axis-ascending-vs-descending alone -- same
+     * kind of irreducibility as the on-screen rotation-button screen-consistency tables elsewhere
+     * in this file, which is a separate, unrelated correction -- see [[discuss_theories_before_acting]]
+     * memory for why, and don't conflate the two).
+     *
+     * Confirmed 2026-07-21 via an on-screen per-twist community-notation survey covering every
+     * (cell, fixAxis2) combination (real controller, STICK mode): every wrong case was purely a
+     * flipped prime on the correct cell+representative, never a wrong cell or grip. The three
+     * O-as-twisted-cell entries (`OR`/`OU`/`OF`) were derived by a symmetry guess first (O shares
+     * I's axis, W, with the opposite sign, and every other axis pair has exactly one of its two
+     * signed cells flip while the other doesn't -- I flips for R/F reps not U, so O was guessed to
+     * flip for U not R/F) and then confirmed for real: O selected, one twist on each of its three
+     * axes (X/Y/Z), exported and re-imported into real MC4D, whose rendering matched twisted4d's.
+     *
+     * The `(R,W)`/`(D,W)`/`(F,W)` entries (O as *representative*, not as the twisted cell) are a
+     * separate subset with their own independent real-MC4D confirmation from earlier this session
+     * (see the mc4d_log_compatibility memory): from a solved puzzle, `RO`/`DO`/`FO` (non-prime)
+     * replay correctly, but `UO`/`BO`/`LO` (non-prime) replay as their prime -- consistent with the
+     * on-screen survey redone here. */
+    private val PRIME_FLIP_TWISTS: Set<Pair<Cell4, Axis4>> = setOf(
+        Cell4.U to Axis4.Z, // UF
+        Cell4.D to Axis4.X, // DR
+        Cell4.L to Axis4.Z, // LF
+        Cell4.R to Axis4.Y, // RU
+        Cell4.F to Axis4.X, // FR
+        Cell4.B to Axis4.Y, // BU
+        Cell4.I to Axis4.X, // IR
+        Cell4.I to Axis4.Z, // IF
+        Cell4.R to Axis4.W, // RO
+        Cell4.D to Axis4.W, // DO
+        Cell4.F to Axis4.W, // FO
+        Cell4.O to Axis4.Y, // OU
+    )
+
+    /** [prime] corrected so it means what [communityNotation]/[mc4dLogFile] need -- see
+     * [PRIME_FLIP_TWISTS]'s doc. */
+    private fun correctedPrime(cell: Cell4, fixAxis2: Axis4, prime: Boolean): Boolean =
+        prime != ((cell to fixAxis2) in PRIME_FLIP_TWISTS)
 
     /** A real MagicCube4D `.log` file for [history], byte-for-byte in the format MC4D itself
      * reads/writes (confirmed against real MC4D output) -- unlike [formatTwistLog4D], this is
@@ -649,18 +724,10 @@ class MainActivity : AppCompatActivity() {
      * `dir`'s sign is relative to *which grip* was clicked, not a universal CW/CCW -- e.g. `RD`
      * (non-prime) is `RU`'s (non-prime) inverse, confirmed against real MC4D, so consistently
      * using the same representative (never switching between an axis's two cells) is what keeps
-     * this app's own `prime` flag mapping to a consistent `dir` sign throughout -- *except* for
-     * O-representative (`fixAxis2 == W`) twists on three specific cells, which come out with the
-     * opposite chirality from the rest: confirmed against real MC4D from a solved puzzle, `RO`/
-     * `DO`/`FO` (non-prime) replay correctly, but `UO`/`BO`/`LO` (non-prime) replay as their prime.
-     * [MC4D_O_DIR_FLIP_CELLS] holds that exact set (R/D/F) -- there's no clean formula (checked:
-     * doesn't reduce to sign alone, or representative-vs-opposite alone -- R and F are each axis's
-     * *representative* cell, but D is Y's *opposite* of the representative, U), likely for the same
-     * underlying reason the on-screen rotation-button screen-consistency fixes needed their own
-     * empirical per-cell tables elsewhere in this file: W has no natural real-3D right-hand-rule
-     * equivalent the way X/Y/Z do, so whatever internal geometry library MC4D uses for W-involving
-     * grips (not present in the MC4D repo) doesn't necessarily follow a simple pattern. `slicemask`
-     * is always 1 (a single outer-layer twist, this app's only twist granularity). A 180-degree double twist is two separate identical
+     * this app's own `prime` flag mapping to a consistent `dir` sign throughout, *after* correcting
+     * `prime` via [correctedPrime] -- see [PRIME_FLIP_TWISTS]'s doc for which twists need that and
+     * why. `slicemask` is always 1 (a single outer-layer twist, this app's only twist granularity).
+     * A 180-degree double twist is two separate identical
      * triples, not a special encoding -- confirmed real MC4D does the same and doesn't consolidate
      * them, even though its own turn counter and this app's [formatTwistLog4D] both display
      * doubled moves as a single "X2" for readability. The view-orientation lines MC4D's header
@@ -685,23 +752,28 @@ class MainActivity : AppCompatActivity() {
             "0.0 0.0 0.0 1.0",
         )
         val tokens = history.map { (cell, fixAxis2, prime) ->
-            val flip = fixAxis2 == Axis4.W && cell in MC4D_O_DIR_FLIP_CELLS
-            val dir = if (flip) (if (prime) -1 else 1) else (if (prime) 1 else -1)
+            val dir = if (correctedPrime(cell, fixAxis2, prime)) 1 else -1
             "${mc4dGrip(cell, fixAxis2)},$dir,1"
         }.toMutableList()
         if (scrambleCount > 0) tokens.add(scrambleCount, "m|")
         return (listOf(header) + identityViewMatrix + listOf("*", "${tokens.joinToString(" ")}.")).joinToString("\n")
     }
 
-    /** e.g. "RU' RF RU2" -- hypercubing.xyz community notation: the twisted cell, then a
-     * representative cell for the fixed second axis, prime for counterclockwise, doubled moves
-     * collapsed via [consolidateDoubles]. Our own notation for undo/clipboard/share purposes --
-     * see [mc4dLogFile] for actual MagicCube4D file compatibility, which needs MC4D's own
-     * internal grip numbering, not this. */
+    /** e.g. "RU'" -- a single twist in hypercubing.xyz community notation: the twisted cell, then
+     * a representative cell for the fixed second axis, prime for counterclockwise ([correctedPrime]
+     * -- see [PRIME_FLIP_TWISTS]'s doc for why the raw native `prime` alone isn't enough). Also
+     * drives the on-screen "last move" indicator (see build4DScreen). */
+    private fun communityNotation(cell: Cell4, fixAxis2: Axis4, prime: Boolean): String =
+        cell.label + axisRepresentativeCell(fixAxis2).label +
+            (if (correctedPrime(cell, fixAxis2, prime)) "'" else "")
+
+    /** e.g. "RU' RF RU2" -- a whole move sequence in [communityNotation], doubled moves collapsed
+     * via [consolidateDoubles]. Our own notation for undo/clipboard/share purposes -- see
+     * [mc4dLogFile] for actual MagicCube4D file compatibility, which needs MC4D's own internal
+     * grip numbering, not this. */
     private fun formatTwistLog4D(history: List<Triple<Cell4, Axis4, Boolean>>): String =
-        consolidateDoubles(history) { (cell, fixAxis2, prime) ->
-            cell.label + axisRepresentativeCell(fixAxis2).label + (if (prime) "'" else "")
-        }.joinToString(" ")
+        consolidateDoubles(history) { (cell, fixAxis2, prime) -> communityNotation(cell, fixAxis2, prime) }
+            .joinToString(" ")
 
     private fun topCenterParams() = FrameLayout.LayoutParams(
         FrameLayout.LayoutParams.WRAP_CONTENT,
@@ -881,7 +953,7 @@ class MainActivity : AppCompatActivity() {
         private const val TAG = "Twisted4D"
         private const val DRAG_SENSITIVITY = 0.4f
         private const val SCRAMBLE_MOVE_COUNT_3D = 25
-        private const val SCRAMBLE_MOVE_COUNT_4D = 25
+        private const val SCRAMBLE_MOVE_COUNT_4D = 250
         private const val SOLVED_LABEL = "SOLVED"
         private const val SAVE_FILE_NAME = "puzzle_state.json"
 

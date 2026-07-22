@@ -21,5 +21,18 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Lets MainActivity.shareLogFile share a real, properly-named/extensioned file (e.g.
+             "twisted4d.log") via a content:// Uri, instead of loose clipboard text that every
+             receiving app has to invent a filename/extension for. See that function's doc. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
     </application>
 </manifest>
