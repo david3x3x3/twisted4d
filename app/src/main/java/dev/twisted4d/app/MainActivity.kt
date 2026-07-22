@@ -268,9 +268,9 @@ class MainActivity : AppCompatActivity() {
                 surfaceView.queueEvent {
                     when (inputMode) {
                         GamepadInputMode.STICK ->
-                            // Only the trigger does anything, moving the stick-selected cell to I
-                            // (see HypercubeRenderer.requestMoveSelectedCellToI's doc).
-                            if (button == NavigationButton.TRIGGER_L) {
+                            // Only the left stick click does anything, moving the stick-selected
+                            // cell to I (see HypercubeRenderer.requestMoveSelectedCellToI's doc).
+                            if (button == NavigationButton.THUMB_L) {
                                 renderer.snapViewToNearestCardinalOrientation()
                                 renderer.requestMoveSelectedCellToI()
                             }
@@ -286,6 +286,7 @@ class MainActivity : AppCompatActivity() {
                                     renderer.snapViewToNearestCardinalOrientation()
                                     renderer.requestMoveSelectedCellToI()
                                 }
+                                NavigationButton.THUMB_L -> Unit
                             }
                         // Community notation: LEFT=IU, RIGHT=IU', UP=IR, DOWN=IR', BUMPER_L(L1)=IF,
                         // TRIGGER_L(L2)=IF'. SELECT is unbound -- no role specified for RKT mode.
@@ -307,6 +308,7 @@ class MainActivity : AppCompatActivity() {
                                 NavigationButton.BUMPER_L -> renderer.requestRktITwist(HypercubeRenderer.AXIS_Z, true)
                                 NavigationButton.TRIGGER_L -> renderer.requestRktITwist(HypercubeRenderer.AXIS_Z, false)
                                 NavigationButton.SELECT -> Unit
+                                NavigationButton.THUMB_L -> Unit
                             }
                     }
                 }
@@ -978,7 +980,7 @@ Three selectable input modes &#8212; cycle with the on-screen "Input: Stick" / "
 &#8226; Right stick: orbit the view<br>
 &#8226; Y / A / X / B: twist the selected cell (Up / Down / Left / Right)<br>
 &#8226; R1 / R2 (bumper / trigger): twist the selected cell around its third axis<br>
-&#8226; L2 (trigger): rotate the puzzle so the selected cell moves to I<br>
+&#8226; Left stick click (L3): rotate the puzzle so the selected cell moves to I<br>
 <br>
 <b>Mode 2 &#8212; Pad Navigate</b><br>
 &#8226; Left stick: unused<br>

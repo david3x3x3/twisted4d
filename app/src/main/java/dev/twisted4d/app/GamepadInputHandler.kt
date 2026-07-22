@@ -28,13 +28,13 @@ enum class RotationButton(val literalAxis: Axis4, val primaryPrime: Boolean) {
     BUMPER_R(Axis4.Z, true),
 }
 
-/** The 7 left-hand physical buttons 4D mode's alternate "step navigation" input mode uses (see
+/** The 8 left-hand physical buttons 4D mode's alternate "step navigation" input mode uses (see
  * [on4DNavigate] and `todo-controller-input.md`) -- unlike [RotationButton], these don't twist
  * anything themselves; [MainActivity] interprets them differently depending on which gamepad
- * input mode is currently active (mode 1: only [TRIGGER_L] does anything, moving the
+ * input mode is currently active (mode 1: only [THUMB_L] does anything, moving the
  * stick-selected cell to I; mode 2: the dpad steps the highlight toward L/R/U/D, [BUMPER_L]/
  * [TRIGGER_L] step it toward F/B, and [SELECT] moves the highlighted cell to I). */
-enum class NavigationButton { LEFT, RIGHT, UP, DOWN, BUMPER_L, TRIGGER_L, SELECT }
+enum class NavigationButton { LEFT, RIGHT, UP, DOWN, BUMPER_L, TRIGGER_L, SELECT, THUMB_L }
 
 /**
  * Detects connected gamepads, logs button/axis events, and reports left-stick/right-stick/
@@ -245,7 +245,7 @@ class GamepadInputHandler(
             KeyEvent.KEYCODE_BUTTON_R2 to RotationButton.TRIGGER_R,
         )
 
-        /** The 7 left-hand buttons 4D mode's [on4DNavigate] fires for -- see [NavigationButton]. */
+        /** The 8 left-hand buttons 4D mode's [on4DNavigate] fires for -- see [NavigationButton]. */
         private val NAVIGATION_BUTTON_MAP = mapOf(
             KeyEvent.KEYCODE_DPAD_LEFT to NavigationButton.LEFT,
             KeyEvent.KEYCODE_DPAD_RIGHT to NavigationButton.RIGHT,
@@ -254,6 +254,7 @@ class GamepadInputHandler(
             KeyEvent.KEYCODE_BUTTON_L1 to NavigationButton.BUMPER_L,
             KeyEvent.KEYCODE_BUTTON_L2 to NavigationButton.TRIGGER_L,
             KeyEvent.KEYCODE_BUTTON_SELECT to NavigationButton.SELECT,
+            KeyEvent.KEYCODE_BUTTON_THUMBL to NavigationButton.THUMB_L,
         )
     }
 }
