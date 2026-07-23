@@ -62,10 +62,10 @@ enum class NavigationButton { LEFT, RIGHT, UP, DOWN, BUMPER_L, TRIGGER_L, SELECT
  * in 3D mode).
  *
  * [onDpadStick] is a d-pad-driven alternative to the left stick for controllers without one --
- * MainActivity wires it into the exact same selection call [onLeftStick] does, so it's opt-in
- * per user preference (a toggle button) rather than always-on, letting both coexist without
- * fighting. See [reportDpadStick]'s doc for how a stick-like (x, y) is synthesized from the
- * d-pad's held state.
+ * MainActivity wires it into the exact same selection call [onLeftStick] does, always active
+ * alongside the stick (not a separate toggle/mode) since the two don't conflict: a stick-less
+ * controller simply never fires [onLeftStick]. See [reportDpadStick]'s doc for how a stick-like
+ * (x, y) is synthesized from the d-pad's held state.
  */
 class GamepadInputHandler(
     private val onLeftStick: (x: Float, y: Float) -> Unit,

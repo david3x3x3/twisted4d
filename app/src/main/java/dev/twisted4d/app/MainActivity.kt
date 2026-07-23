@@ -280,21 +280,18 @@ class MainActivity : AppCompatActivity() {
         // truth these closures defer to once queued.
         var inputMode = GamepadInputMode.STICK
 
-        // Opt-in per the "D-pad Select" toggle in filterColumn -- lets controllers without a left
-        // stick still drive STICK mode's selection, additively alongside the stick itself rather
-        // than replacing it (see GamepadInputHandler.onDpadStick's doc). UI-thread-local, same
-        // pattern as inputMode above.
-        var dpadSelectEnabled = false
-
         gamepadInput = GamepadInputHandler(
             onLeftStick = { x, y ->
                 if (inputMode == GamepadInputMode.STICK) surfaceView.queueEvent { renderer.updateCell4Selection(x, y) }
             },
             onRightStick = { x, y -> renderer.stickX = x; renderer.stickY = y },
+            // Lets controllers without a left stick still drive STICK mode's selection, always
+            // active alongside the stick itself rather than a separate mode -- see
+            // GamepadInputHandler.onDpadStick's doc. No real downside to leaving both live: a
+            // stick-less controller simply never sends onLeftStick events, and a device with both
+            // just gets two equally-valid ways to select.
             onDpadStick = { x, y ->
-                if (dpadSelectEnabled && inputMode == GamepadInputMode.STICK) {
-                    surfaceView.queueEvent { renderer.updateCell4Selection(x, y) }
-                }
+                if (inputMode == GamepadInputMode.STICK) surfaceView.queueEvent { renderer.updateCell4Selection(x, y) }
             },
             onFaceButton = { _, _ -> },
             on4DRotationButton = { button ->
@@ -498,9 +495,6 @@ class MainActivity : AppCompatActivity() {
                 }.also { addView(it) }
             filterToggle("Hide 4c") { renderer.hideCorners = it }
             filterToggle("Hide 3c") { renderer.hideEdges = it }
-            // See dpadSelectEnabled's doc above -- lets a d-pad-only controller drive STICK mode's
-            // selection without a left stick, additively alongside one if present.
-            filterToggle("D-pad Select") { dpadSelectEnabled = it }
         }
 
         // Cell twists, camera rotation, and axis selection are gamepad-only now (see
