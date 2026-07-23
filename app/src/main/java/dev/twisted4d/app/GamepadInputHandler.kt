@@ -142,6 +142,16 @@ class GamepadInputHandler(
      * once-per-ACTION_DOWN behavior -- a real hat only ever reports -1/0/+1, so a 0.5 threshold
      * cleanly separates "pressed" from "centered" with no risk of false triggers from noise. */
     private fun handleHatAxes(hatX: Float, hatY: Float) {
+        // A joystick MotionEvent reports *every* axis's current value, not just the one that
+        // changed -- so an ordinary stick deflection also carries the hat axes' (unchanged, at
+        // rest) values through here. Only report to onDpadStick on a genuine change; otherwise an
+        // idle d-pad's (0, 0) fires right after onLeftStick's real value on every single stick
+        // motion event and immediately overwrites it -- confirmed as the cause of a real
+        // regression (analog-stick selection silently stopped highlighting on any controller that
+        // bundles the two this way, while d-pad selection kept working since nothing followed it
+        // to clobber it).
+        val hatChanged = hatX != lastHatX || hatY != lastHatY
+
         if (hatX <= -0.5f && lastHatX > -0.5f) on4DNavigate(NavigationButton.LEFT)
         if (hatX >= 0.5f && lastHatX < 0.5f) on4DNavigate(NavigationButton.RIGHT)
         GamepadVisualState.dpadLeftHeld = hatX <= -0.5f
@@ -154,7 +164,7 @@ class GamepadInputHandler(
         GamepadVisualState.dpadDownHeld = hatY >= 0.5f
         lastHatY = hatY
 
-        reportDpadStick()
+        if (hatChanged) reportDpadStick()
     }
 
     /** Logs gamepad button presses and triggers the mapped twist, if any; never consumes the
