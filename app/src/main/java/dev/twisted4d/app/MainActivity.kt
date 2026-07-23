@@ -327,9 +327,12 @@ class MainActivity : AppCompatActivity() {
                 surfaceView.queueEvent {
                     when (inputMode) {
                         GamepadInputMode.STICK ->
-                            // Only the left stick click does anything, moving the stick-selected
-                            // cell to I (see HypercubeRenderer.requestMoveSelectedCellToI's doc).
-                            if (button == NavigationButton.THUMB_L) {
+                            // Moves the stick-selected cell to I (see
+                            // HypercubeRenderer.requestMoveSelectedCellToI's doc). THUMB_L (stick
+                            // click) is the original control; SELECT does the same thing so a
+                            // d-pad-only controller -- no stick to click -- has a way to do this
+                            // too, same button PAD mode already uses for it.
+                            if (button == NavigationButton.THUMB_L || button == NavigationButton.SELECT) {
                                 renderer.snapViewToNearestCardinalOrientation()
                                 renderer.requestMoveSelectedCellToI()
                             }
@@ -908,10 +911,12 @@ Three selectable input modes &#8212; cycle with the on-screen "Input: Stick" / "
 <br>
 <b>Mode 1 &#8212; Stick Select (default)</b><br>
 &#8226; Left stick: select a cell (deflect toward it, release to keep the selection)<br>
+&#8226; D-pad: also selects a cell, same as the left stick &#8212; hold two adjacent directions at
+once for a diagonal, for controllers with no left stick<br>
 &#8226; Right stick: orbit the view<br>
 &#8226; Y / A / X / B: twist the selected cell (Up / Down / Left / Right)<br>
 &#8226; R1 / R2 (bumper / trigger): twist the selected cell around its third axis<br>
-&#8226; Left stick click (L3): rotate the puzzle so the selected cell moves to I<br>
+&#8226; Left stick click (L3) or Select button: rotate the puzzle so the selected cell moves to I<br>
 <br>
 <b>Mode 2 &#8212; Pad Navigate</b><br>
 &#8226; Left stick: unused<br>
