@@ -60,6 +60,12 @@ enum class NavigationButton { LEFT, RIGHT, UP, DOWN, BUMPER_L, TRIGGER_L, SELECT
  * where the dpad/L1/L2 steps a persistent selection instead (see [NavigationButton]). Right
  * stick = 4D-specific rotation, i.e. camera orbit, in 4D mode regardless of input mode (ignored
  * in 3D mode).
+ *
+ * [onDpadStick] is a d-pad-driven alternative to the left stick for controllers without one --
+ * MainActivity wires it into the exact same selection call [onLeftStick] does, so it's opt-in
+ * per user preference (a toggle button) rather than always-on, letting both coexist without
+ * fighting. See [reportDpadStick]'s doc for how a stick-like (x, y) is synthesized from the
+ * d-pad's held state.
  */
 class GamepadInputHandler(
     private val onLeftStick: (x: Float, y: Float) -> Unit,
@@ -67,6 +73,7 @@ class GamepadInputHandler(
     private val onFaceButton: (index: Int, invert: Boolean) -> Unit,
     private val on4DRotationButton: (RotationButton) -> Unit = {},
     private val on4DNavigate: (NavigationButton) -> Unit = {},
+    private val onDpadStick: (x: Float, y: Float) -> Unit = { _, _ -> },
 ) : InputManager.InputDeviceListener {
 
     @Volatile private var invertHeld = false
@@ -146,6 +153,8 @@ class GamepadInputHandler(
         GamepadVisualState.dpadUpHeld = hatY <= -0.5f
         GamepadVisualState.dpadDownHeld = hatY >= 0.5f
         lastHatY = hatY
+
+        reportDpadStick()
     }
 
     /** Logs gamepad button presses and triggers the mapped twist, if any; never consumes the
@@ -186,6 +195,11 @@ class GamepadInputHandler(
                 KeyEvent.KEYCODE_BUTTON_SELECT -> GamepadVisualState.selectHeld = held
                 KeyEvent.KEYCODE_BUTTON_THUMBL -> GamepadVisualState.thumbLHeld = held
             }
+            when (event.keyCode) {
+                KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT,
+                KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN,
+                -> reportDpadStick()
+            }
         }
 
         if (event.repeatCount > 0) return // don't spam the log/twists while a button is held
@@ -210,6 +224,20 @@ class GamepadInputHandler(
             Log.i(TAG, "4D navigation button: $button (gamepad)")
             on4DNavigate(button)
         }
+    }
+
+    /** Synthesizes a stick-like (x, y) from the d-pad's *current* held state -- Left/Right and
+     * Up/Down held at once combine into a diagonal, exactly like a real d-pad's physical diagonal
+     * press, so this reports the same continuous shape [onLeftStick] does (magnitude up to
+     * sqrt(2) on a diagonal, well past any deadzone, so no normalization needed) and the two are
+     * interchangeable to callers. Same up=negative-y sign convention as the real AXIS_Y stick
+     * (see [handleMotionEvent]): [GamepadVisualState.dpadUpHeld] alone must yield the same sign
+     * pushing the stick up would, since [MainActivity] feeds both into
+     * [HypercubeRenderer.updateCell4Selection] unchanged. */
+    private fun reportDpadStick() {
+        val x = (if (GamepadVisualState.dpadRightHeld) 1f else 0f) - (if (GamepadVisualState.dpadLeftHeld) 1f else 0f)
+        val y = (if (GamepadVisualState.dpadDownHeld) 1f else 0f) - (if (GamepadVisualState.dpadUpHeld) 1f else 0f)
+        onDpadStick(x, y)
     }
 
     private fun applyDeadzone(v: Float): Float = if (abs(v) < DEADZONE) 0f else v
