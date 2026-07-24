@@ -1300,7 +1300,12 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
     }
 
     companion object {
-        private const val STICK_DEG_PER_FRAME = 1.2f
+        // Doubled from the original 1.2 -- right-stick camera orbit felt much too slow relative to
+        // touch-drag (which has no equivalent scaling knob); a stick is a variable control users
+        // already expect to modulate with how far they push it, so speeding up the baseline is a
+        // reasonable first try rather than something that needs to stay subtle. Revisit if it
+        // turns out to feel too fast rather than "double" being exactly right.
+        private const val STICK_DEG_PER_FRAME = 2.4f
         private const val ANIM_DURATION_NANOS = 220_000_000L // 220ms
 
         /** Duration of the eased view-realignment in [snapViewToNearestCardinalOrientation] --
