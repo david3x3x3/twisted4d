@@ -498,6 +498,10 @@ class MainActivity : AppCompatActivity() {
                 }.also { addView(it) }
             filterToggle("Hide 4c") { renderer.hideCorners = it }
             filterToggle("Hide 3c") { renderer.hideEdges = it }
+            // Swaps L1<->L2 and R1<->R2 for Z-axis rotation/navigation (see
+            // GamepadInputHandler.swapZDirection's doc) -- for controllers whose bumper/trigger
+            // arrangement makes the app's default Z direction feel backwards.
+            filterToggle("Z Dir") { gamepadInput.swapZDirection = it }
         }
 
         // Cell twists, camera rotation, and axis selection are gamepad-only now (see
@@ -944,6 +948,8 @@ no cell selection needed, so nothing is highlighted.<br>
 <b>4D ON-SCREEN BUTTONS</b><br>
 Cell twists and puzzle rotation are gamepad-only (see above) -- what's left on screen:<br>
 &#8226; Hide 4c / Hide 3c: hide corner / edge pieces, useful early in a solve<br>
+&#8226; Z Dir: swaps L1&#8596;L2 and R1&#8596;R2 for Z-axis rotation/navigation, for controllers
+whose bumper/trigger arrangement makes the default feel backwards<br>
 &#8226; Scramble / Reset / Undo<br>
 &#8226; Log: copy/share the twist history in hypercubing.xyz notation (e.g. "RU'")<br>
 &#8226; MC4D: export the twist history as a real MagicCube4D .log file, openable in the actual MagicCube4D software<br>

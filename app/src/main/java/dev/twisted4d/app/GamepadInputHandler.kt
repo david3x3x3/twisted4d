@@ -78,6 +78,15 @@ class GamepadInputHandler(
 
     @Volatile private var invertHeld = false
 
+    /** Swaps L1<->L2 and R1<->R2 for [ROTATION_BUTTON_MAP]/[NAVIGATION_BUTTON_MAP] purposes only
+     * (not [FACE_BUTTON_INDEX_MAP], not [invertHeld], not [GamepadVisualState] -- those are
+     * unrelated to "which trigger means which Z direction") -- MainActivity's 4D "Z Dir" toggle
+     * button sets this for controllers whose bumper/trigger arrangement makes the app's default
+     * assignment feel backwards. Public var, not a constructor param, since it toggles live after
+     * construction; @Volatile since the toggle button (UI thread) and [handleKeyEvent] (also UI
+     * thread here, but matching [invertHeld]'s existing safety margin) don't share a call stack. */
+    @Volatile var swapZDirection = false
+
     // Last-seen d-pad hat axis values, for edge-detecting a "press" out of AXIS_HAT_X/Y -- see
     // handleMotionEvent's doc for why this exists alongside NAVIGATION_BUTTON_MAP's key-based
     // handling. UI-thread-only (handleMotionEvent is only ever called from
@@ -226,13 +235,27 @@ class GamepadInputHandler(
             Log.i(TAG, "Twist requested: index=$index invert=$invertHeld (gamepad)")
             onFaceButton(index, invertHeld)
         }
-        ROTATION_BUTTON_MAP[event.keyCode]?.let { button ->
+        val zDirKeyCode = zDirSwappedKeyCode(event.keyCode)
+        ROTATION_BUTTON_MAP[zDirKeyCode]?.let { button ->
             Log.i(TAG, "4D rotation button: $button (gamepad)")
             on4DRotationButton(button)
         }
-        NAVIGATION_BUTTON_MAP[event.keyCode]?.let { button ->
+        NAVIGATION_BUTTON_MAP[zDirKeyCode]?.let { button ->
             Log.i(TAG, "4D navigation button: $button (gamepad)")
             on4DNavigate(button)
+        }
+    }
+
+    /** See [swapZDirection]'s doc. Identity when it's off or [keyCode] isn't one of the 4 Z-axis
+     * trigger/bumper buttons. */
+    private fun zDirSwappedKeyCode(keyCode: Int): Int {
+        if (!swapZDirection) return keyCode
+        return when (keyCode) {
+            KeyEvent.KEYCODE_BUTTON_L1 -> KeyEvent.KEYCODE_BUTTON_L2
+            KeyEvent.KEYCODE_BUTTON_L2 -> KeyEvent.KEYCODE_BUTTON_L1
+            KeyEvent.KEYCODE_BUTTON_R1 -> KeyEvent.KEYCODE_BUTTON_R2
+            KeyEvent.KEYCODE_BUTTON_R2 -> KeyEvent.KEYCODE_BUTTON_R1
+            else -> keyCode
         }
     }
 
