@@ -1,3 +1,6 @@
+import java.text.SimpleDateFormat
+import java.util.Date
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -5,8 +8,8 @@ plugins {
 
 // Runs `git <args>` in the repo root and returns trimmed stdout -- used below to stamp each build
 // with the exact commit it came from, so a bug report's on-screen build label ("Build a1b2c3d4",
-// or "...-dirty" for an uncommitted working tree) can be traced straight back to source instead of
-// needing a hand-bumped counter kept in sync with commits by memory.
+// or "...-dirty-<timestamp>" for an uncommitted working tree) can be traced straight back to
+// source instead of needing a hand-bumped counter kept in sync with commits by memory.
 fun gitCommand(vararg args: String): String {
     val process = ProcessBuilder(listOf("git") + args)
         .directory(rootDir)
@@ -17,8 +20,14 @@ fun gitCommand(vararg args: String): String {
     return output
 }
 
+// A committed tree's hash alone already uniquely identifies the source, so no timestamp needed
+// there -- but a *dirty* tree's hash stays the same across every build until the next commit, even
+// across edit-rebuild-redeploy cycles with real (uncommitted) changes in between, which made the
+// label useless for confirming "is this actually the build I just made" during iteration. A build
+// timestamp, appended only in the dirty case, guarantees each build gets a distinct label.
+val gitDirty = gitCommand("status", "--porcelain").isNotEmpty()
 val gitVersion = gitCommand("rev-parse", "--short=8", "HEAD") +
-    if (gitCommand("status", "--porcelain").isNotEmpty()) "-dirty" else ""
+    if (gitDirty) "-dirty-" + SimpleDateFormat("yyyyMMdd-HHmmss").format(Date()) else ""
 
 android {
     namespace = "dev.twisted4d.app"

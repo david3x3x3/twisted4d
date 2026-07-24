@@ -739,13 +739,15 @@ class MainActivity : AppCompatActivity() {
     ).apply { bottomMargin = 12; rightMargin = 12 }
 
     /** Small, always-present build-identity label -- [BuildConfig.GIT_VERSION] is the exact
-     * commit this APK was built from (short hash, "-dirty" suffix if the working tree had
-     * uncommitted changes at build time -- see build.gradle.kts's `gitVersion`), so a bug report
-     * that includes it can be traced straight back to source, and a tester can confirm on-screen
-     * that the build they're looking at is actually the one just installed, instead of an
-     * unnoticed stale/not-yet-synced APK (see the discuss_theories_before_acting memory for why
-     * that ambiguity is worth eliminating). Deliberately dim/unobtrusive -- this is a testing aid,
-     * not a feature. */
+     * commit this APK was built from (short hash, "-dirty-<timestamp>" suffix if the working tree
+     * had uncommitted changes at build time -- see build.gradle.kts's `gitVersion`), so a bug
+     * report that includes it can be traced straight back to source, and a tester can confirm
+     * on-screen that the build they're looking at is actually the one just installed, instead of
+     * an unnoticed stale/not-yet-synced APK (see the discuss_theories_before_acting memory for why
+     * that ambiguity is worth eliminating). The timestamp (not just "-dirty") is what makes this
+     * work across repeated dirty builds -- a bare hash never changes until the next commit, even
+     * across genuinely different uncommitted states. Deliberately dim/unobtrusive -- this is a
+     * testing aid, not a feature. */
     private fun buildNumberLabel(): TextView = TextView(this).apply {
         text = "Build ${BuildConfig.GIT_VERSION}"
         textSize = 11f
