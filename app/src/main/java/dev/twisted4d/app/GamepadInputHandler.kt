@@ -1,6 +1,7 @@
 package dev.twisted4d.app
 
 import android.hardware.input.InputManager
+import android.os.Build
 import android.util.Log
 import android.view.InputDevice
 import android.view.KeyEvent
@@ -271,6 +272,26 @@ class GamepadInputHandler(
         val x = (if (GamepadVisualState.dpadRightHeld) 1f else 0f) - (if (GamepadVisualState.dpadLeftHeld) 1f else 0f)
         val y = (if (GamepadVisualState.dpadDownHeld) 1f else 0f) - (if (GamepadVisualState.dpadUpHeld) 1f else 0f)
         onDpadStick(x, y)
+    }
+
+    /** Battery fraction (0f-1f) of the first connected gamepad that actually reports one, or
+     * null if no gamepad is connected, none of the connected ones expose battery info (many wired
+     * USB pads never do), or this device predates API 31 -- [android.hardware.BatteryState]
+     * didn't exist before Android 12. Polled periodically by MainActivity for the on-screen
+     * "Battery: N%" label; there's no push/callback API for battery-level changes at this SDK
+     * level (checked: [InputManager] has no such listener registration), only this point-in-time
+     * query, so periodic polling is the only option. */
+    fun currentGamepadBatteryFraction(): Float? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return null
+        for (id in InputDevice.getDeviceIds()) {
+            val device = InputDevice.getDevice(id) ?: continue
+            if (!isGamepadSource(device.sources)) continue
+            val battery = device.getBatteryState()
+            if (!battery.isPresent) continue
+            val capacity = battery.capacity
+            if (!capacity.isNaN()) return capacity
+        }
+        return null
     }
 
     private fun applyDeadzone(v: Float): Float = if (abs(v) < DEADZONE) 0f else v

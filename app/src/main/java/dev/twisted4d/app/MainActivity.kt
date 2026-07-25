@@ -10,6 +10,8 @@ import android.content.IntentFilter
 import android.hardware.input.InputManager
 import android.opengl.GLSurfaceView
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.text.Html
 import android.util.Log
 import android.view.Gravity
@@ -29,6 +31,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.util.Collections
+import kotlin.math.roundToInt
 
 class MainActivity : AppCompatActivity() {
 
@@ -65,6 +68,14 @@ class MainActivity : AppCompatActivity() {
     private var lastTouchX = 0f
     private var lastTouchY = 0f
     private lateinit var scaleGestureDetector: ScaleGestureDetector
+
+    // Drives the 4D screen's "Battery: N%" label -- see
+    // GamepadInputHandler.currentGamepadBatteryFraction's doc for why this has to be polling
+    // rather than a callback. batteryPollRunnable is nulled/cancelled at the top of rebuildUi so
+    // a stale poll loop from a torn-down screen doesn't keep running (and doesn't stack up if the
+    // user toggles 3D/4D repeatedly).
+    private val batteryPollHandler = Handler(Looper.getMainLooper())
+    private var batteryPollRunnable: Runnable? = null
 
     // Twist history for the currently-built screen's mode -- written from the GL thread
     // (onTwistApplied) and read/cleared from the UI thread (undo/scramble/reset/log buttons),
@@ -117,6 +128,8 @@ class MainActivity : AppCompatActivity() {
     /** Tears down and rebuilds the whole screen for the current mode. GLSurfaceView only
      * accepts one `setRenderer` call ever, so switching modes means a fresh instance. */
     private fun rebuildUi() {
+        batteryPollRunnable?.let { batteryPollHandler.removeCallbacks(it) }
+        batteryPollRunnable = null
         rootLayout.removeAllViews()
         if (::gamepadInput.isInitialized) {
             inputManager.unregisterInputDeviceListener(gamepadInput)
@@ -379,6 +392,25 @@ class MainActivity : AppCompatActivity() {
         inputManager.registerInputDeviceListener(gamepadInput, null)
         gamepadInput.logAlreadyConnectedDevices()
 
+        // Polled, not event-driven -- see GamepadInputHandler.currentGamepadBatteryFraction's
+        // doc. Blank (not "N/A" or similar) when nothing to show, matching statusText's own
+        // empty-when-nothing-to-say convention -- most controllers connected over USB, or devices
+        // below API 31, will simply never populate this.
+        val batteryText = TextView(this).apply {
+            textSize = 14f
+            alpha = 0.6f
+            setPadding(24, 8, 24, 0)
+        }
+        val pollBattery = object : Runnable {
+            override fun run() {
+                val fraction = gamepadInput.currentGamepadBatteryFraction()
+                batteryText.text = if (fraction != null) "Battery: ${(fraction * 100).roundToInt()}%" else ""
+                batteryPollHandler.postDelayed(this, BATTERY_POLL_INTERVAL_MS)
+            }
+        }
+        batteryPollRunnable = pollBattery
+        pollBattery.run()
+
         val statusText = statusTextView(initiallySolved)
         renderer.onStateChanged = { solved ->
             runOnUiThread { statusText.text = if (solved) SOLVED_LABEL else "" }
@@ -433,6 +465,7 @@ class MainActivity : AppCompatActivity() {
             addView(turnCountText)
             addView(lastMoveText)
             addView(selectedCellText)
+            addView(batteryText)
         }
 
         val utilityColumn = utilityRow(
@@ -898,6 +931,7 @@ class MainActivity : AppCompatActivity() {
         private const val SCRAMBLE_MOVE_COUNT_4D = 250
         private const val SOLVED_LABEL = "SOLVED"
         private const val SAVE_FILE_NAME = "puzzle_state.json"
+        private const val BATTERY_POLL_INTERVAL_MS = 30_000L
 
         private const val HELP_HTML = """
 <b>TOUCH CONTROLS</b><br>
@@ -946,6 +980,14 @@ no cell selection needed, so nothing is highlighted.<br>
 &#8226; D-pad up / down: twist I as IR / IR'<br>
 &#8226; L1 / L2 (bumper / trigger): twist I as IF / IF'<br>
 &#8226; Select button: unused<br>
+<br>
+<b>4D TOP-LEFT STATUS</b><br>
+&#8226; Turns: twists made since the last scramble (or reset)<br>
+&#8226; The last twist performed, in hypercubing.xyz notation (e.g. "RU'")<br>
+&#8226; Selected X: showing Y -- the room slot that will actually twist right now, and which native
+cell currently occupies it<br>
+&#8226; Battery: N% -- the connected gamepad's battery level, if it reports one (many wired
+controllers, and Android versions before 12, never do -- blank when unavailable)<br>
 <br>
 <b>4D ON-SCREEN BUTTONS</b><br>
 Cell twists and puzzle rotation are gamepad-only (see above) -- what's left on screen:<br>
