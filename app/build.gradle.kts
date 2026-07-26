@@ -42,10 +42,12 @@ android {
         // shown to users, just what the package manager compares to decide "is this an
         // upgrade") -- bump it by 1 on every future release regardless of versionName.
         // versionName is the free-form user-visible string; semantic versioning
-        // (MAJOR.MINOR.PATCH) is the usual convention, with no rule requiring 1.0.0 as a
-        // starting point -- 3.1.0 chosen by the user, not tied to a count of prior releases.
+        // (MAJOR.MINOR.PATCH) is the usual convention. 0.x.y means "pre-1.0" -- no promise of
+        // stability yet -- per the user's explicit choice (2026-07-26, correcting an earlier
+        // voice-to-text mishear of "pre 1.0" as "3.1.0"); 0.9.0 signals "close to a real 1.0
+        // release" without claiming to be there yet.
         versionCode = 2
-        versionName = "3.1.0"
+        versionName = "0.9.0"
         buildConfigField("String", "GIT_VERSION", "\"$gitVersion\"")
     }
 
