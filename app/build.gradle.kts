@@ -38,8 +38,14 @@ android {
         applicationId = "dev.twisted4d.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "0.1"
+        // versionCode is the Play-Store-style monotonically-increasing build counter (never
+        // shown to users, just what the package manager compares to decide "is this an
+        // upgrade") -- bump it by 1 on every future release regardless of versionName.
+        // versionName is the free-form user-visible string; semantic versioning
+        // (MAJOR.MINOR.PATCH) is the usual convention, with no rule requiring 1.0.0 as a
+        // starting point -- 3.1.0 chosen by the user, not tied to a count of prior releases.
+        versionCode = 2
+        versionName = "3.1.0"
         buildConfigField("String", "GIT_VERSION", "\"$gitVersion\"")
     }
 
