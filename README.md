@@ -5,10 +5,11 @@ A native Android app that simulates 3D and 4D Rubik's-cube-style twisty puzzles 
 a floating center cell. The UI/app layer is Kotlin; the 4D puzzle math and twist logic live in a
 native Rust core.
 
-twisted4d treats gamepad play as a first-class citizen rather than an afterthought. Twisting,
-cell selection, camera control, and undo/redo all work fully from a controller. Some utility
-actions (scramble, reset, exporting a twist log, a few settings toggles) are still touch-only for
-now — moving those onto the controller too is an ongoing goal.
+twisted4d is built gamepad-first, and a gamepad is currently required for actual play — twisting
+and cell selection in 4D mode (the app's core feature) only work from a controller right now.
+Touch covers camera orbit/zoom and utility actions (scramble, reset, exporting a twist log, some
+settings), but not twisting itself. Full touch-only play, with no gamepad needed at all, is a
+future goal, not current behavior.
 
 The project was inspired by [Hyperspeedcube](https://github.com/HactarCE/Hyperspeedcube) and
 [MagicCube4D](https://superliminal.com/cube/); see the in-app Help screen for full credits.
@@ -21,8 +22,10 @@ twisted4d is actively being tested on:
 - **8BitDo Micro** — a compact Bluetooth gamepad
 - **Sony DualSense** (PS5 controller) — connected over Bluetooth
 
-These are examples, not requirements — any Android device running API 26+ (Android 8.0 or later)
-should work, with or without a gamepad attached.
+These are examples, not requirements — any Android gamepad recognized by Android's standard
+`InputDevice`/`KeyEvent` APIs should work. A gamepad is currently required for actual play (see
+above); the app itself runs on any Android device running API 26+ (Android 8.0 or later), but
+you'll need a controller attached to use it.
 
 ## Controls
 
