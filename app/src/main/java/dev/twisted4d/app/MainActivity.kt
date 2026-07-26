@@ -344,8 +344,14 @@ class MainActivity : AppCompatActivity() {
                             // HypercubeRenderer.requestMoveSelectedCellToI's doc). THUMB_L (stick
                             // click) is the original control; SELECT does the same thing so a
                             // d-pad-only controller -- no stick to click -- has a way to do this
-                            // too, same button PAD mode already uses for it.
-                            if (button == NavigationButton.THUMB_L || button == NavigationButton.SELECT) {
+                            // too, same button PAD mode already uses for it. START is a third,
+                            // added after a real PS5 DualSense repro: with the left hand busy on
+                            // the stick, the right hand reaching across to SELECT ("Create," on
+                            // the controller's left side) is awkward -- START ("Options," right
+                            // side) isn't. See NavigationButton.START's doc.
+                            if (button == NavigationButton.THUMB_L || button == NavigationButton.SELECT ||
+                                button == NavigationButton.START
+                            ) {
                                 renderer.snapViewToNearestCardinalOrientation()
                                 renderer.requestMoveSelectedCellToI()
                             }
@@ -357,14 +363,15 @@ class MainActivity : AppCompatActivity() {
                                 NavigationButton.DOWN -> renderer.navigateMode2Selection(HypercubeRenderer.AXIS_Y, -1)
                                 NavigationButton.BUMPER_L -> renderer.navigateMode2Selection(HypercubeRenderer.AXIS_Z, 1)
                                 NavigationButton.TRIGGER_L -> renderer.navigateMode2Selection(HypercubeRenderer.AXIS_Z, -1)
-                                NavigationButton.SELECT -> {
+                                NavigationButton.SELECT, NavigationButton.START -> {
                                     renderer.snapViewToNearestCardinalOrientation()
                                     renderer.requestMoveSelectedCellToI()
                                 }
                                 NavigationButton.THUMB_L -> Unit
                             }
                         // Community notation: LEFT=IU, RIGHT=IU', UP=IR, DOWN=IR', BUMPER_L(L1)=IF,
-                        // TRIGGER_L(L2)=IF'. SELECT is unbound -- no role specified for RKT mode.
+                        // TRIGGER_L(L2)=IF'. SELECT/START are unbound -- no role specified for RKT
+                        // mode (no cell selection exists there to move to I).
                         // The X/Z axis pairs need prime flipped relative to what their label would
                         // naively suggest -- real-device-confirmed: Y (LEFT/RIGHT) was already
                         // correct, but X (UP/DOWN) and Z (BUMPER_L/TRIGGER_L) both twisted the
@@ -384,6 +391,7 @@ class MainActivity : AppCompatActivity() {
                                 NavigationButton.TRIGGER_L -> renderer.requestRktITwist(HypercubeRenderer.AXIS_Z, false)
                                 NavigationButton.SELECT -> Unit
                                 NavigationButton.THUMB_L -> Unit
+                                NavigationButton.START -> Unit
                             }
                     }
                 }
@@ -956,7 +964,8 @@ once for a diagonal, for controllers with no left stick<br>
 &#8226; Right stick: orbit the view<br>
 &#8226; Y / A / X / B: twist the selected cell (Up / Down / Left / Right)<br>
 &#8226; R1 / R2 (bumper / trigger): twist the selected cell around its third axis<br>
-&#8226; Left stick click (L3) or Select button: rotate the puzzle so the selected cell moves to I<br>
+&#8226; Left stick click (L3), Select, or Start: rotate the puzzle so the selected cell moves to I
+&#8212; Start exists as an easier right-hand reach than Select while the left hand is on the stick<br>
 <br>
 <b>Mode 2 &#8212; Pad Navigate</b><br>
 &#8226; Left stick: unused<br>
@@ -967,7 +976,7 @@ once for a diagonal, for controllers with no left stick<br>
 &#8226; L1 (bumper): step the highlight toward F<br>
 &#8226; L2 (trigger): step the highlight toward B<br>
 &#8226; Each direction stops at its endpoint &#8212; no wraparound, and O can never be reached this way<br>
-&#8226; Select button: rotate the puzzle so the highlighted cell moves to I<br>
+&#8226; Select or Start button: rotate the puzzle so the highlighted cell moves to I<br>
 &#8226; The highlighted cell is remembered separately per mode &#8212; switching away and back restores it<br>
 <br>
 <b>Mode 3 &#8212; RKT</b><br>
@@ -979,7 +988,7 @@ no cell selection needed, so nothing is highlighted.<br>
 &#8226; D-pad left / right: twist I as IU / IU'<br>
 &#8226; D-pad up / down: twist I as IR / IR'<br>
 &#8226; L1 / L2 (bumper / trigger): twist I as IF / IF'<br>
-&#8226; Select button: unused<br>
+&#8226; Select / Start: unused<br>
 <br>
 <b>4D TOP-LEFT STATUS</b><br>
 &#8226; Turns: twists made since the last scramble (or reset)<br>

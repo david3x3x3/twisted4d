@@ -29,13 +29,17 @@ enum class RotationButton(val literalAxis: Axis4, val primaryPrime: Boolean) {
     BUMPER_R(Axis4.Z, true),
 }
 
-/** The 8 left-hand physical buttons 4D mode's alternate "step navigation" input mode uses (see
- * [on4DNavigate] and `todo-controller-input.md`) -- unlike [RotationButton], these don't twist
- * anything themselves; [MainActivity] interprets them differently depending on which gamepad
- * input mode is currently active (mode 1: only [THUMB_L] does anything, moving the
- * stick-selected cell to I; mode 2: the dpad steps the highlight toward L/R/U/D, [BUMPER_L]/
- * [TRIGGER_L] step it toward F/B, and [SELECT] moves the highlighted cell to I). */
-enum class NavigationButton { LEFT, RIGHT, UP, DOWN, BUMPER_L, TRIGGER_L, SELECT, THUMB_L }
+/** The physical buttons 4D mode's non-twisting controls use (see [on4DNavigate] and
+ * `todo-controller-input.md`) -- unlike [RotationButton], these don't twist anything themselves;
+ * [MainActivity] interprets them differently depending on which [GamepadInputMode] is active.
+ * [LEFT]/[RIGHT]/[UP]/[DOWN]/[BUMPER_L]/[TRIGGER_L]/[SELECT]/[THUMB_L] are all physically
+ * left-hand buttons (d-pad, L1/L2, and the stick click). [START] is the odd one out: added
+ * 2026-07-26 as an easier-to-reach alternative to [SELECT] for "move the selected cell to I" in
+ * STICK mode specifically -- a real-device PS5 DualSense repro found SELECT ("Create") awkward to
+ * reach with the right hand while the left hand stays on the stick, whereas START ("Options") is
+ * on the controller's right side and doesn't have that problem. Additive, not a replacement --
+ * SELECT still works everywhere it already did. */
+enum class NavigationButton { LEFT, RIGHT, UP, DOWN, BUMPER_L, TRIGGER_L, SELECT, THUMB_L, START }
 
 /**
  * Detects connected gamepads, logs button/axis events, and reports left-stick/right-stick/
@@ -328,7 +332,8 @@ class GamepadInputHandler(
             KeyEvent.KEYCODE_BUTTON_R2 to RotationButton.TRIGGER_R,
         )
 
-        /** The 8 left-hand buttons 4D mode's [on4DNavigate] fires for -- see [NavigationButton]. */
+        /** The buttons 4D mode's [on4DNavigate] fires for -- see [NavigationButton], including why
+         * [KeyEvent.KEYCODE_BUTTON_START] is in here despite not being a left-hand button. */
         private val NAVIGATION_BUTTON_MAP = mapOf(
             KeyEvent.KEYCODE_DPAD_LEFT to NavigationButton.LEFT,
             KeyEvent.KEYCODE_DPAD_RIGHT to NavigationButton.RIGHT,
@@ -338,6 +343,7 @@ class GamepadInputHandler(
             KeyEvent.KEYCODE_BUTTON_L2 to NavigationButton.TRIGGER_L,
             KeyEvent.KEYCODE_BUTTON_SELECT to NavigationButton.SELECT,
             KeyEvent.KEYCODE_BUTTON_THUMBL to NavigationButton.THUMB_L,
+            KeyEvent.KEYCODE_BUTTON_START to NavigationButton.START,
         )
     }
 }
