@@ -41,20 +41,23 @@ enum class RotationButton(val literalAxis: Axis4, val primaryPrime: Boolean) {
  * `todo-controller-input.md`) -- unlike [RotationButton], these don't twist anything themselves;
  * [MainActivity] interprets them differently depending on which [GamepadInputMode] is active.
  * [LEFT]/[RIGHT]/[UP]/[DOWN]/[BUMPER_L]/[TRIGGER_L]/[SELECT]/[THUMB_L] are all physically
- * left-hand buttons (d-pad, L1/L2, and the stick click). [START] is the odd one out: added
- * 2026-07-26 as an easier-to-reach alternative to [SELECT] for "move the selected cell to I" in
- * STICK mode specifically -- a real-device PS5 DualSense repro found SELECT ("Create") awkward to
- * reach with the right hand while the left hand stays on the stick, whereas START ("Options") is
- * on the controller's right side and doesn't have that problem.
+ * left-hand buttons (d-pad, L1/L2, and the stick click).
  *
- * [SELECT] itself no longer has a tap action (changed the same day, same conversation): once
- * [START] covered "move to I," SELECT was free to become a pure hold-modifier instead --
+ * [SELECT] itself has no tap action -- it's a pure hold-modifier (changed 2026-07-26):
  * [MainActivity]'s `on4DRotationButton` wiring checks [GamepadVisualState.selectHeld] to turn the
  * 6 [RotationButton]s from "twist the selected cell" into "snap-rotate the whole room" while it's
- * held, roughly doubling the button vocabulary without adding new physical buttons. This is why
+ * held, and `on4DNavigate` checks it to turn [BUMPER_L]/[TRIGGER_L] into undo/redo -- roughly
+ * doubling the button vocabulary twice over without adding new physical buttons. This is why
  * [GamepadVisualState.selectHeld] (originally added just for the on-screen debug overlay) is now
- * load-bearing for real gameplay, not just a HUD indicator. */
-enum class NavigationButton { LEFT, RIGHT, UP, DOWN, BUMPER_L, TRIGGER_L, SELECT, THUMB_L, START }
+ * load-bearing for real gameplay, not just a HUD indicator.
+ *
+ * [BUTTON_C] (2026-07-26) is now the "move the selected cell to I" fallback for controllers with
+ * no left-stick click -- the 8BitDo Micro has no THUMB_L but does have a Button C. [START] used
+ * to serve this same role but no longer does: it's being repurposed for something else, and the
+ * 8BitDo Micro's lack of a stick click was the actual reason a second button was needed there in
+ * the first place, so Button C replacing it (rather than living alongside it) is the cleaner fit.
+ * START stays in the enum since it's still a distinct reportable button, just unbound for now. */
+enum class NavigationButton { LEFT, RIGHT, UP, DOWN, BUMPER_L, TRIGGER_L, SELECT, THUMB_L, START, BUTTON_C }
 
 /**
  * Detects connected gamepads, logs button/axis events, and reports left-stick/right-stick/
@@ -348,7 +351,8 @@ class GamepadInputHandler(
         )
 
         /** The buttons 4D mode's [on4DNavigate] fires for -- see [NavigationButton], including why
-         * [KeyEvent.KEYCODE_BUTTON_START] is in here despite not being a left-hand button. */
+         * [KeyEvent.KEYCODE_BUTTON_START] and [KeyEvent.KEYCODE_BUTTON_C] are in here despite not
+         * being left-hand buttons. */
         private val NAVIGATION_BUTTON_MAP = mapOf(
             KeyEvent.KEYCODE_DPAD_LEFT to NavigationButton.LEFT,
             KeyEvent.KEYCODE_DPAD_RIGHT to NavigationButton.RIGHT,
@@ -359,6 +363,7 @@ class GamepadInputHandler(
             KeyEvent.KEYCODE_BUTTON_SELECT to NavigationButton.SELECT,
             KeyEvent.KEYCODE_BUTTON_THUMBL to NavigationButton.THUMB_L,
             KeyEvent.KEYCODE_BUTTON_START to NavigationButton.START,
+            KeyEvent.KEYCODE_BUTTON_C to NavigationButton.BUTTON_C,
         )
     }
 }

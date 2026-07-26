@@ -995,6 +995,14 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         applyTwistInternal(cell, fixAxis2, !prime)
     }
 
+    /** Redo counterpart to [undoTwist] -- re-applies [cell]/[fixAxis2]/[prime] exactly as
+     * originally recorded (no inversion), also without notifying [onTwistApplied]: the caller
+     * (MainActivity's redo path) already owns advancing its own history pointer, the same
+     * responsibility-split undo already has, just in the opposite direction. */
+    fun redoTwist(cell: Cell4, fixAxis2: Axis4, prime: Boolean) {
+        applyTwistInternal(cell, fixAxis2, prime)
+    }
+
     private fun applyTwistInternal(cell: Cell4, fixAxis2: Axis4, prime: Boolean): Boolean {
         if (animating || roomAnimating || fixAxis2 == cell.axis) return false
         // See resolvePendingSnapHopImmediately's doc: on4DRotationButton always snaps immediately

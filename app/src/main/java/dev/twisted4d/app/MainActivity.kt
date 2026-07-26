@@ -93,6 +93,16 @@ class MainActivity : AppCompatActivity() {
     // for the same reason moveHistory4D itself is a synchronizedList.
     @Volatile private var scrambleMoveCount4D = 0
 
+    // How many of moveHistory4D's *leading* entries are currently applied to the puzzle -- added
+    // 2026-07-26 for undo/redo. Decoupled from moveHistory4D.size once redo exists: undo just
+    // moves this back without deleting anything (so redo can move it forward again); a genuinely
+    // new move made while this isn't already at moveHistory4D.size truncates the list back to it
+    // first, discarding whatever redo branch was pending -- standard undo/redo-stack semantics.
+    // Always equal to moveHistory4D.size except mid-undo/redo. Same GL-thread-write
+    // (onTwistApplied)/UI-thread-write (performUndo/performRedo/onScramble/onReset) split as
+    // scrambleMoveCount4D, so @Volatile for the same reason.
+    @Volatile private var historyIndex4D = 0
+
     // Set by loadState() (called once, before the first rebuildUi()) when a saved puzzle state
     // exists for that mode; consumed (and nulled) by build3DScreen/build4DScreen the first time
     // they run afterward, restoring native state instead of the fresh solved() reset that
@@ -259,8 +269,13 @@ class MainActivity : AppCompatActivity() {
         if (pendingRestoreState4D == null) {
             moveHistory4D.clear()
             scrambleMoveCount4D = 0
+            historyIndex4D = 0
             initiallySolved = true
         } else {
+            // A restored save never carries a partial undo/redo pointer -- see saveState/
+            // loadState, which persist moveHistory4D itself but not a separate index -- so the
+            // restored history is always treated as fully applied.
+            historyIndex4D = moveHistory4D.size
             renderer.pendingRestoreState = pendingRestoreState4D
             pendingRestoreState4D = null
             initiallySolved = pendingRestoreSolved4D ?: true
@@ -282,6 +297,49 @@ class MainActivity : AppCompatActivity() {
             },
         )
         surfaceView.setOnTouchListener { _, event -> handle4DDrag(surfaceView, renderer, event) }
+
+        // Twists currently applied since the scramble (historyIndex4D, not moveHistory4D.size --
+        // see historyIndex4D's doc for why those differ once undo/redo exist). Declared here,
+        // ahead of gamepadInput below, so the Select-held undo/redo gamepad binding can call
+        // performUndo/performRedo directly; the on-screen Undo button (in utilityColumn, further
+        // down) uses the exact same two functions, so there's only one undo/redo implementation.
+        val turnCountText = TextView(this).apply {
+            textSize = 14f
+            alpha = 0.6f
+            setPadding(24, 8, 24, 0)
+        }
+        fun updateTurnCount() {
+            turnCountText.text = "Turns: ${(historyIndex4D - scrambleMoveCount4D).coerceAtLeast(0)}"
+        }
+        updateTurnCount()
+
+        /** Steps [historyIndex4D] back one and reverses that move -- see [historyIndex4D]'s doc.
+         * A no-op at the very start of history. */
+        fun performUndo() {
+            synchronized(moveHistory4D) {
+                if (historyIndex4D > 0) {
+                    historyIndex4D--
+                    val record = moveHistory4D[historyIndex4D]
+                    surfaceView.queueEvent { renderer.undoTwist(record.cell, record.fixAxis2, record.prime) }
+                }
+            }
+            updateTurnCount()
+        }
+
+        /** Re-applies whatever move undo last stepped back over and advances [historyIndex4D]
+         * again -- see [historyIndex4D]'s doc. A no-op once caught back up to the end of history
+         * (nothing to redo, either because nothing was undone or a new move already overwrote the
+         * abandoned branch). */
+        fun performRedo() {
+            synchronized(moveHistory4D) {
+                if (historyIndex4D < moveHistory4D.size) {
+                    val record = moveHistory4D[historyIndex4D]
+                    historyIndex4D++
+                    surfaceView.queueEvent { renderer.redoTwist(record.cell, record.fixAxis2, record.prime) }
+                }
+            }
+            updateTurnCount()
+        }
 
         // STICK (default): left stick selects a cell continuously. PAD: the left stick is unused;
         // the dpad/L1/L2/select instead step a persistent selection one press at a time -- see
@@ -336,13 +394,19 @@ class MainActivity : AppCompatActivity() {
                     // excluded from the rotation (X excluded -> spins Y/Z; Y excluded -> spins
                     // X/Z; Z excluded -> spins X/Y) -- deliberately never W/I/O, unlike "move to
                     // I," since this is meant to feel like re-gripping the physical puzzle, not
-                    // reaching into it. reverse = primaryPrime is a first guess at which physical
-                    // direction each button should spin -- like every other handedness call in
-                    // this file, treat it as unverified until confirmed on a real device.
+                    // reaching into it (confirmed correct 2026-07-26: I never moves under any of
+                    // these, and each axis's snap-rotated sense matches the sense that same
+                    // button already gives I when twisting it directly, unmodified).
                     if (selectHeldAtPress) {
                         val spatialAxes = listOf(HypercubeRenderer.AXIS_X, HypercubeRenderer.AXIS_Y, HypercubeRenderer.AXIS_Z)
                         val (axisA, axisB) = spatialAxes.filter { it != button.literalAxis.nativeIndex }
-                        renderer.requestCameraRotate90(axisA, axisB, reverse = button.primaryPrime)
+                        // Y and Z were correct with reverse = primaryPrime directly; X was
+                        // confirmed backwards on real-device testing (the Y/A button pair) --
+                        // same real-device-handedness-correction pattern as every other
+                        // per-axis table in this file (rotationInvertedForCell, the RKT X/Z
+                        // prime flip, etc.), not a one-off guess this time.
+                        val reverse = if (button.literalAxis == Axis4.X) !button.primaryPrime else button.primaryPrime
+                        renderer.requestCameraRotate90(axisA, axisB, reverse = reverse)
                         return@queueEvent
                     }
 
@@ -367,19 +431,28 @@ class MainActivity : AppCompatActivity() {
                 }
             },
             on4DNavigate = { button ->
-                surfaceView.queueEvent {
-                    when (inputMode) {
+                // Same UI-thread-capture-before-queueEvent pattern as on4DRotationButton above,
+                // and the same reason: checking a live GamepadVisualState flag from inside a
+                // deferred GL-thread block risks a fast press-release window missing the modifier.
+                val selectHeldAtPress = GamepadVisualState.selectHeld
+                if (selectHeldAtPress && (button == NavigationButton.BUMPER_L || button == NavigationButton.TRIGGER_L)) {
+                    // Select-held modifier, undo/redo (added 2026-07-26) -- which trigger is which
+                    // doesn't matter functionally, L1=undo/L2=redo was an arbitrary pick. Applies
+                    // in every input mode, same as the Select+twist-button snap-rotation modifier
+                    // above (this check isn't gated on inputMode either), so it overrides
+                    // BUMPER_L/TRIGGER_L's normal PAD-mode step-navigation and RKT-mode IF/IF'
+                    // twist while held.
+                    if (button == NavigationButton.BUMPER_L) performUndo() else performRedo()
+                } else {
+                    surfaceView.queueEvent {
+                        when (inputMode) {
                         GamepadInputMode.STICK ->
                             // Moves the stick-selected cell to I (see
                             // HypercubeRenderer.requestMoveSelectedCellToI's doc). THUMB_L (stick
-                            // click) is the original control; START is a second, added after a
-                            // real PS5 DualSense repro: with the left hand busy on the stick, the
-                            // right hand reaching across to SELECT ("Create," the controller's
-                            // left side) was awkward -- START ("Options," right side) isn't. See
-                            // NavigationButton.START's doc. SELECT itself no longer does this --
-                            // see NavigationButton.SELECT's doc for why (it's a hold-modifier now,
-                            // not a tap action).
-                            if (button == NavigationButton.THUMB_L || button == NavigationButton.START) {
+                            // click) is the original control; BUTTON_C is a second, for
+                            // controllers with no stick click to fall back on -- see
+                            // NavigationButton.BUTTON_C's doc.
+                            if (button == NavigationButton.THUMB_L || button == NavigationButton.BUTTON_C) {
                                 renderer.snapViewToNearestCardinalOrientation()
                                 renderer.requestMoveSelectedCellToI()
                             }
@@ -391,16 +464,17 @@ class MainActivity : AppCompatActivity() {
                                 NavigationButton.DOWN -> renderer.navigateMode2Selection(HypercubeRenderer.AXIS_Y, -1)
                                 NavigationButton.BUMPER_L -> renderer.navigateMode2Selection(HypercubeRenderer.AXIS_Z, 1)
                                 NavigationButton.TRIGGER_L -> renderer.navigateMode2Selection(HypercubeRenderer.AXIS_Z, -1)
-                                NavigationButton.START -> {
+                                NavigationButton.BUTTON_C -> {
                                     renderer.snapViewToNearestCardinalOrientation()
                                     renderer.requestMoveSelectedCellToI()
                                 }
                                 NavigationButton.SELECT -> Unit
                                 NavigationButton.THUMB_L -> Unit
+                                NavigationButton.START -> Unit
                             }
                         // Community notation: LEFT=IU, RIGHT=IU', UP=IR, DOWN=IR', BUMPER_L(L1)=IF,
-                        // TRIGGER_L(L2)=IF'. SELECT/START are unbound -- no role specified for RKT
-                        // mode (no cell selection exists there to move to I).
+                        // TRIGGER_L(L2)=IF'. SELECT/START/BUTTON_C are unbound -- no role specified
+                        // for RKT mode (no cell selection exists there to move to I).
                         // The X/Z axis pairs need prime flipped relative to what their label would
                         // naively suggest -- real-device-confirmed: Y (LEFT/RIGHT) was already
                         // correct, but X (UP/DOWN) and Z (BUMPER_L/TRIGGER_L) both twisted the
@@ -421,7 +495,9 @@ class MainActivity : AppCompatActivity() {
                                 NavigationButton.SELECT -> Unit
                                 NavigationButton.THUMB_L -> Unit
                                 NavigationButton.START -> Unit
+                                NavigationButton.BUTTON_C -> Unit
                             }
+                        }
                     }
                 }
             },
@@ -476,23 +552,16 @@ class MainActivity : AppCompatActivity() {
             runOnUiThread { selectedCellText.text = "Selected ${roomCell.label}: showing ${nativeCell.label}" }
         }
 
-        // Twists made since the scramble (moveHistory4D's *trailing* entries -- see
-        // scrambleMoveCount4D's doc for why its leading entries don't count as turns the player
-        // made). coerceAtLeast(0) covers undoing back past the scramble boundary itself, where
-        // moveHistory4D shrinks below scrambleMoveCount4D.
-        val turnCountText = TextView(this).apply {
-            textSize = 14f
-            alpha = 0.6f
-            setPadding(24, 8, 24, 0)
-        }
-        fun updateTurnCount() {
-            turnCountText.text = "Turns: ${(moveHistory4D.size - scrambleMoveCount4D).coerceAtLeast(0)}"
-        }
-        updateTurnCount()
-
         renderer.onTwistApplied = { cell, fixAxis2, prime, roomCell, roomFixAxis2, displayApostrophe ->
             val record = TwistRecord(cell, fixAxis2, prime, roomCell, roomFixAxis2, displayApostrophe)
-            moveHistory4D.add(record)
+            synchronized(moveHistory4D) {
+                // A genuinely new move made while historyIndex4D isn't at the end (i.e. after one
+                // or more undos with no matching redo) abandons whatever redo branch was pending
+                // -- standard undo/redo-stack semantics, see historyIndex4D's doc.
+                while (moveHistory4D.size > historyIndex4D) moveHistory4D.removeAt(moveHistory4D.size - 1)
+                moveHistory4D.add(record)
+                historyIndex4D = moveHistory4D.size
+            }
             val label = Notation.communityNotation(record)
             runOnUiThread { lastMoveText.text = label; updateTurnCount() }
         }
@@ -519,6 +588,7 @@ class MainActivity : AppCompatActivity() {
                         moveHistory4D.addAll(scrambleMoves)
                     }
                     scrambleMoveCount4D = scrambleMoves.size
+                    historyIndex4D = scrambleMoves.size
                     runOnUiThread { updateTurnCount() }
                 }
             },
@@ -526,28 +596,24 @@ class MainActivity : AppCompatActivity() {
                 surfaceView.queueEvent { renderer.requestReset() }
                 moveHistory4D.clear()
                 scrambleMoveCount4D = 0
+                historyIndex4D = 0
                 lastMoveText.text = ""
                 updateTurnCount()
             },
-            onUndo = {
-                synchronized(moveHistory4D) {
-                    if (moveHistory4D.isNotEmpty()) {
-                        val record = moveHistory4D.removeAt(moveHistory4D.size - 1)
-                        surfaceView.queueEvent { renderer.undoTwist(record.cell, record.fixAxis2, record.prime) }
-                    }
-                }
-                updateTurnCount()
-            },
+            onUndo = { performUndo() },
             onShareLog = {
                 // Solve moves only -- hypercubing.xyz-style notation is for documenting/sharing a
                 // solve, so this drops the scramble prefix (see mc4dLogFile for the file format
-                // that does include it, marked with "m|").
-                val snapshot = synchronized(moveHistory4D) { moveHistory4D.toList() }
+                // that does include it, marked with "m|"). Only the *currently applied* moves
+                // (historyIndex4D, not the full list) -- an undone-but-not-redone tail shouldn't
+                // be exported as if it happened.
+                val snapshot = synchronized(moveHistory4D) { moveHistory4D.take(historyIndex4D) }
                 shareTwistLog(Notation.formatTwistLog4D(snapshot.drop(scrambleMoveCount4D.coerceAtMost(snapshot.size))))
             },
             orientation = LinearLayout.VERTICAL,
             onExportMC4D = {
-                val snapshot = synchronized(moveHistory4D) { moveHistory4D.toList() }
+                // Same historyIndex4D-not-full-list reasoning as onShareLog above.
+                val snapshot = synchronized(moveHistory4D) { moveHistory4D.take(historyIndex4D) }
                 shareLogFile("twisted4d.log", Notation.mc4dLogFile(snapshot, scrambleMoveCount4D.coerceAtMost(snapshot.size)))
             },
         )
@@ -986,11 +1052,14 @@ class MainActivity : AppCompatActivity() {
 Three selectable input modes &#8212; cycle with the on-screen "Input: Stick" / "Input: Pad" /
 "Input: RKT" button.<br>
 <br>
-<b>Select (hold): whole-room snap rotation</b> &#8212; works the same in every mode. Holding
-Select turns Y / A / X / B / R1 / R2 from "twist the selected/highlighted cell" into
-"snap-rotate the entire puzzle 90&#176;," using the same button-to-axis feel as an individual
-twist, just applied to everything at once instead of one piece (the 4D-room equivalent of a
-whole-cube rotation, as opposed to a face turn). Release Select to go back to normal twisting.<br>
+<b>Select (hold): a second layer of controls</b> &#8212; works the same in every mode.<br>
+&#8226; Y / A / X / B / R1 / R2: instead of twisting the selected/highlighted cell, snap-rotates
+the *entire puzzle* 90&#176; using the same button-to-axis feel an individual twist already has,
+just applied to everything at once (the 4D-room equivalent of a whole-cube rotation, as opposed
+to a face turn) &#8212; I never moves under any of these.<br>
+&#8226; L1 (bumper): Undo.<br>
+&#8226; L2 (trigger): Redo.<br>
+Release Select to go back to normal twisting/navigation.<br>
 <br>
 <b>Mode 1 &#8212; Stick Select (default)</b><br>
 &#8226; Left stick: select a cell (deflect toward it, release to keep the selection)<br>
@@ -999,9 +1068,8 @@ once for a diagonal, for controllers with no left stick<br>
 &#8226; Right stick: orbit the view<br>
 &#8226; Y / A / X / B: twist the selected cell (Up / Down / Left / Right)<br>
 &#8226; R1 / R2 (bumper / trigger): twist the selected cell around its third axis<br>
-&#8226; Left stick click (L3) or Start: rotate the puzzle so the selected cell moves to I &#8212;
-Start exists as an easier right-hand reach than the stick click while the left hand is on the
-stick<br>
+&#8226; Left stick click (L3) or Button C: rotate the puzzle so the selected cell moves to I
+&#8212; Button C exists for controllers with no stick click (e.g. the 8BitDo Micro)<br>
 <br>
 <b>Mode 2 &#8212; Pad Navigate</b><br>
 &#8226; Left stick: unused<br>
@@ -1012,7 +1080,7 @@ stick<br>
 &#8226; L1 (bumper): step the highlight toward F<br>
 &#8226; L2 (trigger): step the highlight toward B<br>
 &#8226; Each direction stops at its endpoint &#8212; no wraparound, and O can never be reached this way<br>
-&#8226; Start button: rotate the puzzle so the highlighted cell moves to I<br>
+&#8226; Button C: rotate the puzzle so the highlighted cell moves to I<br>
 &#8226; The highlighted cell is remembered separately per mode &#8212; switching away and back restores it<br>
 <br>
 <b>Mode 3 &#8212; RKT</b><br>
@@ -1024,7 +1092,7 @@ no cell selection needed, so nothing is highlighted.<br>
 &#8226; D-pad left / right: twist I as IU / IU'<br>
 &#8226; D-pad up / down: twist I as IR / IR'<br>
 &#8226; L1 / L2 (bumper / trigger): twist I as IF / IF'<br>
-&#8226; Start: unused (Select still does whole-room snap rotation, see above)<br>
+&#8226; Button C: unused (Select still does whole-room snap rotation/undo/redo, see above)<br>
 <br>
 <b>4D TOP-LEFT STATUS</b><br>
 &#8226; Turns: twists made since the last scramble (or reset)<br>
