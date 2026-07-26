@@ -1082,12 +1082,12 @@ whose bumper/trigger arrangement makes the default feel backwards<br>
 The small controller diagram in the bottom-left corner lights up buttons and sticks live as they're used &#8212; handy for confirming exactly which input produced a twist, e.g. when reviewing a screen recording.<br>
 <br>
 <b>CREDITS</b><br>
-twisted4d was inspired by Hyperspeedcube, a 3D/4D twisty puzzle simulator by Andrew Farkas
-(HactarCE), and by MagicCube4D, the original 4D twisty puzzle simulator, by Don Hatch, Melinda
-Green, Jay Berkenbilt, and Roice Nelson, including its Android port by Raymond Zhao ("Magic Cube
-4D (Raynefork)"). The gamepad control scheme here in particular owes a debt to Hyperspeedcube's
-"Keybinds Tutorial for Hyperspeedcube 1.0" (youtube.com/watch?v=yRt5DVqjnEo) for ideas about how to
-lay out 4D twist controls.
+twisted4d was developed by David Barr. It was inspired by Hyperspeedcube, a 3D/4D twisty puzzle
+simulator by Andrew Farkas (HactarCE), and by MagicCube4D, the original 4D twisty puzzle simulator,
+by Don Hatch, Melinda Green, Jay Berkenbilt, and Roice Nelson, including its Android port by
+Raymond Zhao ("Magic Cube 4D (Raynefork)"). The gamepad control scheme here in particular owes a
+debt to Hyperspeedcube's "Keybinds Tutorial for Hyperspeedcube 1.0"
+(youtube.com/watch?v=yRt5DVqjnEo) for ideas about how to lay out 4D twist controls.
 """
     }
 }
