@@ -308,6 +308,16 @@ class MainActivity : AppCompatActivity() {
             },
             onFaceButton = { _, _ -> },
             on4DRotationButton = { button ->
+                // Read *now*, on the UI thread, at the exact instant the button was pressed --
+                // not inside queueEvent's deferred block below, which runs on the GL thread
+                // whenever it next gets a frame. Confirmed as a real bug via an adb
+                // `input keycombination SELECT Y`-style repro: Select's own release (also
+                // dispatched on the UI thread) could flip selectHeld back to false *before* the
+                // GL thread got around to running Y's queued job, if the two were pressed and
+                // released within the same handful of milliseconds -- exactly the fast
+                // hold-then-tap-then-release pattern a real modifier-key press produces, so this
+                // wasn't just an artifact of adb timing.
+                val selectHeldAtPress = GamepadVisualState.selectHeld
                 surfaceView.queueEvent {
                     // Twisting without actively re-selecting via the stick (e.g. pressing a
                     // rotation button while it's centered, reusing the last selection) should
@@ -316,6 +326,26 @@ class MainActivity : AppCompatActivity() {
                     // already resolve to R there, since setInputMode pins selectedRoomAxis/Sign to
                     // R's slot.
                     renderer.snapViewToNearestCardinalOrientation()
+
+                    // Select-held modifier (added 2026-07-26): reuses the same 6 physical
+                    // buttons/axis-sense pairing an individual twist uses, but rotates the *whole
+                    // room* 90 degrees instead of the selected cell -- same "feel" as the
+                    // Y/A/X/B/R1/R2 axis pairing already has, generalized from one piece to
+                    // everything at once (the 4D-room equivalent of WCA cube-rotation notation's
+                    // x/y/z, as opposed to a face turn). button.literalAxis is the one axis
+                    // excluded from the rotation (X excluded -> spins Y/Z; Y excluded -> spins
+                    // X/Z; Z excluded -> spins X/Y) -- deliberately never W/I/O, unlike "move to
+                    // I," since this is meant to feel like re-gripping the physical puzzle, not
+                    // reaching into it. reverse = primaryPrime is a first guess at which physical
+                    // direction each button should spin -- like every other handedness call in
+                    // this file, treat it as unverified until confirmed on a real device.
+                    if (selectHeldAtPress) {
+                        val spatialAxes = listOf(HypercubeRenderer.AXIS_X, HypercubeRenderer.AXIS_Y, HypercubeRenderer.AXIS_Z)
+                        val (axisA, axisB) = spatialAxes.filter { it != button.literalAxis.nativeIndex }
+                        renderer.requestCameraRotate90(axisA, axisB, reverse = button.primaryPrime)
+                        return@queueEvent
+                    }
+
                     val cell = renderer.selectedCell4
                     val fixAxis2 = renderer.resolveRotationButtonFixAxis2(button.literalAxis)
                     // rotationInvertedForCell corrects for a rendering property of the *wall* the
@@ -342,16 +372,14 @@ class MainActivity : AppCompatActivity() {
                         GamepadInputMode.STICK ->
                             // Moves the stick-selected cell to I (see
                             // HypercubeRenderer.requestMoveSelectedCellToI's doc). THUMB_L (stick
-                            // click) is the original control; SELECT does the same thing so a
-                            // d-pad-only controller -- no stick to click -- has a way to do this
-                            // too, same button PAD mode already uses for it. START is a third,
-                            // added after a real PS5 DualSense repro: with the left hand busy on
-                            // the stick, the right hand reaching across to SELECT ("Create," on
-                            // the controller's left side) is awkward -- START ("Options," right
-                            // side) isn't. See NavigationButton.START's doc.
-                            if (button == NavigationButton.THUMB_L || button == NavigationButton.SELECT ||
-                                button == NavigationButton.START
-                            ) {
+                            // click) is the original control; START is a second, added after a
+                            // real PS5 DualSense repro: with the left hand busy on the stick, the
+                            // right hand reaching across to SELECT ("Create," the controller's
+                            // left side) was awkward -- START ("Options," right side) isn't. See
+                            // NavigationButton.START's doc. SELECT itself no longer does this --
+                            // see NavigationButton.SELECT's doc for why (it's a hold-modifier now,
+                            // not a tap action).
+                            if (button == NavigationButton.THUMB_L || button == NavigationButton.START) {
                                 renderer.snapViewToNearestCardinalOrientation()
                                 renderer.requestMoveSelectedCellToI()
                             }
@@ -363,10 +391,11 @@ class MainActivity : AppCompatActivity() {
                                 NavigationButton.DOWN -> renderer.navigateMode2Selection(HypercubeRenderer.AXIS_Y, -1)
                                 NavigationButton.BUMPER_L -> renderer.navigateMode2Selection(HypercubeRenderer.AXIS_Z, 1)
                                 NavigationButton.TRIGGER_L -> renderer.navigateMode2Selection(HypercubeRenderer.AXIS_Z, -1)
-                                NavigationButton.SELECT, NavigationButton.START -> {
+                                NavigationButton.START -> {
                                     renderer.snapViewToNearestCardinalOrientation()
                                     renderer.requestMoveSelectedCellToI()
                                 }
+                                NavigationButton.SELECT -> Unit
                                 NavigationButton.THUMB_L -> Unit
                             }
                         // Community notation: LEFT=IU, RIGHT=IU', UP=IR, DOWN=IR', BUMPER_L(L1)=IF,
@@ -957,6 +986,12 @@ class MainActivity : AppCompatActivity() {
 Three selectable input modes &#8212; cycle with the on-screen "Input: Stick" / "Input: Pad" /
 "Input: RKT" button.<br>
 <br>
+<b>Select (hold): whole-room snap rotation</b> &#8212; works the same in every mode. Holding
+Select turns Y / A / X / B / R1 / R2 from "twist the selected/highlighted cell" into
+"snap-rotate the entire puzzle 90&#176;," using the same button-to-axis feel as an individual
+twist, just applied to everything at once instead of one piece (the 4D-room equivalent of a
+whole-cube rotation, as opposed to a face turn). Release Select to go back to normal twisting.<br>
+<br>
 <b>Mode 1 &#8212; Stick Select (default)</b><br>
 &#8226; Left stick: select a cell (deflect toward it, release to keep the selection)<br>
 &#8226; D-pad: also selects a cell, same as the left stick &#8212; hold two adjacent directions at
@@ -964,8 +999,9 @@ once for a diagonal, for controllers with no left stick<br>
 &#8226; Right stick: orbit the view<br>
 &#8226; Y / A / X / B: twist the selected cell (Up / Down / Left / Right)<br>
 &#8226; R1 / R2 (bumper / trigger): twist the selected cell around its third axis<br>
-&#8226; Left stick click (L3), Select, or Start: rotate the puzzle so the selected cell moves to I
-&#8212; Start exists as an easier right-hand reach than Select while the left hand is on the stick<br>
+&#8226; Left stick click (L3) or Start: rotate the puzzle so the selected cell moves to I &#8212;
+Start exists as an easier right-hand reach than the stick click while the left hand is on the
+stick<br>
 <br>
 <b>Mode 2 &#8212; Pad Navigate</b><br>
 &#8226; Left stick: unused<br>
@@ -976,7 +1012,7 @@ once for a diagonal, for controllers with no left stick<br>
 &#8226; L1 (bumper): step the highlight toward F<br>
 &#8226; L2 (trigger): step the highlight toward B<br>
 &#8226; Each direction stops at its endpoint &#8212; no wraparound, and O can never be reached this way<br>
-&#8226; Select or Start button: rotate the puzzle so the highlighted cell moves to I<br>
+&#8226; Start button: rotate the puzzle so the highlighted cell moves to I<br>
 &#8226; The highlighted cell is remembered separately per mode &#8212; switching away and back restores it<br>
 <br>
 <b>Mode 3 &#8212; RKT</b><br>
@@ -988,7 +1024,7 @@ no cell selection needed, so nothing is highlighted.<br>
 &#8226; D-pad left / right: twist I as IU / IU'<br>
 &#8226; D-pad up / down: twist I as IR / IR'<br>
 &#8226; L1 / L2 (bumper / trigger): twist I as IF / IF'<br>
-&#8226; Select / Start: unused<br>
+&#8226; Start: unused (Select still does whole-room snap rotation, see above)<br>
 <br>
 <b>4D TOP-LEFT STATUS</b><br>
 &#8226; Turns: twists made since the last scramble (or reset)<br>

@@ -19,6 +19,14 @@ import kotlin.math.abs
  * cell's own axis (an invalid twist), callers resolve `fixAxis2` to [Axis4.W] instead -- which,
  * because the *other two* spatial axes end up rotating in that case, happens to reproduce the
  * exact same physical rotation anyway (see [MainActivity]'s gamepad wiring).
+ *
+ * Same 6 buttons, same [literalAxis]/[primaryPrime] pair, double as a *whole-room* 90-degree
+ * "snap rotation" control while [NavigationButton.SELECT] is held (added 2026-07-26) -- the
+ * 4D-room equivalent of WCA cube-rotation notation's x/y/z (re-gripping the entire puzzle)
+ * versus a face turn. There, [literalAxis] is the one spatial axis *excluded* from the rotation
+ * (the other two of X/Y/Z spin) rather than the fixAxis2 candidate -- see [MainActivity]'s
+ * `on4DRotationButton` wiring for the exact mapping, and its doc for why the rotation *direction*
+ * each button produces is an unverified first guess pending real-device confirmation.
  */
 enum class RotationButton(val literalAxis: Axis4, val primaryPrime: Boolean) {
     RIGHT(Axis4.Y, true),
@@ -37,8 +45,15 @@ enum class RotationButton(val literalAxis: Axis4, val primaryPrime: Boolean) {
  * 2026-07-26 as an easier-to-reach alternative to [SELECT] for "move the selected cell to I" in
  * STICK mode specifically -- a real-device PS5 DualSense repro found SELECT ("Create") awkward to
  * reach with the right hand while the left hand stays on the stick, whereas START ("Options") is
- * on the controller's right side and doesn't have that problem. Additive, not a replacement --
- * SELECT still works everywhere it already did. */
+ * on the controller's right side and doesn't have that problem.
+ *
+ * [SELECT] itself no longer has a tap action (changed the same day, same conversation): once
+ * [START] covered "move to I," SELECT was free to become a pure hold-modifier instead --
+ * [MainActivity]'s `on4DRotationButton` wiring checks [GamepadVisualState.selectHeld] to turn the
+ * 6 [RotationButton]s from "twist the selected cell" into "snap-rotate the whole room" while it's
+ * held, roughly doubling the button vocabulary without adding new physical buttons. This is why
+ * [GamepadVisualState.selectHeld] (originally added just for the on-screen debug overlay) is now
+ * load-bearing for real gameplay, not just a HUD indicator. */
 enum class NavigationButton { LEFT, RIGHT, UP, DOWN, BUMPER_L, TRIGGER_L, SELECT, THUMB_L, START }
 
 /**
