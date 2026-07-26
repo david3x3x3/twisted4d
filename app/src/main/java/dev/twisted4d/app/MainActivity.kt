@@ -1084,9 +1084,10 @@ The small controller diagram in the bottom-left corner lights up buttons and sti
 <b>CREDITS</b><br>
 twisted4d was inspired by Hyperspeedcube, a 3D/4D twisty puzzle simulator by Andrew Farkas
 (HactarCE), and by MagicCube4D, the original 4D twisty puzzle simulator, by Don Hatch, Melinda
-Green, Jay Berkenbilt, and Roice Nelson. The gamepad control scheme here in particular owes a debt
-to Hyperspeedcube's "Keybinds Tutorial for Hyperspeedcube 1.0"
-(youtube.com/watch?v=yRt5DVqjnEo) for ideas about how to lay out 4D twist controls.
+Green, Jay Berkenbilt, and Roice Nelson, including its Android port by Raymond Zhao ("Magic Cube
+4D (Raynefork)"). The gamepad control scheme here in particular owes a debt to Hyperspeedcube's
+"Keybinds Tutorial for Hyperspeedcube 1.0" (youtube.com/watch?v=yRt5DVqjnEo) for ideas about how to
+lay out 4D twist controls.
 """
     }
 }
