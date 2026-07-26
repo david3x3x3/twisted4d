@@ -854,7 +854,10 @@ class MainActivity : AppCompatActivity() {
         Gravity.BOTTOM or Gravity.END,
     ).apply { bottomMargin = 12; rightMargin = 12 }
 
-    /** Small, always-present build-identity label -- [BuildConfig.GIT_VERSION] is the exact
+    /** Small, always-present build-identity label. [BuildConfig.VERSION_NAME] is the semantic
+     * version (the same string set as `versionName` in build.gradle.kts, e.g. "0.5.0") -- for an
+     * actual GitHub release, that's the version the release's git tag names, so a release build's
+     * screen should show the same number the tag does. [BuildConfig.GIT_VERSION] is the exact
      * commit this APK was built from (short hash, "-dirty-<timestamp>" suffix if the working tree
      * had uncommitted changes at build time -- see build.gradle.kts's `gitVersion`), so a bug
      * report that includes it can be traced straight back to source, and a tester can confirm
@@ -865,7 +868,7 @@ class MainActivity : AppCompatActivity() {
      * across genuinely different uncommitted states. Deliberately dim/unobtrusive -- this is a
      * testing aid, not a feature. */
     private fun buildNumberLabel(): TextView = TextView(this).apply {
-        text = "Build ${BuildConfig.GIT_VERSION}"
+        text = "v${BuildConfig.VERSION_NAME} · Build ${BuildConfig.GIT_VERSION}"
         textSize = 11f
         alpha = 0.4f
     }
@@ -1016,7 +1019,9 @@ class MainActivity : AppCompatActivity() {
         private const val SAVE_FILE_NAME = "puzzle_state.json"
         private const val BATTERY_POLL_INTERVAL_MS = 30_000L
 
-        private const val HELP_HTML = """
+        // Not `const` -- needs to interpolate BuildConfig.VERSION_NAME (see the CREDITS section
+        // below), which isn't a compile-time constant Kotlin's `const val` will accept.
+        private val HELP_HTML = """
 <b>TOUCH CONTROLS</b><br>
 &#8226; Drag the puzzle to rotate the view<br>
 &#8226; Pinch to zoom<br>
@@ -1082,6 +1087,7 @@ whose bumper/trigger arrangement makes the default feel backwards<br>
 The small controller diagram in the bottom-left corner lights up buttons and sticks live as they're used &#8212; handy for confirming exactly which input produced a twist, e.g. when reviewing a screen recording.<br>
 <br>
 <b>CREDITS</b><br>
+Version ${BuildConfig.VERSION_NAME}<br>
 twisted4d was developed by David Barr. It was inspired by Hyperspeedcube, a 3D/4D twisty puzzle
 simulator by Andrew Farkas (HactarCE), and by MagicCube4D, the original 4D twisty puzzle simulator,
 by Don Hatch, Melinda Green, Jay Berkenbilt, and Roice Nelson, including its Android port by
