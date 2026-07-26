@@ -78,11 +78,10 @@ enum class NavigationButton { LEFT, RIGHT, UP, DOWN, BUMPER_L, TRIGGER_L, SELECT
  * 4D mode, L2 and the rest of the left-hand buttons (dpad, L1, select) fire [on4DNavigate] --
  * see [NavigationButton]'s doc for what they mean, which depends on the active input mode.
  *
- * Left stick = ordinary camera rotation in 3D mode, cell selection in 4D mode *when 4D's input
- * mode 1 is active* (per `todo-controller-input.md`) -- ignored by [MainActivity] in mode 2,
- * where the dpad/L1/L2 steps a persistent selection instead (see [NavigationButton]). Right
- * stick = 4D-specific rotation, i.e. camera orbit, in 4D mode regardless of input mode (ignored
- * in 3D mode).
+ * Left stick = ordinary camera rotation in 3D mode, cell selection in 4D mode *when 4D's STICK
+ * input mode is active* (per `todo-controller-input.md`) -- ignored by [MainActivity] in RKT mode,
+ * which has no cell selection at all (see [NavigationButton]). Right stick = 4D-specific
+ * rotation, i.e. camera orbit, in 4D mode regardless of input mode (ignored in 3D mode).
  *
  * [onDpadStick] is a d-pad-driven alternative to the left stick for controllers without one --
  * MainActivity wires it into the exact same selection call [onLeftStick] does, always active
@@ -207,7 +206,7 @@ class GamepadInputHandler(
         // SOURCE_DPAD, a *different* bit than SOURCE_GAMEPAD, so checking only event.source made
         // every D-pad press fail this check and fall through to dispatchKeyEvent's default
         // view-focus-navigation handling instead of ever reaching NAVIGATION_BUTTON_MAP below --
-        // confirmed via real-device testing (mode 2's D-pad navigation silently did nothing).
+        // confirmed via real-device testing (D-pad-driven navigation silently did nothing).
         // The device's overall sources reliably include SOURCE_GAMEPAD regardless of which
         // specific button produced this event.
         if (!isGamepadSource(event.device?.sources ?: event.source)) return

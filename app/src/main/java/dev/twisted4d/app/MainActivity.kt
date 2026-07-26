@@ -341,14 +341,13 @@ class MainActivity : AppCompatActivity() {
             updateTurnCount()
         }
 
-        // STICK (default): left stick selects a cell continuously. PAD: the left stick is unused;
-        // the dpad/L1/L2/select instead step a persistent selection one press at a time -- see
-        // HypercubeRenderer.navigateCell4Selection and NavigationButton's doc. RKT: no selection
-        // at all -- the left stick is unused and dpad/L1/L2 twist the room's current I slot
-        // directly, right-hand buttons act on R as if it were selected -- see
-        // HypercubeRenderer.requestRktITwist and GamepadInputMode's doc. UI-thread-local so the
-        // toggle button's label updates immediately; renderer.inputMode is the GL-thread source of
-        // truth these closures defer to once queued.
+        // STICK (default): left stick (and/or d-pad, see GamepadInputHandler.onDpadStick)
+        // selects a cell continuously. RKT: no selection at all -- the left stick is unused and
+        // dpad/L1/L2 twist the room's current I slot directly, right-hand buttons act on R as if
+        // it were selected -- see HypercubeRenderer.requestRktITwist and GamepadInputMode's doc.
+        // (A third mode, PAD, existed until 2026-07-26 -- removed once STICK's d-pad support made
+        // it redundant.) UI-thread-local so the toggle button's label updates immediately;
+        // renderer.inputMode is the GL-thread source of truth these closures defer to once queued.
         var inputMode = GamepadInputMode.STICK
 
         gamepadInput = GamepadInputHandler(
@@ -440,63 +439,46 @@ class MainActivity : AppCompatActivity() {
                     // doesn't matter functionally, L1=undo/L2=redo was an arbitrary pick. Applies
                     // in every input mode, same as the Select+twist-button snap-rotation modifier
                     // above (this check isn't gated on inputMode either), so it overrides
-                    // BUMPER_L/TRIGGER_L's normal PAD-mode step-navigation and RKT-mode IF/IF'
-                    // twist while held.
+                    // BUMPER_L/TRIGGER_L's normal RKT-mode IF/IF' twist while held.
                     if (button == NavigationButton.BUMPER_L) performUndo() else performRedo()
                 } else {
                     surfaceView.queueEvent {
                         when (inputMode) {
-                        GamepadInputMode.STICK ->
-                            // Moves the stick-selected cell to I (see
-                            // HypercubeRenderer.requestMoveSelectedCellToI's doc). THUMB_L (stick
-                            // click) is the original control; BUTTON_C is a second, for
-                            // controllers with no stick click to fall back on -- see
-                            // NavigationButton.BUTTON_C's doc.
-                            if (button == NavigationButton.THUMB_L || button == NavigationButton.BUTTON_C) {
-                                renderer.snapViewToNearestCardinalOrientation()
-                                renderer.requestMoveSelectedCellToI()
-                            }
-                        GamepadInputMode.PAD ->
-                            when (button) {
-                                NavigationButton.LEFT -> renderer.navigateMode2Selection(HypercubeRenderer.AXIS_X, -1)
-                                NavigationButton.RIGHT -> renderer.navigateMode2Selection(HypercubeRenderer.AXIS_X, 1)
-                                NavigationButton.UP -> renderer.navigateMode2Selection(HypercubeRenderer.AXIS_Y, 1)
-                                NavigationButton.DOWN -> renderer.navigateMode2Selection(HypercubeRenderer.AXIS_Y, -1)
-                                NavigationButton.BUMPER_L -> renderer.navigateMode2Selection(HypercubeRenderer.AXIS_Z, 1)
-                                NavigationButton.TRIGGER_L -> renderer.navigateMode2Selection(HypercubeRenderer.AXIS_Z, -1)
-                                NavigationButton.BUTTON_C -> {
+                            GamepadInputMode.STICK ->
+                                // Moves the stick-selected cell to I (see
+                                // HypercubeRenderer.requestMoveSelectedCellToI's doc). THUMB_L
+                                // (stick click) is the original control; BUTTON_C is a second, for
+                                // controllers with no stick click to fall back on -- see
+                                // NavigationButton.BUTTON_C's doc.
+                                if (button == NavigationButton.THUMB_L || button == NavigationButton.BUTTON_C) {
                                     renderer.snapViewToNearestCardinalOrientation()
                                     renderer.requestMoveSelectedCellToI()
                                 }
-                                NavigationButton.SELECT -> Unit
-                                NavigationButton.THUMB_L -> Unit
-                                NavigationButton.START -> Unit
-                            }
-                        // Community notation: LEFT=IU, RIGHT=IU', UP=IR, DOWN=IR', BUMPER_L(L1)=IF,
-                        // TRIGGER_L(L2)=IF'. SELECT/START/BUTTON_C are unbound -- no role specified
-                        // for RKT mode (no cell selection exists there to move to I).
-                        // The X/Z axis pairs need prime flipped relative to what their label would
-                        // naively suggest -- real-device-confirmed: Y (LEFT/RIGHT) was already
-                        // correct, but X (UP/DOWN) and Z (BUMPER_L/TRIGGER_L) both twisted the
-                        // right plane in the wrong direction until flipped. Requesting a "non-prime"
-                        // twist on I doesn't consistently mean the same rotation sense across
-                        // different fixAxis2 choices -- same root cause as the other per-cell/
-                        // per-axis correction tables in this file (Cube4::twist's rotating-axis
-                        // handedness is a mechanical function of axis index order, not something
-                        // that adapts to match an external notation convention).
-                        GamepadInputMode.RKT ->
-                            when (button) {
-                                NavigationButton.LEFT -> renderer.requestRktITwist(HypercubeRenderer.AXIS_Y, false)
-                                NavigationButton.RIGHT -> renderer.requestRktITwist(HypercubeRenderer.AXIS_Y, true)
-                                NavigationButton.UP -> renderer.requestRktITwist(HypercubeRenderer.AXIS_X, true)
-                                NavigationButton.DOWN -> renderer.requestRktITwist(HypercubeRenderer.AXIS_X, false)
-                                NavigationButton.BUMPER_L -> renderer.requestRktITwist(HypercubeRenderer.AXIS_Z, true)
-                                NavigationButton.TRIGGER_L -> renderer.requestRktITwist(HypercubeRenderer.AXIS_Z, false)
-                                NavigationButton.SELECT -> Unit
-                                NavigationButton.THUMB_L -> Unit
-                                NavigationButton.START -> Unit
-                                NavigationButton.BUTTON_C -> Unit
-                            }
+                            // Community notation: LEFT=IU, RIGHT=IU', UP=IR, DOWN=IR', BUMPER_L(L1)=IF,
+                            // TRIGGER_L(L2)=IF'. SELECT/START/BUTTON_C/THUMB_L are unbound -- no role
+                            // specified for RKT mode (no cell selection exists there to move to I).
+                            // The X/Z axis pairs need prime flipped relative to what their label would
+                            // naively suggest -- real-device-confirmed: Y (LEFT/RIGHT) was already
+                            // correct, but X (UP/DOWN) and Z (BUMPER_L/TRIGGER_L) both twisted the
+                            // right plane in the wrong direction until flipped. Requesting a "non-prime"
+                            // twist on I doesn't consistently mean the same rotation sense across
+                            // different fixAxis2 choices -- same root cause as the other per-cell/
+                            // per-axis correction tables in this file (Cube4::twist's rotating-axis
+                            // handedness is a mechanical function of axis index order, not something
+                            // that adapts to match an external notation convention).
+                            GamepadInputMode.RKT ->
+                                when (button) {
+                                    NavigationButton.LEFT -> renderer.requestRktITwist(HypercubeRenderer.AXIS_Y, false)
+                                    NavigationButton.RIGHT -> renderer.requestRktITwist(HypercubeRenderer.AXIS_Y, true)
+                                    NavigationButton.UP -> renderer.requestRktITwist(HypercubeRenderer.AXIS_X, true)
+                                    NavigationButton.DOWN -> renderer.requestRktITwist(HypercubeRenderer.AXIS_X, false)
+                                    NavigationButton.BUMPER_L -> renderer.requestRktITwist(HypercubeRenderer.AXIS_Z, true)
+                                    NavigationButton.TRIGGER_L -> renderer.requestRktITwist(HypercubeRenderer.AXIS_Z, false)
+                                    NavigationButton.SELECT -> Unit
+                                    NavigationButton.THUMB_L -> Unit
+                                    NavigationButton.START -> Unit
+                                    NavigationButton.BUTTON_C -> Unit
+                                }
                         }
                     }
                 }
@@ -646,21 +628,19 @@ class MainActivity : AppCompatActivity() {
         // Pocket (see retroid-twisted.png). What's left is just the handful of actions gamepad
         // input doesn't cover: mode switch, input scheme toggle, piece filtering, and the
         // scramble/reset/undo/export utility row.
-        // Cycles STICK -> PAD -> RKT -> STICK (see GamepadInputMode's doc for what each does) --
-        // purely a left-hand input scheme choice, so it only needs to update inputMode (for these
+        // Toggles STICK <-> RKT (see GamepadInputMode's doc for what each does) -- purely a
+        // left-hand input scheme choice, so it only needs to update inputMode (for these
         // closures) and the renderer's own mirrored state (for highlightedCell/
-        // navigateCell4Selection/requestRktITwist); nothing else about the screen changes.
+        // requestRktITwist); nothing else about the screen changes.
         fun inputModeLabel(mode: GamepadInputMode) = when (mode) {
             GamepadInputMode.STICK -> "Input: Stick"
-            GamepadInputMode.PAD -> "Input: Pad"
             GamepadInputMode.RKT -> "Input: RKT"
         }
         val inputModeButton = Button(this).apply {
             text = inputModeLabel(inputMode)
             setOnClickListener {
                 inputMode = when (inputMode) {
-                    GamepadInputMode.STICK -> GamepadInputMode.PAD
-                    GamepadInputMode.PAD -> GamepadInputMode.RKT
+                    GamepadInputMode.STICK -> GamepadInputMode.RKT
                     GamepadInputMode.RKT -> GamepadInputMode.STICK
                 }
                 text = inputModeLabel(inputMode)
@@ -1049,8 +1029,7 @@ class MainActivity : AppCompatActivity() {
 &#8226; Hold L2: reverse direction (prime) for any of the above<br>
 <br>
 <b>4D MODE &#8212; GAMEPAD</b><br>
-Three selectable input modes &#8212; cycle with the on-screen "Input: Stick" / "Input: Pad" /
-"Input: RKT" button.<br>
+Two selectable input modes &#8212; cycle with the on-screen "Input: Stick" / "Input: RKT" button.<br>
 <br>
 <b>Select (hold): a second layer of controls</b> &#8212; works the same in every mode.<br>
 &#8226; Y / A / X / B / R1 / R2: instead of twisting the selected/highlighted cell, snap-rotates
@@ -1071,24 +1050,12 @@ once for a diagonal, for controllers with no left stick<br>
 &#8226; Left stick click (L3) or Button C: rotate the puzzle so the selected cell moves to I
 &#8212; Button C exists for controllers with no stick click (e.g. the 8BitDo Micro)<br>
 <br>
-<b>Mode 2 &#8212; Pad Navigate</b><br>
-&#8226; Left stick: unused<br>
-&#8226; Right stick: orbit the view, same as mode 1<br>
-&#8226; Y / A / X / B, R1 / R2: same as mode 1 &#8212; twist the highlighted cell<br>
-&#8226; D-pad left / right: step the highlight between L, I, and R<br>
-&#8226; D-pad up / down: step the highlight between U, I, and D<br>
-&#8226; L1 (bumper): step the highlight toward F<br>
-&#8226; L2 (trigger): step the highlight toward B<br>
-&#8226; Each direction stops at its endpoint &#8212; no wraparound, and O can never be reached this way<br>
-&#8226; Button C: rotate the puzzle so the highlighted cell moves to I<br>
-&#8226; The highlighted cell is remembered separately per mode &#8212; switching away and back restores it<br>
-<br>
-<b>Mode 3 &#8212; RKT</b><br>
+<b>Mode 2 &#8212; RKT</b><br>
 For the final phase of a solve, where every twist is either an I-cell rotation or R itself &#8212;
 no cell selection needed, so nothing is highlighted.<br>
 &#8226; Left stick: unused<br>
-&#8226; Right stick: orbit the view, same as the other modes<br>
-&#8226; Y / A / X / B, R1 / R2: twist R, same as if it were selected in mode 1/2<br>
+&#8226; Right stick: orbit the view, same as mode 1<br>
+&#8226; Y / A / X / B, R1 / R2: twist R, same as if it were selected in mode 1<br>
 &#8226; D-pad left / right: twist I as IU / IU'<br>
 &#8226; D-pad up / down: twist I as IR / IR'<br>
 &#8226; L1 / L2 (bumper / trigger): twist I as IF / IF'<br>

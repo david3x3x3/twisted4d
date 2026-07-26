@@ -46,13 +46,15 @@ import kotlin.math.sqrt
  * (b) never rotate the sticker meshes themselves, since only their positions depended on it.
  */
 
-/** The 4D screen's 3 gamepad left-hand input schemes -- see [HypercubeRenderer.setInputMode].
+/** The 4D screen's 2 gamepad left-hand input schemes -- see [HypercubeRenderer.setInputMode].
  * [STICK]: continuous stick-angle cell selection ([HypercubeRenderer.updateCell4Selection]).
- * [PAD]: discrete dpad/L1/L2 step navigation ([HypercubeRenderer.navigateCell4Selection]).
  * [RKT]: no selection at all -- the left-hand controls twist the room's current I slot directly
  * (see [HypercubeRenderer.requestRktITwist]), for executing a fixed, memorized last-phase-of-solve
- * algorithm (hypercube OLL/PLL equivalent) without needing to reselect a cell between twists. */
-enum class GamepadInputMode { STICK, PAD, RKT }
+ * algorithm (hypercube OLL/PLL equivalent) without needing to reselect a cell between twists.
+ * (A third mode, PAD -- discrete dpad/L1/L2 step navigation -- existed until 2026-07-26, removed
+ * once STICK mode's d-pad-as-stick support (see GamepadInputHandler.onDpadStick) made it
+ * redundant: everything PAD could do, STICK mode's d-pad now does too, more directly.) */
+enum class GamepadInputMode { STICK, RKT }
 class HypercubeRenderer : GLSurfaceView.Renderer {
 
     // Scaled up from the room's plain size to compensate for the narrower FOV in
@@ -122,73 +124,34 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
     private var selectedRoomSign = 1
     private var stickHeld = false
 
-    /** Which of the 3 left-hand input schemes is active -- see [GamepadInputMode]. Read from the
+    /** Which of the 2 left-hand input schemes is active -- see [GamepadInputMode]. Read from the
      * UI thread (MainActivity's on4DNavigate/onLeftStick closures, both running inside their own
      * queueEvent already) and written only via [setInputMode], also GL-thread-only. */
     @Volatile var inputMode: GamepadInputMode = GamepadInputMode.STICK
         private set
 
-    // STICK and PAD each remember their own selected room slot independently -- these hold
-    // whichever of those two modes *isn't* currently active's slot, swapped into/out of the
-    // single "live" selectedRoomAxis/selectedRoomSign pair above by setInputMode, so switching
-    // modes never disturbs the other mode's last selection. PAD defaults to I the first time it
-    // activates. RKT doesn't need a parked slot of its own -- its selection is always pinned to R
-    // (see setInputMode), never remembered/restored.
+    // STICK's selected room slot, parked here while RKT is active (RKT always pins to R -- see
+    // setInputMode -- so switching back to STICK restores whatever was selected before, instead
+    // of losing it to RKT's fixed R pin).
     private var parkedStickAxis = AXIS_Y
     private var parkedStickSign = 1
-    private var parkedPadAxis = AXIS_W
-    private var parkedPadSign = -1
 
-    /** Swaps the outgoing mode's room slot into its own parked field (STICK/PAD only -- RKT has
-     * none, see the parked-state fields' doc) and sets up the incoming mode's slot: STICK/PAD
-     * restore their own parked slot, RKT always pins to R (AXIS_X, +1) -- see [GamepadInputMode]'s
-     * doc for why R specifically. Must run on the GL thread (those fields aren't volatile) --
-     * call via queueEvent, same as [updateCell4Selection]/[navigateCell4Selection]. */
+    /** Swaps the outgoing mode's room slot into [parkedStickAxis]/[parkedStickSign] (STICK only
+     * -- RKT has no parked slot of its own) and sets up the incoming mode's slot: STICK restores
+     * its parked slot, RKT always pins to R (AXIS_X, +1) -- see [GamepadInputMode]'s doc for why
+     * R specifically. Must run on the GL thread (those fields aren't volatile) -- call via
+     * queueEvent, same as [updateCell4Selection]. */
     fun setInputMode(mode: GamepadInputMode) {
         if (mode == inputMode) return
-        when (inputMode) {
-            GamepadInputMode.STICK -> { parkedStickAxis = selectedRoomAxis; parkedStickSign = selectedRoomSign }
-            GamepadInputMode.PAD -> { parkedPadAxis = selectedRoomAxis; parkedPadSign = selectedRoomSign }
-            GamepadInputMode.RKT -> Unit
+        if (inputMode == GamepadInputMode.STICK) {
+            parkedStickAxis = selectedRoomAxis
+            parkedStickSign = selectedRoomSign
         }
         when (mode) {
             GamepadInputMode.STICK -> { selectedRoomAxis = parkedStickAxis; selectedRoomSign = parkedStickSign }
-            GamepadInputMode.PAD -> { selectedRoomAxis = parkedPadAxis; selectedRoomSign = parkedPadSign }
             GamepadInputMode.RKT -> { selectedRoomAxis = AXIS_X; selectedRoomSign = 1 }
         }
         inputMode = mode
-    }
-
-    /**
-     * Mode 2's step-based selection navigation (dpad/L1/L2, see [NavigationButton]), as opposed
-     * to mode 1's continuous stick-angle math in [updateCell4Selection]. [targetAxis]/
-     * [targetSign] is the pressed button's own room-slot endpoint (e.g. dpad-left -> AXIS_X,-1
-     * for L). Always steps toward that endpoint *through* I, one press at a time: already there
-     * -> no-op (no wrapping past an endpoint); currently at I -> jump straight to the endpoint;
-     * anywhere else (including that endpoint's own opposite, or a different track entirely) ->
-     * step back to I first. O is never reachable, since no button's endpoint is ever O.
-     */
-    fun navigateCell4Selection(targetAxis: Int, targetSign: Int) {
-        val atI = selectedRoomAxis == AXIS_W && selectedRoomSign < 0
-        when {
-            selectedRoomAxis == targetAxis && selectedRoomSign == targetSign -> return
-            atI -> { selectedRoomAxis = targetAxis; selectedRoomSign = targetSign }
-            else -> { selectedRoomAxis = AXIS_W; selectedRoomSign = -1 }
-        }
-    }
-
-    /**
-     * The actual entry point mode 2's dpad/L1/L2 use (see [MainActivity]'s on4DNavigate wiring)
-     * -- [defaultAxis]/[defaultSign] is the button's fixed room-slot meaning (e.g. dpad-left ->
-     * AXIS_X,-1 for L), used directly with no camera-symmetry correction needed: the camera
-     * always sits at true default (see [snapViewToNearestCardinalOrientation]'s doc for why),
-     * so "the room slot dpad-left means" and "whatever's visually on the left" are simply the
-     * same thing, always. Also snaps first, same as [MainActivity]'s on4DRotationButton wiring,
-     * so navigating keeps the puzzle visually tidy even without an active twist.
-     */
-    fun navigateMode2Selection(defaultAxis: Int, defaultSign: Int) {
-        snapViewToNearestCardinalOrientation()
-        navigateCell4Selection(defaultAxis, defaultSign)
     }
 
     /** Which [Cell4] the gamepad's left stick currently has selected for the next twist -- see
@@ -395,7 +358,7 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
     val highlightedCell: Cell4?
         get() = when {
             inputMode == GamepadInputMode.RKT -> null
-            stickHeld || inputMode == GamepadInputMode.PAD -> cellFor(selectedRoomAxis, selectedRoomSign)
+            stickHeld -> cellFor(selectedRoomAxis, selectedRoomSign)
             else -> null
         }
 
@@ -407,8 +370,8 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
      * in "IU"), translated to the native axis [requestTwist] needs the same way
      * [resolveRotationButtonFixAxis2] does for on4DRotationButton -- without this, "IU" would only
      * actually mean IU when the room happens to be at its default orientation, drifting to some
-     * other twist entirely once it's been rotated (e.g. via mode 1/2's "move to I"), the same bug
-     * that on4DRotationButton had. [desiredApostrophe] is given directly by the caller, already
+     * other twist entirely once it's been rotated (e.g. via STICK mode's "move to I"), the same
+     * bug that on4DRotationButton had. [desiredApostrophe] is given directly by the caller, already
      * resolved to the exact community-notation twist wanted (e.g. IU vs IU') -- unlike
      * on4DRotationButton, this doesn't go through [MainActivity]'s screen-consistency correction
      * table, since these are fixed, explicit moves for a known algorithm rather than a "make this
@@ -761,10 +724,9 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
      * rotational symmetries (see [CARDINAL_TARGETS]) the camera's *current* orientation happens to
      * be closest to -- so the net on-screen appearance settles into the exact same tidy view a
      * camera-only "snap to nearest symmetry" would have shown, but the camera itself always ends
-     * up at true default, never one of the other 23. Called (see [updateCell4Selection],
-     * [navigateMode2Selection], and [MainActivity]'s rotation-button/RKT wiring) whenever the
-     * puzzle is about to be interacted with via the gamepad, so the view never stays at an
-     * arbitrary, ugly continuous drag angle.
+     * up at true default, never one of the other 23. Called (see [updateCell4Selection] and
+     * [MainActivity]'s rotation-button/RKT wiring) whenever the puzzle is about to be interacted
+     * with via the gamepad, so the view never stays at an arbitrary, ugly continuous drag angle.
      *
      * Why the camera always returns to true default now, rather than "nearest of 24" (this
      * function's original behavior): confirmed via a real device repro and live instrumented
@@ -780,8 +742,7 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
      * [cubeOrientation4] -- the same mechanism [requestCameraRotate90] already uses for "move to
      * I", not a second, parallel "which of 24 symmetries is the camera at" bookkeeping system
      * (the old `cameraSnapSymmetry`/`holdSymmetry`/`applyInverseSnapSymmetry`, all removed; see
-     * [updateCell4Selection] and [navigateMode2Selection] for how much simpler the wedge
-     * resolution became without them).
+     * [updateCell4Selection] for how much simpler the wedge resolution became without them).
      *
      * The math this relies on: for any of the 24 symmetries S, rotating the *camera* by S while
      * leaving [cubeOrientation4] alone produces the exact same visible result as leaving the
