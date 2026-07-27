@@ -211,7 +211,15 @@ class GamepadInputHandler(
         // specific button produced this event.
         if (!isGamepadSource(event.device?.sources ?: event.source)) return
 
-        if (event.keyCode == KeyEvent.KEYCODE_BUTTON_L2) {
+        // Normalized once, up front, so every lookup/held-flag below sees the same
+        // Xbox-position-based keyCode regardless of whether the controller is actually reporting
+        // Nintendo-position button presses (see GamepadVisualState.nintendoLayout's doc). The raw
+        // event.keyCode is only used for the debug log line further down, deliberately -- that's
+        // meant to show exactly what the hardware sent, which is what you'd want when diagnosing
+        // a layout mismatch in the first place.
+        val keyCode = layoutSwappedKeyCode(event.keyCode)
+
+        if (keyCode == KeyEvent.KEYCODE_BUTTON_L2) {
             invertHeld = event.action == KeyEvent.ACTION_DOWN
         }
 
@@ -220,7 +228,7 @@ class GamepadInputHandler(
         // about release, so they can't drive a light-stays-on-while-held indicator by themselves.
         if (event.action == KeyEvent.ACTION_DOWN || event.action == KeyEvent.ACTION_UP) {
             val held = event.action == KeyEvent.ACTION_DOWN
-            when (event.keyCode) {
+            when (keyCode) {
                 KeyEvent.KEYCODE_BUTTON_Y -> GamepadVisualState.yHeld = held
                 KeyEvent.KEYCODE_BUTTON_A -> GamepadVisualState.aHeld = held
                 KeyEvent.KEYCODE_BUTTON_X -> GamepadVisualState.xHeld = held
@@ -236,7 +244,7 @@ class GamepadInputHandler(
                 KeyEvent.KEYCODE_BUTTON_SELECT -> GamepadVisualState.selectHeld = held
                 KeyEvent.KEYCODE_BUTTON_THUMBL -> GamepadVisualState.thumbLHeld = held
             }
-            when (event.keyCode) {
+            when (keyCode) {
                 KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT,
                 KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN,
                 -> reportDpadStick()
@@ -253,11 +261,11 @@ class GamepadInputHandler(
 
         if (event.action != KeyEvent.ACTION_DOWN) return
 
-        FACE_BUTTON_INDEX_MAP[event.keyCode]?.let { index ->
+        FACE_BUTTON_INDEX_MAP[keyCode]?.let { index ->
             Log.i(TAG, "Twist requested: index=$index invert=$invertHeld (gamepad)")
             onFaceButton(index, invertHeld)
         }
-        val zDirKeyCode = zDirSwappedKeyCode(event.keyCode)
+        val zDirKeyCode = zDirSwappedKeyCode(keyCode)
         ROTATION_BUTTON_MAP[zDirKeyCode]?.let { button ->
             Log.i(TAG, "4D rotation button: $button (gamepad)")
             on4DRotationButton(button)
@@ -265,6 +273,19 @@ class GamepadInputHandler(
         NAVIGATION_BUTTON_MAP[zDirKeyCode]?.let { button ->
             Log.i(TAG, "4D navigation button: $button (gamepad)")
             on4DNavigate(button)
+        }
+    }
+
+    /** See [GamepadVisualState.nintendoLayout]'s doc. Identity when it's off or [keyCode] isn't
+     * one of the 4 face buttons. */
+    private fun layoutSwappedKeyCode(keyCode: Int): Int {
+        if (!GamepadVisualState.nintendoLayout) return keyCode
+        return when (keyCode) {
+            KeyEvent.KEYCODE_BUTTON_A -> KeyEvent.KEYCODE_BUTTON_B
+            KeyEvent.KEYCODE_BUTTON_B -> KeyEvent.KEYCODE_BUTTON_A
+            KeyEvent.KEYCODE_BUTTON_X -> KeyEvent.KEYCODE_BUTTON_Y
+            KeyEvent.KEYCODE_BUTTON_Y -> KeyEvent.KEYCODE_BUTTON_X
+            else -> keyCode
         }
     }
 
@@ -327,7 +348,9 @@ class GamepadInputHandler(
                 (sources and InputDevice.SOURCE_DPAD) == InputDevice.SOURCE_DPAD
 
         /** Index matches U/D/L/R/F/B's position (0-5) in both [Face] and [Cell4]'s enum order.
-         * 3D mode only -- see [onFaceButton]. */
+         * 3D mode only -- see [onFaceButton]. Keys assume Xbox-position face buttons; callers
+         * look this up with the already-[layoutSwappedKeyCode]-normalized keyCode, not the raw
+         * one. */
         private val FACE_BUTTON_INDEX_MAP = mapOf(
             KeyEvent.KEYCODE_BUTTON_Y to 0,
             KeyEvent.KEYCODE_BUTTON_A to 1,
@@ -339,7 +362,8 @@ class GamepadInputHandler(
 
         /** Physical layout matches [FACE_BUTTON_INDEX_MAP]'s Y/A/X/B (top/bottom/left/right on
          * an Xbox-style pad); R1/R2 are the right bumper/trigger. 4D mode only -- see
-         * [on4DRotationButton]. */
+         * [on4DRotationButton]. Same [layoutSwappedKeyCode] normalization note as
+         * [FACE_BUTTON_INDEX_MAP] applies here too. */
         private val ROTATION_BUTTON_MAP = mapOf(
             KeyEvent.KEYCODE_BUTTON_Y to RotationButton.UP,
             KeyEvent.KEYCODE_BUTTON_A to RotationButton.DOWN,

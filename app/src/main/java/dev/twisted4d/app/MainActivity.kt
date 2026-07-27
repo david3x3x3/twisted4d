@@ -620,6 +620,11 @@ class MainActivity : AppCompatActivity() {
             // GamepadInputHandler.swapZDirection's doc) -- for controllers whose bumper/trigger
             // arrangement makes the app's default Z direction feel backwards.
             filterToggle("Z Dir") { gamepadInput.swapZDirection = it }
+            // Swaps A<->B and X<->Y (see GamepadVisualState.nintendoLayout's doc) -- for
+            // controllers/modes reporting face-button presses using Nintendo's physical
+            // positions instead of Xbox's. Affects 3D-mode twisting too, not just 4D, since both
+            // read the same normalized keyCode in GamepadInputHandler.handleKeyEvent.
+            filterToggle("Nintendo ABXY") { GamepadVisualState.nintendoLayout = it }
         }
 
         // Cell twists, camera rotation, and axis selection are gamepad-only now (see
@@ -1079,6 +1084,8 @@ Cell twists and puzzle rotation are gamepad-only (see above) -- what's left on s
 &#8226; Hide 4c / Hide 3c: hide corner / edge pieces, useful early in a solve<br>
 &#8226; Z Dir: swaps L1&#8596;L2 and R1&#8596;R2 for Z-axis rotation/navigation, for controllers
 whose bumper/trigger arrangement makes the default feel backwards<br>
+&#8226; Nintendo ABXY: swaps A&#8596;B and X&#8596;Y (also affects 3D mode's twist buttons), for
+controllers/modes reporting face buttons in Nintendo's layout instead of Xbox's<br>
 &#8226; Scramble / Reset / Undo<br>
 &#8226; Log: copy/share the twist history in hypercubing.xyz notation (e.g. "RU'")<br>
 &#8226; MC4D: export the twist history as a real MagicCube4D .log file, openable in the actual MagicCube4D software<br>

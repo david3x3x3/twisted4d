@@ -95,10 +95,16 @@ class GamepadOverlayView(context: Context) : View(context) {
         val faceCx = w * 0.76f
         val faceCy = h * 0.42f
         val faceSpread = unit * 0.105f
-        drawFaceButton(canvas, faceCx, faceCy - faceSpread, faceR, GamepadVisualState.yHeld, "Y")
-        drawFaceButton(canvas, faceCx - faceSpread, faceCy, faceR, GamepadVisualState.xHeld, "X")
-        drawFaceButton(canvas, faceCx + faceSpread, faceCy, faceR, GamepadVisualState.bHeld, "B")
-        drawFaceButton(canvas, faceCx, faceCy + faceSpread, faceR, GamepadVisualState.aHeld, "A")
+        // Screen position is fixed (top/left/right/bottom) and already lights up correctly either
+        // way, since the held-flags themselves were normalized upstream in
+        // GamepadInputHandler.handleKeyEvent -- only the printed letter changes here, to match
+        // whatever's actually printed on a Nintendo-layout controller (A/B and X/Y swapped
+        // relative to Xbox's positions; see GamepadVisualState.nintendoLayout's doc).
+        val nintendo = GamepadVisualState.nintendoLayout
+        drawFaceButton(canvas, faceCx, faceCy - faceSpread, faceR, GamepadVisualState.yHeld, if (nintendo) "X" else "Y")
+        drawFaceButton(canvas, faceCx - faceSpread, faceCy, faceR, GamepadVisualState.xHeld, if (nintendo) "Y" else "X")
+        drawFaceButton(canvas, faceCx + faceSpread, faceCy, faceR, GamepadVisualState.bHeld, if (nintendo) "A" else "B")
+        drawFaceButton(canvas, faceCx, faceCy + faceSpread, faceR, GamepadVisualState.aHeld, if (nintendo) "B" else "A")
         drawStick(canvas, w * 0.76f, h * 0.74f, unit * 0.135f, GamepadVisualState.rightStickX, GamepadVisualState.rightStickY)
     }
 
