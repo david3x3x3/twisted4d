@@ -1025,7 +1025,7 @@ class MainActivity : AppCompatActivity() {
 <b>TOUCH CONTROLS</b><br>
 &#8226; Drag the puzzle to rotate the view<br>
 &#8226; Pinch to zoom<br>
-&#8226; Tap a cell/face button to twist; long-press for the reverse direction<br>
+&#8226; In 4D mode, twisting and cell selection are gamepad-only (see below)<br>
 <br>
 <b>3D MODE &#8212; GAMEPAD</b><br>
 &#8226; Left stick: rotate the view<br>
@@ -1088,12 +1088,13 @@ The small controller diagram in the bottom-left corner lights up buttons and sti
 <br>
 <b>CREDITS</b><br>
 Version ${BuildConfig.VERSION_NAME}<br>
-twisted4d was developed by David Barr. It was inspired by Hyperspeedcube, a 3D/4D twisty puzzle
-simulator by Andrew Farkas (HactarCE), and by MagicCube4D, the original 4D twisty puzzle simulator,
-by Don Hatch, Melinda Green, Jay Berkenbilt, and Roice Nelson, including its Android port by
-Raymond Zhao ("Magic Cube 4D (Raynefork)"). The gamepad control scheme here in particular owes a
-debt to Hyperspeedcube's "Keybinds Tutorial for Hyperspeedcube 1.0"
-(youtube.com/watch?v=yRt5DVqjnEo) for ideas about how to lay out 4D twist controls.
+twisted4d was developed by David Barr. It was inspired by:<br>
+&#8226; Hyperspeedcube, a 3D/4D twisty puzzle simulator by Andrew Farkas (HactarCE)<br>
+&#8226; MagicCube4D, Hyperspeedcube's predecessor, by Don Hatch, Melinda Green, Jay Berkenbilt, and
+Roice Nelson<br>
+&#8226; MagicCube4D's Android port, also by Melinda Green<br>
+&#8226; MagicCube4D (Raynefork), Raymond Zhao's fork of that Android port adding features and
+modern-Android compatibility<br>
 """
     }
 }
