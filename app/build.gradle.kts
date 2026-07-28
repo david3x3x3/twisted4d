@@ -43,11 +43,12 @@ android {
         // upgrade") -- bump it by 1 on every future release regardless of versionName.
         // versionName is the free-form user-visible string; semantic versioning
         // (MAJOR.MINOR.PATCH) is the usual convention. 0.x.y means "pre-1.0" -- no promise of
-        // stability yet -- per the user's explicit choice (2026-07-26). 0.5.0, not 0.9.0: real
-        // open questions remain before 1.0 (whether Fire TV is even a 1.0 target, on-screen
-        // menu/button cleanup), so "nearly there" would overclaim.
-        versionCode = 2
-        versionName = "0.5.0"
+        // stability yet -- per the user's explicit choice (2026-07-26). 0.6.0 (2026-07-28): the
+        // on-screen menu/button cleanup mentioned as a pre-1.0 open question at 0.5.0 is now
+        // largely done (Start Menu/Filters/Settings). Still not 1.0: whether Fire TV is even a
+        // 1.0 target remains undecided, and Settings is still missing its D-pad-assignment rows.
+        versionCode = 3
+        versionName = "0.6.0"
         buildConfigField("String", "GIT_VERSION", "\"$gitVersion\"")
     }
 
