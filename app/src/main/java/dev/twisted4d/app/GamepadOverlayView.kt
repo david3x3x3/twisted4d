@@ -99,8 +99,9 @@ class GamepadOverlayView(context: Context) : View(context) {
         // way, since the held-flags themselves were normalized upstream in
         // GamepadInputHandler.handleKeyEvent -- only the printed letter changes here, to match
         // whatever's actually printed on a Nintendo-layout controller (A/B and X/Y swapped
-        // relative to Xbox's positions; see GamepadVisualState.nintendoLayout's doc).
-        val nintendo = GamepadVisualState.nintendoLayout
+        // relative to Xbox's positions; see PerControllerSettings.Entry.nintendoLayout's doc).
+        // Per-controller now, so this reflects whichever pad most recently sent input.
+        val nintendo = PerControllerSettings.current()?.nintendoLayout == true
         drawFaceButton(canvas, faceCx, faceCy - faceSpread, faceR, GamepadVisualState.yHeld, if (nintendo) "X" else "Y")
         drawFaceButton(canvas, faceCx - faceSpread, faceCy, faceR, GamepadVisualState.xHeld, if (nintendo) "Y" else "X")
         drawFaceButton(canvas, faceCx + faceSpread, faceCy, faceR, GamepadVisualState.bHeld, if (nintendo) "A" else "B")

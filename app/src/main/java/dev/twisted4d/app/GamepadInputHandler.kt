@@ -100,14 +100,10 @@ class GamepadInputHandler(
 
     @Volatile private var invertHeld = false
 
-    /** Swaps L1<->L2 and R1<->R2 for [ROTATION_BUTTON_MAP]/[NAVIGATION_BUTTON_MAP] purposes only
-     * (not [FACE_BUTTON_INDEX_MAP], not [invertHeld], not [GamepadVisualState] -- those are
-     * unrelated to "which trigger means which Z direction") -- MainActivity's 4D "Z Dir" toggle
-     * button sets this for controllers whose bumper/trigger arrangement makes the app's default
-     * assignment feel backwards. Public var, not a constructor param, since it toggles live after
-     * construction; @Volatile since the toggle button (UI thread) and [handleKeyEvent] (also UI
-     * thread here, but matching [invertHeld]'s existing safety margin) don't share a call stack. */
-    @Volatile var swapZDirection = false
+    // Z Dir Left/Right (which trigger means which Z direction, per bumper/trigger side) now live
+    // in PerControllerSettings, not here -- they're genuinely per-controller (see its class doc),
+    // and this class gets recreated fresh on every screen rebuild (mode switch, etc.), which
+    // would have silently reset them mid-session even before the per-controller change.
 
     // Last-seen d-pad hat axis values, for edge-detecting a "press" out of AXIS_HAT_X/Y -- see
     // handleMotionEvent's doc for why this exists alongside NAVIGATION_BUTTON_MAP's key-based
@@ -143,6 +139,9 @@ class GamepadInputHandler(
     /** Returns true if this was a joystick event this handler consumed. */
     fun handleMotionEvent(event: MotionEvent): Boolean {
         if (!event.isFromSource(InputDevice.SOURCE_JOYSTICK)) return false
+        // Keeps PerControllerSettings.current() pointing at whichever controller is actually
+        // being used, even if the player is only moving a stick and never pressing a button.
+        PerControllerSettings.noteActiveDevice(event.device)
 
         val lx = applyDeadzone(event.getAxisValue(MotionEvent.AXIS_X))
         val ly = applyDeadzone(event.getAxisValue(MotionEvent.AXIS_Y))
@@ -210,13 +209,17 @@ class GamepadInputHandler(
         // The device's overall sources reliably include SOURCE_GAMEPAD regardless of which
         // specific button produced this event.
         if (!isGamepadSource(event.device?.sources ?: event.source)) return
+        // Keeps PerControllerSettings.current() pointing at whichever controller produced this
+        // event -- must happen before layoutSwappedKeyCode/zDirSwappedKeyCode below, since they
+        // read it.
+        PerControllerSettings.noteActiveDevice(event.device)
 
         // Normalized once, up front, so every lookup/held-flag below sees the same
         // Xbox-position-based keyCode regardless of whether the controller is actually reporting
-        // Nintendo-position button presses (see GamepadVisualState.nintendoLayout's doc). The raw
-        // event.keyCode is only used for the debug log line further down, deliberately -- that's
-        // meant to show exactly what the hardware sent, which is what you'd want when diagnosing
-        // a layout mismatch in the first place.
+        // Nintendo-position button presses (see PerControllerSettings.Entry.nintendoLayout's
+        // doc). The raw event.keyCode is only used for the debug log line further down,
+        // deliberately -- that's meant to show exactly what the hardware sent, which is what
+        // you'd want when diagnosing a layout mismatch in the first place.
         val keyCode = layoutSwappedKeyCode(event.keyCode)
 
         if (keyCode == KeyEvent.KEYCODE_BUTTON_L2) {
@@ -279,7 +282,7 @@ class GamepadInputHandler(
     /** See [GamepadVisualState.nintendoLayout]'s doc. Identity when it's off or [keyCode] isn't
      * one of the 4 face buttons. */
     private fun layoutSwappedKeyCode(keyCode: Int): Int {
-        if (!GamepadVisualState.nintendoLayout) return keyCode
+        if (PerControllerSettings.current()?.nintendoLayout != true) return keyCode
         return when (keyCode) {
             KeyEvent.KEYCODE_BUTTON_A -> KeyEvent.KEYCODE_BUTTON_B
             KeyEvent.KEYCODE_BUTTON_B -> KeyEvent.KEYCODE_BUTTON_A
@@ -289,16 +292,19 @@ class GamepadInputHandler(
         }
     }
 
-    /** See [swapZDirection]'s doc. Identity when it's off or [keyCode] isn't one of the 4 Z-axis
-     * trigger/bumper buttons. */
+    /** See [PerControllerSettings.Entry.zDirLeft]/[PerControllerSettings.Entry.zDirRight]'s doc.
+     * Identity on each side when that side's flag is off (or no controller has sent input yet). */
     private fun zDirSwappedKeyCode(keyCode: Int): Int {
-        if (!swapZDirection) return keyCode
-        return when (keyCode) {
+        val settings = PerControllerSettings.current()
+        val afterLeft = if (settings?.zDirLeft != true) keyCode else when (keyCode) {
             KeyEvent.KEYCODE_BUTTON_L1 -> KeyEvent.KEYCODE_BUTTON_L2
             KeyEvent.KEYCODE_BUTTON_L2 -> KeyEvent.KEYCODE_BUTTON_L1
+            else -> keyCode
+        }
+        return if (settings?.zDirRight != true) afterLeft else when (afterLeft) {
             KeyEvent.KEYCODE_BUTTON_R1 -> KeyEvent.KEYCODE_BUTTON_R2
             KeyEvent.KEYCODE_BUTTON_R2 -> KeyEvent.KEYCODE_BUTTON_R1
-            else -> keyCode
+            else -> afterLeft
         }
     }
 

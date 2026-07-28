@@ -111,11 +111,15 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
     private var hasCreatedSurfaceBefore = false
 
     // Piece-type filtering: hides whole pieces (all their stickers) by how many of the piece's
-    // HOME_POSITIONS coordinates are nonzero -- 4 = corner, 3 = "edge" -- a solve aid for early
-    // stages. Sticker count is a permanent piece-type identity (see onDrawFrame), so this is a
-    // safe, cheap per-piece check against each piece's *home* position, not its current one.
+    // HOME_POSITIONS coordinates are nonzero -- community terminology (matches hypercubing.xyz
+    // piece-type names for an N^4 puzzle): 1 = center, 2 = ridge, 3 = edge, 4 = corner -- a solve
+    // aid for early stages. Sticker count is a permanent piece-type identity (see onDrawFrame), so
+    // this is a safe, cheap per-piece check against each piece's *home* position, not its current
+    // one.
     @Volatile var hideCorners: Boolean = false
     @Volatile var hideEdges: Boolean = false
+    @Volatile var hideRidges: Boolean = false
+    @Volatile var hideCenters: Boolean = false
 
     // Persistent left-stick selection state: which room *slot* (axis+sign), not which resolved
     // cell, is selected -- see selectedCell4's doc for why. GL-thread-only (updateCell4Selection
@@ -1106,6 +1110,8 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
                 (if (home.z != 0) 1 else 0) + (if (home.w != 0) 1 else 0)
             if (hideCorners && stickerCount == 4) continue
             if (hideEdges && stickerCount == 3) continue
+            if (hideRidges && stickerCount == 2) continue
+            if (hideCenters && stickerCount == 1) continue
 
             val base = i * 20
             val src = when {
