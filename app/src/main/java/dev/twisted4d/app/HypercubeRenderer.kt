@@ -1437,11 +1437,16 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         /** MagicCube4D's own "Face Shrink" -- how much each corner of each sticker is pulled
          * toward its cell's fixed face-center point (see [onDrawFrame]'s `faceCenter4`/
          * `shrunkCorner4`), 1.0 meaning no pull at all (cells touch their neighbors seamlessly)
-         * and smaller values
-         * pulling cells inward, creating the gap between them. Matches
-         * `PolytopePuzzleDescription.computeStickerVertsAtRest`'s real algorithm -- confirmed via
-         * that class's actual source (MC4D is open source), not guessed. */
-        private const val FACE_SHRINK = 0.4f
+         * and smaller values pulling cells inward, creating the gap between them. The *formula*
+         * matches `PolytopePuzzleDescription.computeStickerVertsAtRest`'s real algorithm exactly
+         * (confirmed via that class's actual source, not guessed), but this constant is tuned
+         * lower than MC4D's own default (0.4) -- David wanted enough separation that some camera
+         * angle always shows every cell fully unobscured by its neighbors, which 0.4 didn't quite
+         * give in this app's geometry (confirmed 2026-07-29: 0.4 left far cells partly hidden
+         * behind near ones at every rotation tried; 0.22 reliably has an unobscured angle). Not
+         * user-adjustable yet -- a real Settings slider is a known future step, this is just a
+         * static value David is happy with for now. */
+        private const val FACE_SHRINK = 0.22f
 
         /** The 4D analog of camera distance/FOV -- MagicCube4D's "Eye W Scale" -- controlling how
          * strongly a piece's own W coordinate (its depth within whichever cell it's currently in,
