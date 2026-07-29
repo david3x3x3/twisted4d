@@ -4,13 +4,14 @@ package dev.twisted4d.app
 data class Vec4i(val x: Int, val y: Int, val z: Int, val w: Int)
 
 /**
- * Color palette and shared mesh for the 3^4 hypercube's "unfolded" rendering (see
- * [HypercubeRenderer]): 6 cells (U/D/L/R/F/B) arranged as separate 3x3x3 blocks around a
- * center, 1 more (I) as a 3x3x3 block at the center, and 1 (O) never rendered at all --
- * matching MagicCube4D/Hyperspeedcube's default view of 7 non-overlapping cells with the 8th
- * hidden. Every rendered sticker is a small solid-colored cube (all 6 faces the same color,
- * since only one sticker color is ever shown per cube); [HypercubeRenderer] positions instances
- * of this one shared mesh per color rather than building per-piece geometry.
+ * Color palette and shared mesh for the 3^4 hypercube's true-4D-projection rendering (see
+ * [HypercubeRenderer]): 6 cells (U/D/L/R/F/B) form separate 3x3x3 blocks around a center, a 7th
+ * (I) is a 3x3x3 block floating at the center, and the 8th (O) sits behind I -- naturally
+ * occluded by the depth buffer, not specially hidden. Every rendered sticker is a small
+ * solid-colored cube (all 6 faces the same color, since only one sticker color is ever shown per
+ * cube); [HypercubeRenderer] positions (and, since the cell's own true 4D depth varies
+ * piece-to-piece, uniformly scales) instances of this one shared per-color mesh rather than
+ * building per-piece geometry.
  */
 object HypercubeGeometry {
 

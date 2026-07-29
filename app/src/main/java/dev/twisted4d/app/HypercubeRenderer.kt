@@ -18,23 +18,30 @@ import kotlin.math.sin
 import kotlin.math.sqrt
 
 /**
- * Renders a 3^4 hypercube using the same "unfolded" layout MagicCube4D/Hyperspeedcube default
- * to: 6 of the cells (U/D/L/R/F/B) sit as separate, non-overlapping 3x3x3 blocks arranged like
- * the walls of a room, a 7th (I) is a 3x3x3 block floating at the center, and the 8th (O) is
- * never rendered at all -- from this viewpoint it's the "outside of everything," which has no
- * meaningful position to draw. Ordinary 3D rotation (touch-drag/right-stick -- the left stick
- * is reserved for cell selection, see [updateCell4Selection]) orbits the whole room so you can
- * see each wall in turn, same feel as [CubeRenderer]. Which native cell
- * currently occupies which of these 8 fixed positions is controlled by [cubeOrientation4], a
- * 4D rotation kept restricted to exact 90-degree increments via [requestCameraRotate90] (a full
- * continuous 4D trackball is both hard to use and unnecessary here) -- e.g. rotating the Z-W
- * plane cycles F->I->B->O->F, matching Hyperspeedcube's "send this cell to the center" shortcut.
+ * Renders a 3^4 hypercube using a genuine 4D->3D perspective projection, the same style
+ * MagicCube4D/Hyperspeedcube use: 6 of the cells (U/D/L/R/F/B) form separate, non-overlapping
+ * 3x3x3 blocks anchored like the walls of a room, a 7th (I) is a 3x3x3 block floating at the
+ * center, and the 8th (O) sits behind I -- naturally occluded by the depth buffer from the
+ * default orientation, not specially skipped. Each cell's own 27 pieces taper into a frustum
+ * shape (see [onDrawFrame]'s perspective divide) because a piece's real depth *within* its
+ * current cell (how close to I vs. O it sits) varies piece-to-piece and scales its projected
+ * position/size accordingly -- not because any single sticker's mesh is reshaped; every sticker
+ * stays a plain isotropic cube, just translated and uniformly scaled (see
+ * [buildStickerModelMatrix]). Ordinary 3D rotation (touch-drag/right-stick -- the left stick
+ * is reserved for cell selection, see [updateCell4Selection]) orbits the whole assembly so you
+ * can see each cell in turn, same feel as [CubeRenderer]. Which native cell currently occupies
+ * which of these 8 slots is controlled by [cubeOrientation4], a 4D rotation kept restricted to
+ * exact 90-degree increments via [requestCameraRotate90] (a full continuous 4D trackball isn't
+ * needed: the existing continuous 3D orbit already plays the role MagicCube4D's own mouse-drag
+ * does, per its own FAQ on understanding projected 4D objects) -- e.g. rotating the Z-W plane
+ * cycles F->I->B->O->F, matching Hyperspeedcube's "send this cell to the center" shortcut.
  *
  * Every one of a piece's 1-4 stickers is rendered independently (see [onDrawFrame]): its color
- * is fixed (the cell that sticker was originally part of), but which of the 8 positions it's
- * drawn at is resolved fresh every frame from `cubeOrientation4 * pieceOrientation * homeDir`,
- * so stickers visually relocate as the camera is rotated in 90-degree steps or the piece itself
- * is twisted.
+ * is fixed (the cell that sticker was originally part of), but which of the 8 slots it's
+ * currently drawn in is resolved fresh every frame from `cubeOrientation4 * pieceOrientation *
+ * homeDir`, so stickers visually relocate -- and smoothly re-taper mid-flight, since the same
+ * true-projection math applies whether a twist/room-rotation is settled or still animating -- as
+ * the camera is rotated in 90-degree steps or the piece itself is twisted.
  *
  * [cubeOrientation4] only ever changes in exact 90-degree steps (via [requestCameraRotate90]),
  * so it never needs to move continuously. The *continuous* touch-drag/right-stick "look around
@@ -57,10 +64,10 @@ import kotlin.math.sqrt
 enum class GamepadInputMode { STICK, RKT }
 class HypercubeRenderer : GLSurfaceView.Renderer {
 
-    // Scaled up from the room's plain size to compensate for the narrower FOV in
-    // onSurfaceChanged (a telephoto-style flatter perspective needs a proportionally longer
-    // distance to keep the same on-screen framing) -- see that FOV's own doc comment.
-    @Volatile private var distance = 38.0f
+    // Retuned for the true-4D-projection geometry's much smaller natural scale (cells now sit
+    // within roughly +-1.5 units of the room's center, vs. the old flat net's ROOM_HALF=6) --
+    // see MIN_DISTANCE/MAX_DISTANCE below, retuned to match.
+    @Volatile private var distance = 8.5f
 
     // Ordinary 3D-feeling rotation input (touch-drag / left stick) -> XZ/YZ planes.
     @Volatile var stickX: Float = 0f
@@ -227,7 +234,7 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
     /** One rendered sticker's current room position and color, as computed by [currentSceneColors]
      * -- [roomAxis]/[roomSign] is which wall it's on (or [AXIS_W]/`-1` for the I slot; the O slot
      * is never included, matching [onDrawFrame]'s own skip), [x]/[y]/[z] is its room-space position
-     * (same units [onDrawFrame] uses before the `SPACING`/`ROOM_HALF` layout scale-up, so two
+     * (raw room-space units, before [onDrawFrame]'s `FACE_SHRINK`/`EYE_W_DIST` projection, so two
      * stickers on the same wall with the same x/y/z-minus-the-wall's-own-axis share a piece), and
      * [colorCell] is the sticker's own fixed color (which cell it was originally part of --
      * doesn't change with rotation, only its position does). */
@@ -268,8 +275,7 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
                         break
                     }
                 }
-                if (slotAxis == AXIS_W && slotSign > 0) continue // O slot: never rendered
-
+                if (slotAxis == AXIS_W && slotSign > 0) continue // O slot: never rendered -- see onDrawFrame's doc
                 val colorCell = Cell4.entries.first { it.axis.nativeIndex == axisIdx && it.sign == homeCoord }
                 out.add(VisibleSticker(slotAxis, slotSign, colorCell, cameraPos4[0], cameraPos4[1], cameraPos4[2]))
             }
@@ -461,6 +467,8 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
     private val homeDir4 = FloatArray(4)
     private val currentDir4 = FloatArray(4)
     private val cameraDir4 = FloatArray(4)
+    private val faceCenter4 = FloatArray(4)
+    private val shrunkPos4 = FloatArray(4)
     private val screenPos = FloatArray(3)
 
     // Column-major (GL layout) continuous "look around the room" rotation -- see class doc.
@@ -1152,25 +1160,49 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
                         break
                     }
                 }
-                if (slotAxis == AXIS_W && slotSign > 0) continue // O slot: never rendered
+                // O slot: never rendered -- restored after a mistaken removal. This isn't a net-
+                // only concern: MC4D's own pipeline explicitly culls the analogous "front" cell
+                // (PipelineUtils.computeFrame's front-cell-cull step) before it ever reaches
+                // rendering, because it's the one cell whose W coordinate approaches (and can
+                // exceed) EYE_W_DIST, blowing its `stickerScale` up toward/through infinity. O is
+                // genuinely "outside of everything" under a true perspective projection too, not
+                // just under the flat net.
+                if (slotAxis == AXIS_W && slotSign > 0) continue
+                // faceCenter4: a plain unit vector along this sticker's *current* cell's own
+                // defining axis (e.g. (1,0,0,0) for R, (0,0,0,-1) for I) -- matching MagicCube4D's
+                // actual algorithm (PolytopePuzzleDescription.computeStickerVertsAtRest): shrink
+                // this piece's true room position toward that fixed point by FACE_SHRINK, rather
+                // than pushing cells out to an arbitrary anchor distance. Every one of a cell's
+                // pieces shares the same faceCenter4, so a piece near the cell's own edge (large
+                // native offset from faceCenter4) gets pulled in more (in absolute terms) than one
+                // near the cell's middle -- and since this shrink applies to all 4 coordinates
+                // together, *before* the perspective divide below, the divide's effect on the
+                // shrunk position is what makes neighboring cells look angled toward each other,
+                // not a stack of differently-sized flat layers.
+                faceCenter4[0] = if (slotAxis == AXIS_X) slotSign.toFloat() else 0f
+                faceCenter4[1] = if (slotAxis == AXIS_Y) slotSign.toFloat() else 0f
+                faceCenter4[2] = if (slotAxis == AXIS_Z) slotSign.toFloat() else 0f
+                faceCenter4[3] = if (slotAxis == AXIS_W) slotSign.toFloat() else 0f
 
-                if (slotAxis == AXIS_W) {
-                    // I slot: floats at the room's center: local axes are simply X, Y, Z.
-                    screenPos[0] = cameraPos4[0] * SPACING
-                    screenPos[1] = cameraPos4[1] * SPACING
-                    screenPos[2] = cameraPos4[2] * SPACING
-                } else {
-                    // A "wall" slot: offset along its own axis by ROOM_HALF, extended further
-                    // by this piece's camera-space W coordinate (its depth within that wall);
-                    // the other 2 axes place it within the wall's own 3x3 in-plane grid.
-                    screenPos[0] = cameraPos4[0]
-                    screenPos[1] = cameraPos4[1]
-                    screenPos[2] = cameraPos4[2]
-                    screenPos[slotAxis] = slotSign * ROOM_HALF + slotSign * cameraPos4[3] * SPACING
-                    for (k in 0 until 3) if (k != slotAxis) screenPos[k] *= SPACING
-                }
+                shrunkPos4[0] = faceCenter4[0] + (cameraPos4[0] - faceCenter4[0]) * FACE_SHRINK
+                shrunkPos4[1] = faceCenter4[1] + (cameraPos4[1] - faceCenter4[1]) * FACE_SHRINK
+                shrunkPos4[2] = faceCenter4[2] + (cameraPos4[2] - faceCenter4[2]) * FACE_SHRINK
+                shrunkPos4[3] = faceCenter4[3] + (cameraPos4[3] - faceCenter4[3]) * FACE_SHRINK
 
-                buildStickerModelMatrix(stickerModelMatrix, screenPos[0], screenPos[1], screenPos[2])
+                // True 4D->3D perspective divide (MagicCube4D's own formula, PipelineUtils.
+                // computeFrame: `w = eyeW - vert.w; vert.xyz *= eyeW/w`) -- one shared formula for
+                // every slot, including I/O (no longer specially skipped -- see below).
+                val stickerScale = EYE_W_DIST / (EYE_W_DIST - shrunkPos4[3])
+                screenPos[0] = shrunkPos4[0] * stickerScale * SPACING
+                screenPos[1] = shrunkPos4[1] * stickerScale * SPACING
+                screenPos[2] = shrunkPos4[2] * stickerScale * SPACING
+
+                // The sticker's own mesh stays a plain isotropic cube (no per-vertex work), scaled
+                // by the same FACE_SHRINK*stickerScale that its position went through -- mirroring
+                // how MC4D's local per-vertex offset is scaled by `stickerShrink * faceShrink`
+                // before the same eyeW divide applies to the whole (already-STICKER_HALF-shrunk)
+                // vertex.
+                buildStickerModelMatrix(stickerModelMatrix, screenPos[0], screenPos[1], screenPos[2], FACE_SHRINK * stickerScale)
                 Matrix.multiplyMM(worldModelMatrix, 0, viewOrientation3, 0, stickerModelMatrix, 0)
                 Matrix.multiplyMM(mvpMatrix, 0, viewProjMatrix, 0, worldModelMatrix, 0)
                 GLES30.glUniformMatrix4fv(uMvpLoc, 1, false, mvpMatrix, 0)
@@ -1235,12 +1267,15 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
     }
 
     /** Fills [out] (column-major GL layout) with a sticker cube at ([x],[y],[z]) in room-local
-     * space; the shared [viewOrientation3] rotation is applied on top of this in [onDrawFrame],
-     * so no per-sticker rotation is needed here. */
-    private fun buildStickerModelMatrix(out: FloatArray, x: Float, y: Float, z: Float) {
-        out[0] = 1f; out[1] = 0f; out[2] = 0f; out[3] = 0f
-        out[4] = 0f; out[5] = 1f; out[6] = 0f; out[7] = 0f
-        out[8] = 0f; out[9] = 0f; out[10] = 1f; out[11] = 0f
+     * space, uniformly scaled by [scale] (the same perspective-divide factor its position was
+     * computed with -- see [onDrawFrame] -- so a sticker's own size shrinks/grows with its
+     * projected depth, matching a real 4D->3D perspective's cell taper). The shared
+     * [viewOrientation3] rotation is applied on top of this in [onDrawFrame], so no per-sticker
+     * rotation is needed here -- the mesh itself stays a plain isotropic cube. */
+    private fun buildStickerModelMatrix(out: FloatArray, x: Float, y: Float, z: Float, scale: Float) {
+        out[0] = scale; out[1] = 0f; out[2] = 0f; out[3] = 0f
+        out[4] = 0f; out[5] = scale; out[6] = 0f; out[7] = 0f
+        out[8] = 0f; out[9] = 0f; out[10] = scale; out[11] = 0f
         out[12] = x; out[13] = y; out[14] = z; out[15] = 1f
     }
 
@@ -1305,12 +1340,23 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         /** Spacing between adjacent stickers within one cell's 3x3x3 block. */
         private const val SPACING = 1.0f
 
-        /** Distance from the room's center to each of the 6 wall blocks' center -- spaced out
-         * further than a tight 3x3x3 grid would need, closer to MagicCube4D's proportions. */
-        private const val ROOM_HALF = 6.0f
+        /** MagicCube4D's own "Face Shrink" -- how much each cell's pieces are pulled toward that
+         * cell's fixed face-center point (see [onDrawFrame]'s `faceCenter4`/`shrunkPos4`), 1.0
+         * meaning no pull at all (cells touch their neighbors seamlessly) and smaller values
+         * pulling cells inward, creating the gap between them. Matches
+         * `PolytopePuzzleDescription.computeStickerVertsAtRest`'s real algorithm -- confirmed via
+         * that class's actual source (MC4D is open source), not guessed. */
+        private const val FACE_SHRINK = 0.4f
 
-        private const val MIN_DISTANCE = 14f
-        private const val MAX_DISTANCE = 77f
+        /** The 4D analog of camera distance/FOV -- MagicCube4D's "Eye W Scale" -- controlling how
+         * strongly a piece's own W coordinate (its depth within whichever cell it's currently in,
+         * after [FACE_SHRINK] pulls it toward that cell's face center) tapers its projected
+         * size/position, via the same `eyeW / (eyeW - w)` formula MC4D's `PipelineUtils.
+         * computeFrame` uses. */
+        private const val EYE_W_DIST = 2.0f
+
+        private const val MIN_DISTANCE = 3f
+        private const val MAX_DISTANCE = 25f
 
         const val AXIS_X = 0
         const val AXIS_Y = 1
