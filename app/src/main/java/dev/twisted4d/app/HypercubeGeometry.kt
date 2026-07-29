@@ -4,19 +4,28 @@ package dev.twisted4d.app
 data class Vec4i(val x: Int, val y: Int, val z: Int, val w: Int)
 
 /**
- * Color palette and shared mesh for the 3^4 hypercube's true-4D-projection rendering (see
- * [HypercubeRenderer]): 6 cells (U/D/L/R/F/B) form separate 3x3x3 blocks around a center, a 7th
- * (I) is a 3x3x3 block floating at the center, and the 8th (O) sits behind I -- naturally
- * occluded by the depth buffer, not specially hidden. Every rendered sticker is a small
- * solid-colored cube (all 6 faces the same color, since only one sticker color is ever shown per
- * cube); [HypercubeRenderer] positions (and, since the cell's own true 4D depth varies
- * piece-to-piece, uniformly scales) instances of this one shared per-color mesh rather than
- * building per-piece geometry.
+ * Color palette and shared local geometry for the 3^4 hypercube's true-4D-projection rendering
+ * (see [HypercubeRenderer]): 6 cells (U/D/L/R/F/B) form separate 3x3x3 blocks around a center, a
+ * 7th (I) is a 3x3x3 block floating at the center, and the 8th (O) sits behind I -- naturally
+ * occluded by the depth buffer, not specially hidden.
+ *
+ * A sticker in a 3^4 puzzle is a genuine 3-dimensional object, not a flat 2D square -- the same
+ * dimensional step as a 3D Rubik's cube (whose piece is a 3D cube, and whose sticker is a flat 2D
+ * facet of it) applies one dimension up here: a piece is a small 4D hypercube-shaped chunk, and
+ * one of its stickers is a 3D cube-shaped *facet* of that chunk, flush against the piece's
+ * boundary along exactly one native axis (the sticker's own "identity" axis) and spanning the
+ * other 3 native axes freely. [LOCAL_OFFSETS_BY_AXIS] encodes exactly that: for a sticker whose
+ * identity axis is `axisIdx`, its 24 corners (6 faces x 4, unshared, for flat per-face lighting)
+ * get real extent in the *other* 3 native axes and none at all in `axisIdx` -- no separate
+ * "thickness" hack needed, since the sticker's own 3 free axes already give it full cube volume.
+ * [HypercubeRenderer] rotates each corner by the piece's own current 4D orientation, adds the
+ * piece's true room position, and perspective-projects each corner individually -- real per-vertex
+ * 4D geometry, not a rigid mesh translated/scaled to an already-resolved point.
  */
 object HypercubeGeometry {
 
     const val STICKER_HALF = 0.28f // ~60% of the original 0.46 half-extent, per grid spacing 1.0
-    const val FLOATS_PER_VERTEX = 9 // x, y, z, nx, ny, nz, r, g, b
+    const val FLOATS_PER_VERTEX = 9 // x, y, z, nx, ny, nz, r, g, b (the *rendered*, post-projection format)
     const val VERTICES_PER_STICKER = 24 // 4 per face x 6 faces
 
     // Canonical piece order: x, y, z, then w, over {-1,0,1}, skipping the hidden core
@@ -75,30 +84,39 @@ object HypercubeGeometry {
         }
     }
 
-    /** Interleaved [x,y,z,nx,ny,nz,r,g,b] x 24 vertices for a small solid-colored sticker cube --
-     * each face gets its own constant outward normal (this is a cube, not a smooth surface, so
-     * no per-vertex normal averaging) for [HypercubeRenderer]'s per-face diffuse lighting; without
-     * it, every face renders as exactly the same flat color and the cube shape only reads from
-     * its silhouette/gaps rather than actually looking three-dimensional. */
-    fun buildStickerVertices(color: FloatArray): FloatArray {
+    /** For each of the 4 possible "identity axes" a sticker can have, its 24 corners' (6 faces x
+     * 4, unshared) local offset in the piece's own 4D body frame -- interleaved x,y,z,w per
+     * corner (96 floats total per axis). The identity axis's own component is always 0 (the
+     * sticker has no extent there); the other 3 native axes each get +-[STICKER_HALF], in the
+     * same per-face corner order a plain 3D cube would use. [HypercubeRenderer] rotates these by
+     * the piece's current orientation and adds its position -- see class doc. */
+    val LOCAL_OFFSETS_BY_AXIS: Array<FloatArray> = Array(4) { axisIdx -> buildLocalOffsets(axisIdx) }
+
+    private fun buildLocalOffsets(axisIdx: Int): FloatArray {
         val h = STICKER_HALF
-        val out = FloatArray(VERTICES_PER_STICKER * FLOATS_PER_VERTEX)
+        val axes = (0 until 4).filter { it != axisIdx }
+        val out = FloatArray(VERTICES_PER_STICKER * 4)
         var o = 0
 
-        fun face(normal: FloatArray, vararg corners: FloatArray) {
-            for (c in corners) {
-                out[o++] = c[0]; out[o++] = c[1]; out[o++] = c[2]
-                out[o++] = normal[0]; out[o++] = normal[1]; out[o++] = normal[2]
-                out[o++] = color[0]; out[o++] = color[1]; out[o++] = color[2]
-            }
+        fun corner(a: Float, b: Float, c: Float) {
+            val local4 = FloatArray(4)
+            local4[axes[0]] = a
+            local4[axes[1]] = b
+            local4[axes[2]] = c
+            out[o++] = local4[0]; out[o++] = local4[1]; out[o++] = local4[2]; out[o++] = local4[3]
+        }
+        fun face(vararg corners: FloatArray) {
+            for (c in corners) corner(c[0], c[1], c[2])
         }
 
-        face(floatArrayOf(1f, 0f, 0f), floatArrayOf(h, -h, -h), floatArrayOf(h, h, -h), floatArrayOf(h, h, h), floatArrayOf(h, -h, h))
-        face(floatArrayOf(-1f, 0f, 0f), floatArrayOf(-h, -h, h), floatArrayOf(-h, h, h), floatArrayOf(-h, h, -h), floatArrayOf(-h, -h, -h))
-        face(floatArrayOf(0f, 1f, 0f), floatArrayOf(-h, h, -h), floatArrayOf(-h, h, h), floatArrayOf(h, h, h), floatArrayOf(h, h, -h))
-        face(floatArrayOf(0f, -1f, 0f), floatArrayOf(-h, -h, h), floatArrayOf(-h, -h, -h), floatArrayOf(h, -h, -h), floatArrayOf(h, -h, h))
-        face(floatArrayOf(0f, 0f, 1f), floatArrayOf(-h, -h, h), floatArrayOf(h, -h, h), floatArrayOf(h, h, h), floatArrayOf(-h, h, h))
-        face(floatArrayOf(0f, 0f, -1f), floatArrayOf(h, -h, -h), floatArrayOf(-h, -h, -h), floatArrayOf(-h, h, -h), floatArrayOf(h, h, -h))
+        // Same 6 faces/corner-winding a plain isotropic cube would use, just written via the
+        // a/b/c -> axes[0..2] mapping above instead of always native x/y/z.
+        face(floatArrayOf(h, -h, -h), floatArrayOf(h, h, -h), floatArrayOf(h, h, h), floatArrayOf(h, -h, h))
+        face(floatArrayOf(-h, -h, h), floatArrayOf(-h, h, h), floatArrayOf(-h, h, -h), floatArrayOf(-h, -h, -h))
+        face(floatArrayOf(-h, h, -h), floatArrayOf(-h, h, h), floatArrayOf(h, h, h), floatArrayOf(h, h, -h))
+        face(floatArrayOf(-h, -h, h), floatArrayOf(-h, -h, -h), floatArrayOf(h, -h, -h), floatArrayOf(h, -h, h))
+        face(floatArrayOf(-h, -h, h), floatArrayOf(h, -h, h), floatArrayOf(h, h, h), floatArrayOf(-h, h, h))
+        face(floatArrayOf(h, -h, -h), floatArrayOf(-h, -h, -h), floatArrayOf(-h, h, -h), floatArrayOf(h, h, -h))
 
         return out
     }

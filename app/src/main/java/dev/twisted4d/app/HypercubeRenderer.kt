@@ -25,11 +25,21 @@ import kotlin.math.sqrt
  * default orientation, not specially skipped. Each cell's own 27 pieces taper into a frustum
  * shape (see [onDrawFrame]'s perspective divide) because a piece's real depth *within* its
  * current cell (how close to I vs. O it sits) varies piece-to-piece and scales its projected
- * position/size accordingly -- not because any single sticker's mesh is reshaped; every sticker
- * stays a plain isotropic cube, just translated and uniformly scaled (see
- * [buildStickerModelMatrix]). Ordinary 3D rotation (touch-drag/right-stick -- the left stick
- * is reserved for cell selection, see [updateCell4Selection]) orbits the whole assembly so you
- * can see each cell in turn, same feel as [CubeRenderer]. Which native cell currently occupies
+ * position/size accordingly.
+ *
+ * Every sticker's own geometry is real per-vertex 4D data, not a rigid mesh placed at a resolved
+ * point: a sticker is a genuine 3-dimensional facet of its piece (see
+ * [HypercubeGeometry]'s class doc for the dimensional-analogy reasoning), and each of its 24
+ * corners (see [HypercubeGeometry.LOCAL_OFFSETS_BY_AXIS]) is individually rotated by the piece's
+ * current orientation, shifted to the piece's true room position, face-shrunk, and perspective-
+ * divided -- exactly like every other 4D point in the scene, just 24 of them per sticker instead
+ * of one. This is what lets a sticker itself come out subtly wedge-shaped near a cell's tapering
+ * edge, not just correctly positioned. Per-face lighting normals are computed the same way MC4D's
+ * own pipeline does it (`PipelineUtils.computeFrame`'s brightness step): from the cross product of
+ * two edges of the *already-projected* face, not a baked constant -- correct regardless of how
+ * much a given face ends up distorted. Ordinary 3D rotation (touch-drag/right-stick -- the left
+ * stick is reserved for cell selection, see [updateCell4Selection]) orbits the whole assembly so
+ * you can see each cell in turn, same feel as [CubeRenderer]. Which native cell currently occupies
  * which of these 8 slots is controlled by [cubeOrientation4], a 4D rotation kept restricted to
  * exact 90-degree increments via [requestCameraRotate90] (a full continuous 4D trackball isn't
  * needed: the existing continuous 3D orbit already plays the role MagicCube4D's own mouse-drag
@@ -45,12 +55,12 @@ import kotlin.math.sqrt
  *
  * [cubeOrientation4] only ever changes in exact 90-degree steps (via [requestCameraRotate90]),
  * so it never needs to move continuously. The *continuous* touch-drag/right-stick "look around
- * the room" feel is a separate, ordinary 3D rotation, [viewOrientation3], applied uniformly to
- * the whole assembled room (both each sticker's position and its mesh, exactly like
- * [CubeRenderer.cubeOrientation]) after room-local positions are resolved. Keeping these two
- * rotations separate matters: composing continuous rotation into [cubeOrientation4] would (a)
- * make the discrete "which wall is this sticker on" threshold below flip abruptly mid-drag, and
- * (b) never rotate the sticker meshes themselves, since only their positions depended on it.
+ * the room" feel is a separate, ordinary 3D rotation, [viewOrientation3] -- applied once per
+ * frame via a single shared MVP matrix now that every vertex position is already baked into room
+ * space (see [onDrawFrame]), rather than a per-sticker model matrix. Keeping [viewOrientation3]
+ * and [cubeOrientation4] separate still matters: composing continuous rotation into
+ * [cubeOrientation4] would make the discrete "which wall is this sticker on" threshold below flip
+ * abruptly mid-drag.
  */
 
 /** The 4D screen's 2 gamepad left-hand input schemes -- see [HypercubeRenderer.setInputMode].
@@ -182,7 +192,7 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
      * *not* whichever native cell currently occupies it -- same distinction [highlightedCell]
      * makes via [cellFor], and the one [MainActivity]'s `rotationInvertedForCell` needs: that
      * table corrects for a rendering property of the *wall* ("each wall's depth axis is always
-     * W" -- see [onDrawFrame]'s screenPos computation), not of the native cell sitting in it, so
+     * W" -- see [onDrawFrame]'s per-corner projection), not of the native cell sitting in it, so
      * looking it up by [selectedCell4] (native identity) silently breaks once the room's been
      * rotated -- e.g. after moving some other cell to I, pressing a rotation button on a cell
      * that's now sitting in a *different* wall than its own name got the wrong on-screen
@@ -411,9 +421,10 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
     private var uForceBlackLoc = 0
 
     // The 3x3 rotation part of viewOrientation3, column-major, re-extracted once per frame (not
-    // per-sticker -- every sticker's mesh is always axis-aligned, only its position varies, even
-    // mid-twist-animation, so this one matrix correctly transforms every sticker's normals for
-    // the whole frame). See onDrawFrame and ROTATION_PART_INDICES.
+    // per-sticker) -- every per-face normal onDrawFrame computes is already in the same room-space
+    // frame as vertex positions before this rotation, so one shared matrix correctly transforms
+    // every sticker's normals for the whole frame, same as it always has. See onDrawFrame and
+    // ROTATION_PART_INDICES.
     private val normalMat3 = FloatArray(9)
 
     private val indexBuffer: ShortBuffer = ByteBuffer
@@ -421,6 +432,12 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         .order(ByteOrder.nativeOrder())
         .asShortBuffer()
         .apply { put(HypercubeGeometry.INDICES); position(0) }
+
+    // Reused every frame to upload dynamicVertexData -- see that field's doc.
+    private val dynamicVertexBuffer: FloatBuffer = ByteBuffer
+        .allocateDirect(MAX_STICKERS * HypercubeGeometry.VERTICES_PER_STICKER * HypercubeGeometry.FLOATS_PER_VERTEX * 4)
+        .order(ByteOrder.nativeOrder())
+        .asFloatBuffer()
 
     private val wireIndexBuffer: ShortBuffer = ByteBuffer
         .allocateDirect(HypercubeGeometry.WIREFRAME_INDICES.size * 2)
@@ -430,7 +447,28 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
 
     private var indexBufferId = 0
     private var wireIndexBufferId = 0
-    private lateinit var stickerVboIds: IntArray // one shared mesh per Cell4 color
+
+    // Real per-vertex 4D projection (see onDrawFrame): every sticker's 24 corners are computed
+    // fresh each frame -- true 4D position, face-shrunk, perspective-divided -- into this one
+    // shared dynamic buffer, replacing the old static-mesh-per-color + per-sticker model-matrix
+    // approach (which could only translate/uniformly-scale a rigid cube, never actually distort
+    // one). MAX_STICKERS is the true combinatorial total (8 cells x 27 pieces each, since every
+    // piece contributes exactly one sticker instance per cell it touches) -- O's 27 are always
+    // culled (see the O-skip below) but sized for the full count anyway, simpler than computing
+    // the exact post-cull maximum.
+    private var dynamicVboId = 0
+    private val dynamicVertexData =
+        FloatArray(MAX_STICKERS * HypercubeGeometry.VERTICES_PER_STICKER * HypercubeGeometry.FLOATS_PER_VERTEX)
+    private val stickerByteOffsets = IntArray(MAX_STICKERS)
+    private val stickerHighlighted = BooleanArray(MAX_STICKERS)
+    private val stickerCornerPositions = FloatArray(HypercubeGeometry.VERTICES_PER_STICKER * 3)
+    private val pieceToRoom4 = FloatArray(16)
+    private val localCorner4 = FloatArray(4)
+    private val roomCorner4 = FloatArray(4)
+    private val shrunkCorner4 = FloatArray(4)
+    private val faceEdge1 = FloatArray(3)
+    private val faceEdge2 = FloatArray(3)
+    private val faceNormalScratch = FloatArray(3)
 
     private val projMatrix = FloatArray(16)
     private val viewMatrix = FloatArray(16)
@@ -468,8 +506,6 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
     private val currentDir4 = FloatArray(4)
     private val cameraDir4 = FloatArray(4)
     private val faceCenter4 = FloatArray(4)
-    private val shrunkPos4 = FloatArray(4)
-    private val screenPos = FloatArray(3)
 
     // Column-major (GL layout) continuous "look around the room" rotation -- see class doc.
     // Rebuilt only by drag/stick input, applied uniformly to every sticker's position and mesh.
@@ -494,8 +530,10 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
     private val snapEffectiveHold = FloatArray(16)
     private val cardinalRotationRowMajorScratch = FloatArray(16)
 
-    private val stickerModelMatrix = FloatArray(16)
-    private val worldModelMatrix = FloatArray(16)
+    // Shared for the whole frame now (no more per-sticker model matrix): positions are baked
+    // directly into vertex data already in room space (post-4D-projection), so the only thing
+    // left for the GPU to do uniformly is the ordinary 3D orbit (viewOrientation3) + camera
+    // projection (viewProjMatrix) -- computed once per frame instead of once per sticker.
     private val mvpMatrix = FloatArray(16)
 
     // Current (settled) per-piece transforms, refreshed after every twist/scramble/reset.
@@ -589,20 +627,14 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
             GLES30.GL_STATIC_DRAW,
         )
 
-        val vboIds = IntArray(Cell4.entries.size)
-        GLES30.glGenBuffers(vboIds.size, vboIds, 0)
-        stickerVboIds = vboIds
-        Cell4.entries.forEach { cell ->
-            val vertices = HypercubeGeometry.buildStickerVertices(HypercubeGeometry.CELL_COLORS[cell.ordinal])
-            val buffer: FloatBuffer = ByteBuffer
-                .allocateDirect(vertices.size * 4)
-                .order(ByteOrder.nativeOrder())
-                .asFloatBuffer()
-                .apply { put(vertices); position(0) }
-
-            GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, vboIds[cell.ordinal])
-            GLES30.glBufferData(GLES30.GL_ARRAY_BUFFER, vertices.size * 4, buffer, GLES30.GL_STATIC_DRAW)
-        }
+        // One shared dynamic buffer, sized up front for the worst case (every sticker visible),
+        // re-filled every frame in onDrawFrame -- see dynamicVertexData's doc for why this
+        // replaced the old one-static-mesh-per-color approach.
+        val dynamicVbo = IntArray(1)
+        GLES30.glGenBuffers(1, dynamicVbo, 0)
+        dynamicVboId = dynamicVbo[0]
+        GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, dynamicVboId)
+        GLES30.glBufferData(GLES30.GL_ARRAY_BUFFER, dynamicVertexBuffer.capacity() * 4, null, GLES30.GL_DYNAMIC_DRAW)
 
         // The native puzzle state lives in a process-lifetime Rust singleton (see cube4() in
         // lib.rs), not anything tied to this GL surface -- so a reset is only correct the first
@@ -1105,12 +1137,12 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
             animDone = animT >= 1f
         }
 
-        GLES30.glEnableVertexAttribArray(0)
-        GLES30.glEnableVertexAttribArray(1)
-        GLES30.glEnableVertexAttribArray(2)
-        GLES30.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER, indexBufferId)
-
-        val stride = HypercubeGeometry.FLOATS_PER_VERTEX * 4
+        // --- Pass 1: compute every visible sticker's real per-vertex 4D geometry into
+        // dynamicVertexData (pure CPU math, no GL calls) -- see that field's doc and
+        // HypercubeGeometry's class doc for why each corner is projected individually now
+        // instead of translating/scaling a rigid mesh.
+        var numStickersToDraw = 0
+        var writeIndex = 0
         val after = animAfter
         for (i in HypercubeGeometry.HOME_POSITIONS.indices) {
             val home = HypercubeGeometry.HOME_POSITIONS[i]
@@ -1140,6 +1172,10 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
             }
 
             mat4VecMul(cameraPos4, effectiveCubeOrientation4, pos4)
+            // This piece's full current-orientation-to-room-space rotation, reused for every one
+            // of its (up to 4) stickers' 24 corners below -- computed once per piece, not per
+            // corner, since it doesn't depend on which sticker/corner is being resolved.
+            mat4MatMul(pieceToRoom4, effectiveCubeOrientation4, pieceOrient4)
 
             val homeCoords = intArrayOf(home.x, home.y, home.z, home.w)
             for (axisIdx in 0 until 4) {
@@ -1172,73 +1208,129 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
                 // defining axis (e.g. (1,0,0,0) for R, (0,0,0,-1) for I) -- matching MagicCube4D's
                 // actual algorithm (PolytopePuzzleDescription.computeStickerVertsAtRest): shrink
                 // this piece's true room position toward that fixed point by FACE_SHRINK, rather
-                // than pushing cells out to an arbitrary anchor distance. Every one of a cell's
-                // pieces shares the same faceCenter4, so a piece near the cell's own edge (large
-                // native offset from faceCenter4) gets pulled in more (in absolute terms) than one
-                // near the cell's middle -- and since this shrink applies to all 4 coordinates
-                // together, *before* the perspective divide below, the divide's effect on the
-                // shrunk position is what makes neighboring cells look angled toward each other,
-                // not a stack of differently-sized flat layers.
+                // than pushing cells out to an arbitrary anchor distance.
                 faceCenter4[0] = if (slotAxis == AXIS_X) slotSign.toFloat() else 0f
                 faceCenter4[1] = if (slotAxis == AXIS_Y) slotSign.toFloat() else 0f
                 faceCenter4[2] = if (slotAxis == AXIS_Z) slotSign.toFloat() else 0f
                 faceCenter4[3] = if (slotAxis == AXIS_W) slotSign.toFloat() else 0f
 
-                shrunkPos4[0] = faceCenter4[0] + (cameraPos4[0] - faceCenter4[0]) * FACE_SHRINK
-                shrunkPos4[1] = faceCenter4[1] + (cameraPos4[1] - faceCenter4[1]) * FACE_SHRINK
-                shrunkPos4[2] = faceCenter4[2] + (cameraPos4[2] - faceCenter4[2]) * FACE_SHRINK
-                shrunkPos4[3] = faceCenter4[3] + (cameraPos4[3] - faceCenter4[3]) * FACE_SHRINK
-
-                // True 4D->3D perspective divide (MagicCube4D's own formula, PipelineUtils.
-                // computeFrame: `w = eyeW - vert.w; vert.xyz *= eyeW/w`) -- one shared formula for
-                // every slot, including I/O (no longer specially skipped -- see below).
-                val stickerScale = EYE_W_DIST / (EYE_W_DIST - shrunkPos4[3])
-                screenPos[0] = shrunkPos4[0] * stickerScale * SPACING
-                screenPos[1] = shrunkPos4[1] * stickerScale * SPACING
-                screenPos[2] = shrunkPos4[2] * stickerScale * SPACING
-
-                // The sticker's own mesh stays a plain isotropic cube (no per-vertex work), scaled
-                // by the same FACE_SHRINK*stickerScale that its position went through -- mirroring
-                // how MC4D's local per-vertex offset is scaled by `stickerShrink * faceShrink`
-                // before the same eyeW divide applies to the whole (already-STICKER_HALF-shrunk)
-                // vertex.
-                buildStickerModelMatrix(stickerModelMatrix, screenPos[0], screenPos[1], screenPos[2], FACE_SHRINK * stickerScale)
-                Matrix.multiplyMM(worldModelMatrix, 0, viewOrientation3, 0, stickerModelMatrix, 0)
-                Matrix.multiplyMM(mvpMatrix, 0, viewProjMatrix, 0, worldModelMatrix, 0)
-                GLES30.glUniformMatrix4fv(uMvpLoc, 1, false, mvpMatrix, 0)
-
-                // colorCell is this sticker's permanent identity (like a real sticker, it never
-                // repaints itself -- see cellFor's doc), so it picks which color VBO to draw.
-                // currentCell is whichever wall it's *presently* sitting on (from the slot this
-                // sticker just got resolved into above), which is what selection/highlighting
-                // needs to match against -- otherwise selecting "R" would highlight whatever
-                // stickers originally started on R, not whatever's actually on R right now.
                 val colorCell = cellFor(axisIdx, homeCoord)
                 val currentCell = cellFor(slotAxis, slotSign)
                 val isHighlighted = currentCell == frameHighlightedCell
-                GLES30.glUniform1f(uHighlightLoc, if (isHighlighted) 1f else 0f)
-                GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, stickerVboIds[colorCell.ordinal])
-                GLES30.glVertexAttribPointer(0, 3, GLES30.GL_FLOAT, false, stride, 0)
-                GLES30.glVertexAttribPointer(1, 3, GLES30.GL_FLOAT, false, stride, 12)
-                GLES30.glVertexAttribPointer(2, 3, GLES30.GL_FLOAT, false, stride, 24)
-                GLES30.glDrawElements(GLES30.GL_TRIANGLES, HypercubeGeometry.INDICES.size, GLES30.GL_UNSIGNED_SHORT, 0)
+                val color = HypercubeGeometry.CELL_COLORS[colorCell.ordinal]
+                val localOffsets = HypercubeGeometry.LOCAL_OFFSETS_BY_AXIS[axisIdx]
 
-                if (isHighlighted) {
-                    // Black wireframe outline for the selected cell (see handleCell4StickInput
-                    // in MainActivity) -- a solid-color highlight blend is too subtle to read
-                    // against these unlit, flat-shaded stickers, so this traces actual edges
-                    // instead. Same vertex buffer/layout, just a different index buffer + mode.
-                    GLES30.glUniform1f(uForceBlackLoc, 1f)
-                    GLES30.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER, wireIndexBufferId)
-                    GLES30.glDrawElements(
-                        GLES30.GL_LINES,
-                        HypercubeGeometry.WIREFRAME_INDICES.size,
-                        GLES30.GL_UNSIGNED_SHORT,
-                        0,
-                    )
-                    GLES30.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER, indexBufferId)
-                    GLES30.glUniform1f(uForceBlackLoc, 0f)
+                // Every one of this sticker's 24 corners (6 faces x 4, unshared) is a real 4D
+                // point: rotate its local body-frame offset into room space, add the piece's true
+                // position, face-shrink, then perspective-divide -- the same pipeline every other
+                // point in the scene goes through, just once per corner instead of once per
+                // sticker-center.
+                for (corner in 0 until HypercubeGeometry.VERTICES_PER_STICKER) {
+                    val lo = corner * 4
+                    localCorner4[0] = localOffsets[lo]; localCorner4[1] = localOffsets[lo + 1]
+                    localCorner4[2] = localOffsets[lo + 2]; localCorner4[3] = localOffsets[lo + 3]
+                    mat4VecMul(roomCorner4, pieceToRoom4, localCorner4)
+
+                    shrunkCorner4[0] = faceCenter4[0] + (cameraPos4[0] + roomCorner4[0] - faceCenter4[0]) * FACE_SHRINK
+                    shrunkCorner4[1] = faceCenter4[1] + (cameraPos4[1] + roomCorner4[1] - faceCenter4[1]) * FACE_SHRINK
+                    shrunkCorner4[2] = faceCenter4[2] + (cameraPos4[2] + roomCorner4[2] - faceCenter4[2]) * FACE_SHRINK
+                    shrunkCorner4[3] = faceCenter4[3] + (cameraPos4[3] + roomCorner4[3] - faceCenter4[3]) * FACE_SHRINK
+
+                    // MagicCube4D's own formula (PipelineUtils.computeFrame): `w = eyeW - vert.w;
+                    // vert.xyz *= eyeW/w` -- one shared divide for every corner of every slot.
+                    val scale = EYE_W_DIST / (EYE_W_DIST - shrunkCorner4[3])
+                    val po = corner * 3
+                    stickerCornerPositions[po] = shrunkCorner4[0] * scale * SPACING
+                    stickerCornerPositions[po + 1] = shrunkCorner4[1] * scale * SPACING
+                    stickerCornerPositions[po + 2] = shrunkCorner4[2] * scale * SPACING
                 }
+
+                // Per-face normals computed from the cross product of two edges of the
+                // *already-projected* face (MC4D's own PipelineUtils.computeFrame does the
+                // equivalent for its brightness step) -- correct regardless of how much a given
+                // face ends up perspective-distorted, unlike a baked constant normal.
+                val stickerBase = writeIndex
+                for (face in 0 until 6) {
+                    val v0 = face * 4 * 3
+                    val v1 = v0 + 3
+                    val v2 = v0 + 6
+                    for (k in 0 until 3) {
+                        faceEdge1[k] = stickerCornerPositions[v1 + k] - stickerCornerPositions[v0 + k]
+                        faceEdge2[k] = stickerCornerPositions[v2 + k] - stickerCornerPositions[v0 + k]
+                    }
+                    faceNormalScratch[0] = faceEdge1[1] * faceEdge2[2] - faceEdge1[2] * faceEdge2[1]
+                    faceNormalScratch[1] = faceEdge1[2] * faceEdge2[0] - faceEdge1[0] * faceEdge2[2]
+                    faceNormalScratch[2] = faceEdge1[0] * faceEdge2[1] - faceEdge1[1] * faceEdge2[0]
+                    val len = sqrt(
+                        faceNormalScratch[0] * faceNormalScratch[0] +
+                            faceNormalScratch[1] * faceNormalScratch[1] +
+                            faceNormalScratch[2] * faceNormalScratch[2],
+                    ).let { if (it > 1e-8f) it else 1f }
+                    faceNormalScratch[0] /= len; faceNormalScratch[1] /= len; faceNormalScratch[2] /= len
+
+                    for (vertInFace in 0 until 4) {
+                        val corner = face * 4 + vertInFace
+                        val po = corner * 3
+                        dynamicVertexData[writeIndex++] = stickerCornerPositions[po]
+                        dynamicVertexData[writeIndex++] = stickerCornerPositions[po + 1]
+                        dynamicVertexData[writeIndex++] = stickerCornerPositions[po + 2]
+                        dynamicVertexData[writeIndex++] = faceNormalScratch[0]
+                        dynamicVertexData[writeIndex++] = faceNormalScratch[1]
+                        dynamicVertexData[writeIndex++] = faceNormalScratch[2]
+                        dynamicVertexData[writeIndex++] = color[0]
+                        dynamicVertexData[writeIndex++] = color[1]
+                        dynamicVertexData[writeIndex++] = color[2]
+                    }
+                }
+
+                stickerByteOffsets[numStickersToDraw] = stickerBase * 4
+                stickerHighlighted[numStickersToDraw] = isHighlighted
+                numStickersToDraw++
+            }
+        }
+
+        // --- Upload once, then draw. ---
+        dynamicVertexBuffer.position(0)
+        dynamicVertexBuffer.put(dynamicVertexData, 0, writeIndex)
+        dynamicVertexBuffer.position(0)
+        GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, dynamicVboId)
+        GLES30.glBufferSubData(GLES30.GL_ARRAY_BUFFER, 0, writeIndex * 4, dynamicVertexBuffer)
+
+        // Shared for every sticker this frame -- positions are already baked into room space
+        // above, so the only transform left is the ordinary 3D orbit + camera projection.
+        Matrix.multiplyMM(mvpMatrix, 0, viewProjMatrix, 0, viewOrientation3, 0)
+        GLES30.glUniformMatrix4fv(uMvpLoc, 1, false, mvpMatrix, 0)
+
+        GLES30.glEnableVertexAttribArray(0)
+        GLES30.glEnableVertexAttribArray(1)
+        GLES30.glEnableVertexAttribArray(2)
+        GLES30.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER, indexBufferId)
+
+        val stride = HypercubeGeometry.FLOATS_PER_VERTEX * 4
+        for (s in 0 until numStickersToDraw) {
+            val byteOffset = stickerByteOffsets[s]
+            GLES30.glVertexAttribPointer(0, 3, GLES30.GL_FLOAT, false, stride, byteOffset)
+            GLES30.glVertexAttribPointer(1, 3, GLES30.GL_FLOAT, false, stride, byteOffset + 12)
+            GLES30.glVertexAttribPointer(2, 3, GLES30.GL_FLOAT, false, stride, byteOffset + 24)
+            val isHighlighted = stickerHighlighted[s]
+            GLES30.glUniform1f(uHighlightLoc, if (isHighlighted) 1f else 0f)
+            GLES30.glDrawElements(GLES30.GL_TRIANGLES, HypercubeGeometry.INDICES.size, GLES30.GL_UNSIGNED_SHORT, 0)
+
+            if (isHighlighted) {
+                // Black wireframe outline for the selected cell (see handleCell4StickInput in
+                // MainActivity) -- a solid-color highlight blend is too subtle to read against
+                // these flat-shaded stickers, so this traces actual edges instead. Same vertex
+                // data, just a different index buffer + draw mode.
+                GLES30.glUniform1f(uForceBlackLoc, 1f)
+                GLES30.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER, wireIndexBufferId)
+                GLES30.glDrawElements(
+                    GLES30.GL_LINES,
+                    HypercubeGeometry.WIREFRAME_INDICES.size,
+                    GLES30.GL_UNSIGNED_SHORT,
+                    0,
+                )
+                GLES30.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER, indexBufferId)
+                GLES30.glUniform1f(uForceBlackLoc, 0f)
             }
         }
 
@@ -1266,18 +1358,6 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         else -> if (homeCoord > 0) Cell4.O else Cell4.I
     }
 
-    /** Fills [out] (column-major GL layout) with a sticker cube at ([x],[y],[z]) in room-local
-     * space, uniformly scaled by [scale] (the same perspective-divide factor its position was
-     * computed with -- see [onDrawFrame] -- so a sticker's own size shrinks/grows with its
-     * projected depth, matching a real 4D->3D perspective's cell taper). The shared
-     * [viewOrientation3] rotation is applied on top of this in [onDrawFrame], so no per-sticker
-     * rotation is needed here -- the mesh itself stays a plain isotropic cube. */
-    private fun buildStickerModelMatrix(out: FloatArray, x: Float, y: Float, z: Float, scale: Float) {
-        out[0] = scale; out[1] = 0f; out[2] = 0f; out[3] = 0f
-        out[4] = 0f; out[5] = scale; out[6] = 0f; out[7] = 0f
-        out[8] = 0f; out[9] = 0f; out[10] = scale; out[11] = 0f
-        out[12] = x; out[13] = y; out[14] = z; out[15] = 1f
-    }
 
     private fun buildProgram(vertexSrc: String, fragmentSrc: String): Int {
         val vertexShader = compileShader(GLES30.GL_VERTEX_SHADER, vertexSrc)
@@ -1310,6 +1390,12 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
     }
 
     companion object {
+        /** True combinatorial max: 8 cells x 27 pieces each, since every piece contributes
+         * exactly one sticker instance per cell it touches (see [HypercubeGeometry]'s class doc).
+         * O's 27 are always culled at render time but this is sized for the full count anyway --
+         * simpler than computing the exact post-cull maximum, and the memory cost is trivial. */
+        const val MAX_STICKERS = 8 * 27
+
         // Doubled from the original 1.2 -- right-stick camera orbit felt much too slow relative to
         // touch-drag (which has no equivalent scaling knob); a stick is a variable control users
         // already expect to modulate with how far they push it, so speeding up the baseline is a
@@ -1340,9 +1426,10 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         /** Spacing between adjacent stickers within one cell's 3x3x3 block. */
         private const val SPACING = 1.0f
 
-        /** MagicCube4D's own "Face Shrink" -- how much each cell's pieces are pulled toward that
-         * cell's fixed face-center point (see [onDrawFrame]'s `faceCenter4`/`shrunkPos4`), 1.0
-         * meaning no pull at all (cells touch their neighbors seamlessly) and smaller values
+        /** MagicCube4D's own "Face Shrink" -- how much each corner of each sticker is pulled
+         * toward its cell's fixed face-center point (see [onDrawFrame]'s `faceCenter4`/
+         * `shrunkCorner4`), 1.0 meaning no pull at all (cells touch their neighbors seamlessly)
+         * and smaller values
          * pulling cells inward, creating the gap between them. Matches
          * `PolytopePuzzleDescription.computeStickerVertsAtRest`'s real algorithm -- confirmed via
          * that class's actual source (MC4D is open source), not guessed. */
