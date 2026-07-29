@@ -183,13 +183,13 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
      * next stick nudge: the highlight and any subsequent twist would silently act on whichever
      * cell used to be in that slot, not whichever cell is actually there now. This is the
      * *native* occupant's identity (via [nativeCellInRoomSlot]), which is what [requestTwist]
-     * needs -- for the on-screen highlight, see [highlightedCell] instead, which is a
+     * needs -- for the on-screen highlight, see [emphasizedCell] instead, which is a
      * deliberately different computation.
      */
     val selectedCell4: Cell4 get() = nativeCellInRoomSlot(selectedRoomAxis, selectedRoomSign)
 
     /** The currently selected room slot's own fixed label (e.g. "the wall at +X is always R"),
-     * *not* whichever native cell currently occupies it -- same distinction [highlightedCell]
+     * *not* whichever native cell currently occupies it -- same distinction [emphasizedCell]
      * makes via [cellFor], and the one [MainActivity]'s `rotationInvertedForCell` needs: that
      * table corrects for a rendering property of the *wall* ("each wall's depth axis is always
      * W" -- see [onDrawFrame]'s per-corner projection), not of the native cell sitting in it, so
@@ -360,24 +360,28 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
     }
 
     /**
-     * Which [Cell4] to render brightened -- the selected room slot, while the left stick is
-     * held significantly deflected (see `todo-controller-input.md`), null otherwise. Also a
-     * computed property for the same live-resolution reason as [selectedCell4] -- but
-     * deliberately computed via [cellFor], *not* [selectedCell4]/[nativeCellInRoomSlot], even
-     * though they usually agree: [onDrawFrame] labels each sticker's *current* room position
-     * with `cellFor(slotAxis, slotSign)`, a fixed axis+sign -> label convention (the wall at
-     * +X is always "R"), not that sticker's own native identity. Once the room's been rotated
-     * away from its default arrangement (cubeOrientation4 != identity), a native cell's own
-     * identity and its current position's label are different things -- e.g. after rotating
-     * native I into the "R" wall, that sticker's currentCell is `R` (the wall it's now on), not
-     * `I` (what it natively is). Comparing against [selectedCell4] (I's own native identity)
-     * would never match anything actually sitting in the selected wall; comparing against this
-     * property (the wall's label) does. Always null in [GamepadInputMode.RKT] -- its selection is
-     * fixed and never meant to draw attention to itself (see [GamepadInputMode]'s doc).
+     * Which [Cell4] should stay fully visible while everything else on the puzzle fades toward
+     * translucent (see [onDrawFrame]'s per-piece dimming) -- the selected room slot, while the
+     * left stick is held significantly deflected in [GamepadInputMode.STICK]; always [Cell4.I] in
+     * [GamepadInputMode.RKT] (permanently, regardless of stick position -- RKT's whole point is a
+     * fixed last-phase algorithm centered on I, so the emphasis should stay on I even though R's
+     * face buttons are what's actually twistable; see [GamepadInputMode]'s doc); null otherwise
+     * (nothing selected, no emphasis, every piece renders at full opacity). A computed property
+     * for the same live-resolution reason as [selectedCell4] -- but deliberately computed via
+     * [cellFor], *not* [selectedCell4]/[nativeCellInRoomSlot], even though they usually agree:
+     * [onDrawFrame] labels each sticker's *current* room position with `cellFor(slotAxis,
+     * slotSign)`, a fixed axis+sign -> label convention (the wall at +X is always "R"), not that
+     * sticker's own native identity. Once the room's been rotated away from its default
+     * arrangement (cubeOrientation4 != identity), a native cell's own identity and its current
+     * position's label are different things -- e.g. after rotating native I into the "R" wall,
+     * that sticker's currentCell is `R` (the wall it's now on), not `I` (what it natively is).
+     * Comparing against [selectedCell4] (I's own native identity) would never match anything
+     * actually sitting in the selected wall; comparing against this property (the wall's label)
+     * does.
      */
-    val highlightedCell: Cell4?
+    val emphasizedCell: Cell4?
         get() = when {
-            inputMode == GamepadInputMode.RKT -> null
+            inputMode == GamepadInputMode.RKT -> Cell4.I
             stickHeld -> cellFor(selectedRoomAxis, selectedRoomSign)
             else -> null
         }
@@ -417,8 +421,7 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
     private var program = 0
     private var uMvpLoc = 0
     private var uNormalMatrixLoc = 0
-    private var uHighlightLoc = 0
-    private var uForceBlackLoc = 0
+    private var uAlphaLoc = 0
 
     // The 3x3 rotation part of viewOrientation3, column-major, re-extracted once per frame (not
     // per-sticker) -- every per-face normal onDrawFrame computes is already in the same room-space
@@ -439,14 +442,7 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         .order(ByteOrder.nativeOrder())
         .asFloatBuffer()
 
-    private val wireIndexBuffer: ShortBuffer = ByteBuffer
-        .allocateDirect(HypercubeGeometry.WIREFRAME_INDICES.size * 2)
-        .order(ByteOrder.nativeOrder())
-        .asShortBuffer()
-        .apply { put(HypercubeGeometry.WIREFRAME_INDICES); position(0) }
-
     private var indexBufferId = 0
-    private var wireIndexBufferId = 0
 
     // Real per-vertex 4D projection (see onDrawFrame): every sticker's 24 corners are computed
     // fresh each frame -- true 4D position, face-shrunk, perspective-divided -- into this one
@@ -460,11 +456,18 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
     private val dynamicVertexData =
         FloatArray(MAX_STICKERS * HypercubeGeometry.VERTICES_PER_STICKER * HypercubeGeometry.FLOATS_PER_VERTEX)
     private val stickerByteOffsets = IntArray(MAX_STICKERS)
-    private val stickerHighlighted = BooleanArray(MAX_STICKERS)
+    private val stickerAlphas = FloatArray(MAX_STICKERS)
     private val stickerCornerPositions = FloatArray(HypercubeGeometry.VERTICES_PER_STICKER * 3)
     private val pieceToRoom4 = FloatArray(16)
     private val localCorner4 = FloatArray(4)
     private val roomCorner4 = FloatArray(4)
+
+    // Cached per-piece, once per frame (see onDrawFrame's pre-pass): which room slot each of a
+    // piece's up to 4 stickers currently sits in, resolved once and reused both to decide whether
+    // the whole piece counts as "touching" emphasizedCell and to build that sticker's geometry --
+    // avoids resolving cameraDir4 twice per sticker.
+    private val axisSlotAxis = IntArray(4)
+    private val axisSlotSign = IntArray(4)
     private val shrunkCorner4 = FloatArray(4)
     private val faceEdge1 = FloatArray(3)
     private val faceEdge2 = FloatArray(3)
@@ -570,8 +573,7 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         precision mediump float;
         in vec3 vNormal;
         in vec3 vColor;
-        uniform float uHighlight;
-        uniform float uForceBlack;
+        uniform float uAlpha;
         out vec4 fragColor;
         void main() {
             vec3 n = normalize(vNormal);
@@ -585,25 +587,24 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
             float fill = max(dot(n, fillDir), 0.0);
             float lighting = 0.38 + key * 0.5 + fill * 0.16;
             vec3 c = vColor * lighting;
-            c = mix(c, vec3(1.0), uHighlight * 0.35);
-            c = mix(c, vec3(0.0), uForceBlack);
-            fragColor = vec4(c, 1.0);
+            fragColor = vec4(c, uAlpha);
         }
     """.trimIndent()
 
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
         GLES30.glClearColor(0.05f, 0.05f, 0.07f, 1.0f)
         GLES30.glEnable(GLES30.GL_DEPTH_TEST)
-        // LEQUAL (not the default LESS) so the wireframe overlay -- drawn with the exact same
-        // vertex positions as the triangle fill it's outlining -- doesn't lose the depth test
-        // to the fragments it's coincident with.
-        GLES30.glDepthFunc(GLES30.GL_LEQUAL)
+        // De-emphasized stickers (see onDrawFrame's emphasizedCell/filter-dim handling) are drawn
+        // translucent rather than skipped or wireframed -- ordinary alpha blending, with per-draw
+        // depth-mask toggling (see the draw loop) so a translucent sticker doesn't wrongly occlude
+        // whatever's behind it in the depth buffer while still reading as "in front" visually.
+        GLES30.glEnable(GLES30.GL_BLEND)
+        GLES30.glBlendFunc(GLES30.GL_SRC_ALPHA, GLES30.GL_ONE_MINUS_SRC_ALPHA)
 
         program = buildProgram(vertexShaderSrc, fragmentShaderSrc)
         uMvpLoc = GLES30.glGetUniformLocation(program, "uMVP")
         uNormalMatrixLoc = GLES30.glGetUniformLocation(program, "uNormalMatrix")
-        uHighlightLoc = GLES30.glGetUniformLocation(program, "uHighlight")
-        uForceBlackLoc = GLES30.glGetUniformLocation(program, "uForceBlack")
+        uAlphaLoc = GLES30.glGetUniformLocation(program, "uAlpha")
 
         val ibo = IntArray(1)
         GLES30.glGenBuffers(1, ibo, 0)
@@ -613,17 +614,6 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
             GLES30.GL_ELEMENT_ARRAY_BUFFER,
             indexBuffer.capacity() * 2,
             indexBuffer,
-            GLES30.GL_STATIC_DRAW,
-        )
-
-        val wireIbo = IntArray(1)
-        GLES30.glGenBuffers(1, wireIbo, 0)
-        wireIndexBufferId = wireIbo[0]
-        GLES30.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER, wireIndexBufferId)
-        GLES30.glBufferData(
-            GLES30.GL_ELEMENT_ARRAY_BUFFER,
-            wireIndexBuffer.capacity() * 2,
-            wireIndexBuffer,
             GLES30.GL_STATIC_DRAW,
         )
 
@@ -1067,9 +1057,9 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT or GLES30.GL_DEPTH_BUFFER_BIT)
         GLES30.glUseProgram(program)
 
-        // Resolved once per frame (not once per sticker below) since highlightedCell is a
+        // Resolved once per frame (not once per sticker below) since emphasizedCell is a
         // computed property now -- see its doc for why it needs to be live rather than cached.
-        val frameHighlightedCell = highlightedCell
+        val frameEmphasizedCell = emphasizedCell
 
         val currentRoomCell = selectedRoomCell
         val currentNativeCell = selectedCell4
@@ -1148,10 +1138,13 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
             val home = HypercubeGeometry.HOME_POSITIONS[i]
             val stickerCount = (if (home.x != 0) 1 else 0) + (if (home.y != 0) 1 else 0) +
                 (if (home.z != 0) 1 else 0) + (if (home.w != 0) 1 else 0)
-            if (hideCorners && stickerCount == 4) continue
-            if (hideEdges && stickerCount == 3) continue
-            if (hideRidges && stickerCount == 2) continue
-            if (hideCenters && stickerCount == 1) continue
+            // Filtered piece-types are no longer skipped outright -- they're dimmed the same way
+            // an unselected piece is (see frameEmphasizedCell below), so a filter still lets you
+            // see roughly where hidden pieces are instead of punching a hole in the puzzle.
+            val filterDimmed = (hideCorners && stickerCount == 4) ||
+                (hideEdges && stickerCount == 3) ||
+                (hideRidges && stickerCount == 2) ||
+                (hideCenters && stickerCount == 1)
 
             val base = i * 20
             val src = when {
@@ -1178,15 +1171,23 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
             mat4MatMul(pieceToRoom4, effectiveCubeOrientation4, pieceOrient4)
 
             val homeCoords = intArrayOf(home.x, home.y, home.z, home.w)
+
+            // Pre-pass: resolve each of this piece's (up to 4) stickers' current room slot once,
+            // both to know whether this whole piece counts as "touching" frameEmphasizedCell (see
+            // emphasizedCell's doc -- a selected cell's neighboring stickers on the *same* piece
+            // stay fully visible too, not just the stickers literally sitting in that cell) and to
+            // avoid resolving cameraDir4 a second time in the geometry loop below.
+            var pieceTouchesEmphasized = frameEmphasizedCell == null
             for (axisIdx in 0 until 4) {
                 val homeCoord = homeCoords[axisIdx]
-                if (homeCoord == 0) continue
-
+                if (homeCoord == 0) {
+                    axisSlotAxis[axisIdx] = -1
+                    continue
+                }
                 homeDir4[0] = 0f; homeDir4[1] = 0f; homeDir4[2] = 0f; homeDir4[3] = 0f
                 homeDir4[axisIdx] = homeCoord.toFloat()
                 mat4VecMul(currentDir4, pieceOrient4, homeDir4)
                 mat4VecMul(cameraDir4, effectiveCubeOrientation4, currentDir4)
-
                 var slotAxis = -1
                 var slotSign = 0
                 for (j in 0 until 4) {
@@ -1196,6 +1197,20 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
                         break
                     }
                 }
+                axisSlotAxis[axisIdx] = slotAxis
+                axisSlotSign[axisIdx] = slotSign
+                if (frameEmphasizedCell != null && cellFor(slotAxis, slotSign) == frameEmphasizedCell) {
+                    pieceTouchesEmphasized = true
+                }
+            }
+            val pieceAlpha = (if (pieceTouchesEmphasized) 1f else SELECTION_DIM_ALPHA) *
+                (if (filterDimmed) FILTER_DIM_ALPHA else 1f)
+
+            for (axisIdx in 0 until 4) {
+                val homeCoord = homeCoords[axisIdx]
+                if (homeCoord == 0) continue
+                val slotAxis = axisSlotAxis[axisIdx]
+                val slotSign = axisSlotSign[axisIdx]
                 // O slot: never rendered -- restored after a mistaken removal. This isn't a net-
                 // only concern: MC4D's own pipeline explicitly culls the analogous "front" cell
                 // (PipelineUtils.computeFrame's front-cell-cull step) before it ever reaches
@@ -1215,8 +1230,6 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
                 faceCenter4[3] = if (slotAxis == AXIS_W) slotSign.toFloat() else 0f
 
                 val colorCell = cellFor(axisIdx, homeCoord)
-                val currentCell = cellFor(slotAxis, slotSign)
-                val isHighlighted = currentCell == frameHighlightedCell
                 val color = HypercubeGeometry.CELL_COLORS[colorCell.ordinal]
                 val localOffsets = HypercubeGeometry.LOCAL_OFFSETS_BY_AXIS[axisIdx]
 
@@ -1284,7 +1297,7 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
                 }
 
                 stickerByteOffsets[numStickersToDraw] = stickerBase * 4
-                stickerHighlighted[numStickersToDraw] = isHighlighted
+                stickerAlphas[numStickersToDraw] = pieceAlpha
                 numStickersToDraw++
             }
         }
@@ -1306,33 +1319,28 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         GLES30.glEnableVertexAttribArray(2)
         GLES30.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER, indexBufferId)
 
+        // Opaque stickers first (normal depth write), then de-emphasized/translucent ones with
+        // depth *write* off (test still on) -- so a translucent sticker never wrongly occludes
+        // whatever's behind it in the depth buffer, while still being correctly hidden behind any
+        // opaque one in front of it. Not a full back-to-front sort of the translucent stickers
+        // among themselves -- acceptable for how this is actually used (mostly whole cells fading
+        // together, not deeply overlapping layers); revisit if that turns out to look wrong.
         val stride = HypercubeGeometry.FLOATS_PER_VERTEX * 4
-        for (s in 0 until numStickersToDraw) {
-            val byteOffset = stickerByteOffsets[s]
-            GLES30.glVertexAttribPointer(0, 3, GLES30.GL_FLOAT, false, stride, byteOffset)
-            GLES30.glVertexAttribPointer(1, 3, GLES30.GL_FLOAT, false, stride, byteOffset + 12)
-            GLES30.glVertexAttribPointer(2, 3, GLES30.GL_FLOAT, false, stride, byteOffset + 24)
-            val isHighlighted = stickerHighlighted[s]
-            GLES30.glUniform1f(uHighlightLoc, if (isHighlighted) 1f else 0f)
-            GLES30.glDrawElements(GLES30.GL_TRIANGLES, HypercubeGeometry.INDICES.size, GLES30.GL_UNSIGNED_SHORT, 0)
-
-            if (isHighlighted) {
-                // Black wireframe outline for the selected cell (see handleCell4StickInput in
-                // MainActivity) -- a solid-color highlight blend is too subtle to read against
-                // these flat-shaded stickers, so this traces actual edges instead. Same vertex
-                // data, just a different index buffer + draw mode.
-                GLES30.glUniform1f(uForceBlackLoc, 1f)
-                GLES30.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER, wireIndexBufferId)
-                GLES30.glDrawElements(
-                    GLES30.GL_LINES,
-                    HypercubeGeometry.WIREFRAME_INDICES.size,
-                    GLES30.GL_UNSIGNED_SHORT,
-                    0,
-                )
-                GLES30.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER, indexBufferId)
-                GLES30.glUniform1f(uForceBlackLoc, 0f)
+        for (pass in 0 until 2) {
+            val wantOpaque = pass == 0
+            GLES30.glDepthMask(wantOpaque)
+            for (s in 0 until numStickersToDraw) {
+                val alpha = stickerAlphas[s]
+                if ((alpha >= 0.999f) != wantOpaque) continue
+                val byteOffset = stickerByteOffsets[s]
+                GLES30.glVertexAttribPointer(0, 3, GLES30.GL_FLOAT, false, stride, byteOffset)
+                GLES30.glVertexAttribPointer(1, 3, GLES30.GL_FLOAT, false, stride, byteOffset + 12)
+                GLES30.glVertexAttribPointer(2, 3, GLES30.GL_FLOAT, false, stride, byteOffset + 24)
+                GLES30.glUniform1f(uAlphaLoc, alpha)
+                GLES30.glDrawElements(GLES30.GL_TRIANGLES, HypercubeGeometry.INDICES.size, GLES30.GL_UNSIGNED_SHORT, 0)
             }
         }
+        GLES30.glDepthMask(true)
 
         GLES30.glDisableVertexAttribArray(0)
         GLES30.glDisableVertexAttribArray(1)
@@ -1441,6 +1449,19 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
          * size/position, via the same `eyeW / (eyeW - w)` formula MC4D's `PipelineUtils.
          * computeFrame` uses. */
         private const val EYE_W_DIST = 2.0f
+
+        /** Opacity for a piece that doesn't touch [emphasizedCell] while something *is*
+         * emphasized (a cell selected in STICK mode, or permanently I in RKT mode) -- "mostly
+         * transparent, not gone," per David's spec (2026-07-29): low enough to clearly read as
+         * de-emphasized, high enough to still see roughly where those pieces are. Starting guess,
+         * meant to be tuned visually together with [FILTER_DIM_ALPHA]. */
+        private const val SELECTION_DIM_ALPHA = 0.18f
+
+        /** Opacity for a piece hidden by a Filters toggle (hide corners/edges/ridges/centers) --
+         * a separate constant from [SELECTION_DIM_ALPHA] since David explicitly wants to tune the
+         * two "cases" (selection-fade vs. filter-fade) independently, even though they start at
+         * the same value. */
+        private const val FILTER_DIM_ALPHA = 0.18f
 
         private const val MIN_DISTANCE = 3f
         private const val MAX_DISTANCE = 25f

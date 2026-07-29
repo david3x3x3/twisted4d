@@ -69,21 +69,6 @@ object HypercubeGeometry {
         }
     }
 
-    /** Shared GL_LINES index buffer tracing all 4 edges of each face's quad (6 faces x 4 edges
-     * x 2 indices) -- reuses the same 24 vertices as [INDICES], just drawn as lines instead of
-     * triangles, for the selected-cell wireframe outline (see [HypercubeRenderer]). Shared cube
-     * edges get traced twice (once per adjacent face); harmless, just minor overdraw. */
-    val WIREFRAME_INDICES: ShortArray = ShortArray(48).also { idx ->
-        for (face in 0 until 6) {
-            val v0 = (face * 4).toShort()
-            val base = face * 8
-            idx[base + 0] = v0; idx[base + 1] = (v0 + 1).toShort()
-            idx[base + 2] = (v0 + 1).toShort(); idx[base + 3] = (v0 + 2).toShort()
-            idx[base + 4] = (v0 + 2).toShort(); idx[base + 5] = (v0 + 3).toShort()
-            idx[base + 6] = (v0 + 3).toShort(); idx[base + 7] = v0
-        }
-    }
-
     /** For each of the 4 possible "identity axes" a sticker can have, its 24 corners' (6 faces x
      * 4, unshared) local offset in the piece's own 4D body frame -- interleaved x,y,z,w per
      * corner (96 floats total per axis). The identity axis's own component is always 0 (the
