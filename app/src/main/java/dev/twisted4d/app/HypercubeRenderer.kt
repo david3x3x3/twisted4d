@@ -1208,6 +1208,22 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
             // emphasizedCell's doc -- a selected cell's neighboring stickers on the *same* piece
             // stay fully visible too, not just the stickers literally sitting in that cell) and to
             // avoid resolving cameraDir4 a second time in the geometry loop below.
+            //
+            // While a room rotation is in flight, "touching" is checked against each sticker's
+            // *pre*-rotation slot (via axisSlotAxisBefore/SignBefore, resolved below using
+            // roomAnimBefore) instead of its live, currently-animating slot -- re-resolving live
+            // is unstable specifically during this animation, since re-resolving *which native
+            // cell is at frameEmphasizedCell's slot* is exactly what the rotation is in the middle
+            // of changing. An earlier attempt compared each sticker's *home*-position identity
+            // (cellFor(axisIdx, homeCoord), i.e. that sticker's permanent color) against "which
+            // color is at that slot" -- two different concepts that only happen to agree on a
+            // freshly-solved puzzle; on any scrambled puzzle they're unrelated, which is why that
+            // attempt lit up scattered, unrelated stickers across many different cells instead of
+            // just the selected one. Freezing the *slot resolution itself* to its pre-rotation
+            // value (rather than switching to a native-identity comparison) keeps this a purely
+            // positional "was this sticker actually at the selected wall right before the
+            // rotation started" question, stable for the whole animation regardless of scramble
+            // state.
             var pieceTouchesEmphasized = frameEmphasizedCell == null
             for (axisIdx in 0 until 4) {
                 val homeCoord = homeCoords[axisIdx]
@@ -1230,9 +1246,6 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
                 }
                 axisSlotAxis[axisIdx] = slotAxis
                 axisSlotSign[axisIdx] = slotSign
-                if (frameEmphasizedCell != null && cellFor(slotAxis, slotSign) == frameEmphasizedCell) {
-                    pieceTouchesEmphasized = true
-                }
 
                 // A whole-puzzle rotation (Select+face button) changes cubeOrientation4 in a
                 // plane that can flip *any* piece's dominant axis partway through, and an ordinary
@@ -1242,12 +1255,13 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
                 // throughout an R-twist; every other sticker on a twisting piece genuinely swings
                 // from one neighboring cell to another as part of the twist). Both cases resolve
                 // this sticker's slot against the animation's *pre*-rotation orientation alone
-                // (roomAnimBefore / pieceOrientBefore4) -- see the render loop below for how
-                // faceCenter4 then rotates forward from that single endpoint by the same real
-                // rotation matrix the piece's own position already uses, rather than snapping to
-                // whichever slot is instantaneously dominant. roomAnimating and a twist's animating
-                // can never both be true (see the scratch buffers' shared doc above), so this is a
-                // plain else-if, not a nested/combined case.
+                // (roomAnimBefore / pieceOrientBefore4) -- reused below both for faceCenter4 (which
+                // rotates forward from that single endpoint by the same real rotation matrix the
+                // piece's own position already uses, rather than snapping to whichever slot is
+                // instantaneously dominant) and, for the roomAnimating case, for the emphasis check
+                // above. roomAnimating and a twist's animating can never both be true (see the
+                // scratch buffers' shared doc above), so this is a plain else-if, not a nested/
+                // combined case.
                 if (roomAnimating) {
                     mat4VecMul(cameraDirBefore4, roomAnimBefore, currentDir4)
                     var slotAxisBefore = -1
@@ -1261,7 +1275,15 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
                     }
                     axisSlotAxisBefore[axisIdx] = slotAxisBefore
                     axisSlotSignBefore[axisIdx] = slotSignBefore
-                } else if (animating && animAffected!![i]) {
+                    if (frameEmphasizedCell != null && cellFor(slotAxisBefore, slotSignBefore) == frameEmphasizedCell) {
+                        pieceTouchesEmphasized = true
+                    }
+                } else {
+                    if (frameEmphasizedCell != null && cellFor(slotAxis, slotSign) == frameEmphasizedCell) {
+                        pieceTouchesEmphasized = true
+                    }
+                }
+                if (animating && animAffected!![i]) {
                     // Deliberately resolved directly from currentDirTwistBefore4 (room space, not
                     // camera space) -- unlike the roomAnimating branch above, this needs to stay
                     // in the same room-space basis animRot4 itself operates in, so the render loop
