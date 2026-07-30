@@ -623,12 +623,18 @@ class MainActivity : AppCompatActivity() {
                     if (selectHeldAtPress) {
                         val spatialAxes = listOf(HypercubeRenderer.AXIS_X, HypercubeRenderer.AXIS_Y, HypercubeRenderer.AXIS_Z)
                         val (axisA, axisB) = spatialAxes.filter { it != button.literalAxis.nativeIndex }
-                        // Y and Z were correct with reverse = primaryPrime directly; X was
-                        // confirmed backwards on real-device testing (the Y/A button pair) --
-                        // same real-device-handedness-correction pattern as every other
-                        // per-axis table in this file (rotationInvertedForCell, the RKT X/Z
-                        // prime flip, etc.), not a one-off guess this time.
-                        val reverse = if (button.literalAxis == Axis4.X) !button.primaryPrime else button.primaryPrime
+                        // Y was correct with reverse = primaryPrime directly; X was confirmed
+                        // backwards on real-device testing (the Y/A button pair), and Z was
+                        // *assumed* correct rather than independently confirmed the same way --
+                        // now also reported backwards on real-device testing (R1/R2, both of
+                        // which share literalAxis Z) -- same real-device-handedness-correction
+                        // pattern as every other per-axis table in this file
+                        // (rotationInvertedForCell, the RKT X/Z prime flip, etc.).
+                        val reverse = if (button.literalAxis == Axis4.X || button.literalAxis == Axis4.Z) {
+                            !button.primaryPrime
+                        } else {
+                            button.primaryPrime
+                        }
                         renderer.requestCameraRotate90(axisA, axisB, reverse = reverse)
                         return@queueEvent
                     }
