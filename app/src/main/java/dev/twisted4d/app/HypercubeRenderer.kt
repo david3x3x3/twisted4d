@@ -470,29 +470,29 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
     private val axisSlotSign = IntArray(4)
 
     // Only populated/used while roomAnimating or while a twist is animating a given piece (see
-    // onDrawFrame's pre-pass and faceCenter4 lerp): this sticker's room slot resolved against the
-    // animation's *pre-* and *post-* orientation separately (roomAnimBefore/cubeOrientation4 for
-    // a room rotation, pieceOrientBefore4/pieceOrientAfter4 for a twist), so the discrete "which
-    // cell does this belong to" decision faceCenter4 depends on can be smoothly interpolated
-    // across the animation instead of snapping halfway through it. roomAnimating and a twist's
-    // animating can never both be true at once (see applyTwistInternal/requestCameraRotate90's
-    // guards), so these scratch buffers are safe to share between the two cases.
+    // onDrawFrame's pre-pass and faceCenter4 below): this sticker's room slot resolved against
+    // the animation's *pre*-rotation orientation alone (roomAnimBefore for a room rotation,
+    // pieceOrientBefore4 for a twist) -- only one endpoint is needed (unlike an earlier version
+    // of this fix, which also resolved a *post*-rotation endpoint to linearly blend toward):
+    // faceCenter4 is instead rotated *forward* from this pre-rotation value by the exact same
+    // real rotation matrix (roomAnimDeltaRot4 / animRot4) the piece's own position already uses,
+    // so the discrete "which cell does this belong to" decision faceCenter4 depends on traces a
+    // true rotational arc across the animation, not a hard snap OR a linear blend between two
+    // separately-resolved endpoints (a linear blend of two unit vectors doesn't trace the same
+    // arc a true rotation does). roomAnimating and a twist's animating can never both be true at
+    // once (see applyTwistInternal/requestCameraRotate90's guards), so these scratch buffers are
+    // safe to share between the two cases.
     private val axisSlotAxisBefore = IntArray(4)
     private val axisSlotSignBefore = IntArray(4)
-    private val axisSlotAxisAfter = IntArray(4)
-    private val axisSlotSignAfter = IntArray(4)
     private val cameraDirBefore4 = FloatArray(4)
-    private val cameraDirAfter4 = FloatArray(4)
     private val faceCenterBefore4 = FloatArray(4)
-    private val faceCenterAfter4 = FloatArray(4)
-    // This piece's pre-twist and post-twist orientation (distinct from pieceOrient4, which holds
-    // the current *interpolated* orientation) -- only meaningful while animating && animAffected,
-    // used to resolve a twisting piece's "side" stickers' slot at both twist endpoints so their
-    // faceCenter4 can lerp smoothly instead of snapping when their dominant axis flips mid-twist.
+    private val faceCenterRoomNow4 = FloatArray(4)
+    // This piece's pre-twist orientation (distinct from pieceOrient4, which holds the current
+    // *interpolated* orientation) -- only meaningful while animating && animAffected, used to
+    // resolve a twisting piece's "side" stickers' pre-twist slot, the one endpoint faceCenter4
+    // needs to then rotate forward from (see the scratch buffers' doc above).
     private val pieceOrientBefore4 = FloatArray(16)
-    private val pieceOrientAfter4 = FloatArray(16)
     private val currentDirTwistBefore4 = FloatArray(4)
-    private val currentDirTwistAfter4 = FloatArray(4)
     private val shrunkCorner4 = FloatArray(4)
     private val faceEdge1 = FloatArray(3)
     private val faceEdge2 = FloatArray(3)
@@ -1108,14 +1108,8 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
             }
         }
 
-        // Captured here (not just the local val below) so the sticker loop can smoothly lerp
-        // faceCenter4 between its pre- and post-rotation assignment during a room rotation --
-        // see that loop's doc for why the discrete "which axis is dominant" cell-membership
-        // decision needs to stop being a hard snap partway through this specific animation.
-        var roomAnimTThisFrame = 1f
         if (roomAnimating) {
             val roomAnimT = ((System.nanoTime() - roomAnimStartNanos).toFloat() / ROOM_ANIM_DURATION_NANOS).coerceIn(0f, 1f)
-            roomAnimTThisFrame = roomAnimT
             if (roomAnimT >= 1f) {
                 System.arraycopy(cubeOrientation4, 0, effectiveCubeOrientation4, 0, 16)
                 roomAnimating = false
@@ -1190,11 +1184,9 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
             if (animating && animAffected!![i]) {
                 // src above is animBefore for an affected piece, so pieceOrient4 at this point is
                 // exactly its pre-twist orientation -- capture it before the interpolated rotation
-                // below overwrites it, and pair it with the piece's already-known final (after)
-                // orientation, both needed by the pre-pass to lerp faceCenter4 smoothly for this
-                // piece's "side" stickers (see pieceOrientBefore4/pieceOrientAfter4's doc).
+                // below overwrites it, needed by the pre-pass to resolve a twisting piece's "side"
+                // stickers' pre-twist slot (see pieceOrientBefore4's doc).
                 System.arraycopy(pieceOrient4, 0, pieceOrientBefore4, 0, 16)
-                for (k in 0 until 16) pieceOrientAfter4[k] = after!![base + 4 + k]
 
                 setPlaneRotation4(animRot4, animPlaneA, animPlaneB, animAngleDeg * animT)
                 mat4VecMul(animatedPos4, animRot4, pos4)
@@ -1243,25 +1235,19 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
                 }
 
                 // A whole-puzzle rotation (Select+face button) changes cubeOrientation4 in a
-                // plane that can flip *any* piece's dominant axis partway through. Resolving this
-                // sticker's slot against the animation's pre- and post-rotation orientations
-                // separately (roomAnimBefore / cubeOrientation4) lets the geometry loop below lerp
-                // faceCenter4 smoothly between them instead of snapping halfway through the
-                // rotation, which is what made whole-puzzle rotation look like stickers jumping
-                // between cells rather than one seamless rotation.
-                //
-                // An ordinary twist needs the exact same treatment for a twisting piece's "side"
-                // stickers (any sticker whose own identity axis isn't the twist's own axis): only
-                // the sticker aligned with the twist axis itself keeps a constant dominant axis
-                // (e.g. R's own sticker stays "R" throughout an R-twist) -- every other sticker on
-                // a twisting piece genuinely swings from one neighboring cell to another as part
-                // of the twist, which is exactly where the same discrete-snap problem shows up.
-                // Without this, such a sticker's faceCenter4 stayed pinned to its *old* cell for
-                // roughly the first half of the twist (looked like it was spinning in place) and
-                // then snapped to the *new* cell's faceCenter4 the instant its dominant axis
-                // crossed the threshold (looked like a rapid jump). roomAnimating and a twist's
-                // animating can never both be true (see the scratch buffers' shared doc above), so
-                // this is a plain else-if, not a nested/combined case.
+                // plane that can flip *any* piece's dominant axis partway through, and an ordinary
+                // twist does the same to a twisting piece's "side" stickers (any sticker whose own
+                // identity axis isn't the twist's own axis -- only the sticker aligned with the
+                // twist axis itself keeps a constant dominant axis, e.g. R's own sticker stays "R"
+                // throughout an R-twist; every other sticker on a twisting piece genuinely swings
+                // from one neighboring cell to another as part of the twist). Both cases resolve
+                // this sticker's slot against the animation's *pre*-rotation orientation alone
+                // (roomAnimBefore / pieceOrientBefore4) -- see the render loop below for how
+                // faceCenter4 then rotates forward from that single endpoint by the same real
+                // rotation matrix the piece's own position already uses, rather than snapping to
+                // whichever slot is instantaneously dominant. roomAnimating and a twist's animating
+                // can never both be true (see the scratch buffers' shared doc above), so this is a
+                // plain else-if, not a nested/combined case.
                 if (roomAnimating) {
                     mat4VecMul(cameraDirBefore4, roomAnimBefore, currentDir4)
                     var slotAxisBefore = -1
@@ -1275,47 +1261,25 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
                     }
                     axisSlotAxisBefore[axisIdx] = slotAxisBefore
                     axisSlotSignBefore[axisIdx] = slotSignBefore
-
-                    mat4VecMul(cameraDirAfter4, cubeOrientation4, currentDir4)
-                    var slotAxisAfter = -1
-                    var slotSignAfter = 0
-                    for (j in 0 until 4) {
-                        if (abs(cameraDirAfter4[j]) > 0.5f) {
-                            slotAxisAfter = j
-                            slotSignAfter = if (cameraDirAfter4[j] > 0) 1 else -1
-                            break
-                        }
-                    }
-                    axisSlotAxisAfter[axisIdx] = slotAxisAfter
-                    axisSlotSignAfter[axisIdx] = slotSignAfter
                 } else if (animating && animAffected!![i]) {
+                    // Deliberately resolved directly from currentDirTwistBefore4 (room space, not
+                    // camera space) -- unlike the roomAnimating branch above, this needs to stay
+                    // in the same room-space basis animRot4 itself operates in, so the render loop
+                    // can rotate it forward with animRot4 first and only apply
+                    // effectiveCubeOrientation4 (constant for the whole twist) at the very end,
+                    // mirroring cameraPos4's own two-step derivation exactly.
                     mat4VecMul(currentDirTwistBefore4, pieceOrientBefore4, homeDir4)
-                    mat4VecMul(cameraDirBefore4, effectiveCubeOrientation4, currentDirTwistBefore4)
                     var slotAxisBefore = -1
                     var slotSignBefore = 0
                     for (j in 0 until 4) {
-                        if (abs(cameraDirBefore4[j]) > 0.5f) {
+                        if (abs(currentDirTwistBefore4[j]) > 0.5f) {
                             slotAxisBefore = j
-                            slotSignBefore = if (cameraDirBefore4[j] > 0) 1 else -1
+                            slotSignBefore = if (currentDirTwistBefore4[j] > 0) 1 else -1
                             break
                         }
                     }
                     axisSlotAxisBefore[axisIdx] = slotAxisBefore
                     axisSlotSignBefore[axisIdx] = slotSignBefore
-
-                    mat4VecMul(currentDirTwistAfter4, pieceOrientAfter4, homeDir4)
-                    mat4VecMul(cameraDirAfter4, effectiveCubeOrientation4, currentDirTwistAfter4)
-                    var slotAxisAfter = -1
-                    var slotSignAfter = 0
-                    for (j in 0 until 4) {
-                        if (abs(cameraDirAfter4[j]) > 0.5f) {
-                            slotAxisAfter = j
-                            slotSignAfter = if (cameraDirAfter4[j] > 0) 1 else -1
-                            break
-                        }
-                    }
-                    axisSlotAxisAfter[axisIdx] = slotAxisAfter
-                    axisSlotSignAfter[axisIdx] = slotSignAfter
                 }
             }
             val pieceAlpha = (if (pieceTouchesEmphasized) 1f else SELECTION_DIM_ALPHA) *
@@ -1340,34 +1304,42 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
                 // this piece's true room position toward that fixed point by FACE_SHRINK, rather
                 // than pushing cells out to an arbitrary anchor distance.
                 //
-                // During a whole-puzzle rotation, or while this piece is mid-twist, this is
-                // smoothly lerped between the pre- and post-animation assignment (see the
-                // pre-pass above) rather than snapped to whichever is instantaneously dominant --
-                // a hard snap partway through is exactly what made cells/stickers look like they
-                // were popping between slots instead of moving seamlessly (this matters for a
-                // twisting piece's "side" stickers -- the ones whose own identity axis isn't the
-                // twist's own axis -- which genuinely swing from one neighboring cell to another
-                // as part of the twist).
-                if (roomAnimating || (animating && animAffected!![i])) {
+                // During a whole-puzzle rotation, or while this piece is mid-twist, faceCenter4 is
+                // rotated *forward* from its pre-animation assignment (see the pre-pass above) by
+                // the exact same real rotation matrix the piece's own position/orientation already
+                // uses, rather than snapped to whichever slot is instantaneously dominant, or (an
+                // earlier version of this fix) linearly blended toward a separately-resolved
+                // endpoint -- a linear blend of two unit vectors doesn't trace the same arc a true
+                // rotation does, which read as subtly "not quite 4D" motion even after the
+                // discrete-snap bug was fixed (reported by a Hyperspeedcube community member after
+                // the v0.6.1 release).
+                if (roomAnimating) {
                     val sab = axisSlotAxisBefore[axisIdx]
                     val ssb = axisSlotSignBefore[axisIdx]
                     faceCenterBefore4[0] = if (sab == AXIS_X) ssb.toFloat() else 0f
                     faceCenterBefore4[1] = if (sab == AXIS_Y) ssb.toFloat() else 0f
                     faceCenterBefore4[2] = if (sab == AXIS_Z) ssb.toFloat() else 0f
                     faceCenterBefore4[3] = if (sab == AXIS_W) ssb.toFloat() else 0f
-
-                    val saa = axisSlotAxisAfter[axisIdx]
-                    val ssa = axisSlotSignAfter[axisIdx]
-                    faceCenterAfter4[0] = if (saa == AXIS_X) ssa.toFloat() else 0f
-                    faceCenterAfter4[1] = if (saa == AXIS_Y) ssa.toFloat() else 0f
-                    faceCenterAfter4[2] = if (saa == AXIS_Z) ssa.toFloat() else 0f
-                    faceCenterAfter4[3] = if (saa == AXIS_W) ssa.toFloat() else 0f
-
-                    val t = if (roomAnimating) roomAnimTThisFrame else animT
-                    for (k in 0 until 4) {
-                        faceCenter4[k] = faceCenterBefore4[k] +
-                            (faceCenterAfter4[k] - faceCenterBefore4[k]) * t
-                    }
+                    // roomAnimDeltaRot4 rotates *from* the pre-rotation camera space
+                    // (roomAnimBefore, the same space faceCenterBefore4 above was resolved in) *to*
+                    // the current partial-rotation camera space -- exactly the same transform
+                    // effectiveCubeOrientation4 = roomAnimDeltaRot4 * roomAnimBefore applies to
+                    // every piece's own position.
+                    mat4VecMul(faceCenter4, roomAnimDeltaRot4, faceCenterBefore4)
+                } else if (animating && animAffected!![i]) {
+                    val sab = axisSlotAxisBefore[axisIdx]
+                    val ssb = axisSlotSignBefore[axisIdx]
+                    faceCenterBefore4[0] = if (sab == AXIS_X) ssb.toFloat() else 0f
+                    faceCenterBefore4[1] = if (sab == AXIS_Y) ssb.toFloat() else 0f
+                    faceCenterBefore4[2] = if (sab == AXIS_Z) ssb.toFloat() else 0f
+                    faceCenterBefore4[3] = if (sab == AXIS_W) ssb.toFloat() else 0f
+                    // animRot4 (the piece's own real partial-twist rotation, already computed
+                    // above for pos4/pieceOrient4) rotates faceCenterBefore4 the same way in room
+                    // space first, then effectiveCubeOrientation4 (constant for the whole twist)
+                    // carries it into camera space -- the same two-step pipeline cameraPos4 itself
+                    // goes through.
+                    mat4VecMul(faceCenterRoomNow4, animRot4, faceCenterBefore4)
+                    mat4VecMul(faceCenter4, effectiveCubeOrientation4, faceCenterRoomNow4)
                 } else {
                     faceCenter4[0] = if (slotAxis == AXIS_X) slotSign.toFloat() else 0f
                     faceCenter4[1] = if (slotAxis == AXIS_Y) slotSign.toFloat() else 0f
