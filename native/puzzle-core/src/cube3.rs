@@ -92,6 +92,26 @@ fn mat_mat_mul(a: &Mat3i, b: &Mat3i) -> Mat3i {
     out
 }
 
+/// Same reasoning and mechanism as Cube4's identically-named fn (see that doc for the full
+/// explanation, including the real report this fixed): compares `current`'s orientation against
+/// solved only on the columns this cubie actually has a sticker on (`home.pos`'s nonzero
+/// coordinates), so an axis nobody's using (e.g. a face center's other two axes) can't fail the
+/// check just because *some* rotation is hiding there that no player could ever see.
+fn visible_orientation_matches(current: &Cubie, home: &Cubie) -> bool {
+    let home_coords = [home.pos.0, home.pos.1, home.pos.2];
+    for axis in 0..3 {
+        if home_coords[axis] == 0 {
+            continue;
+        }
+        for row in 0..3 {
+            if current.orient[row][axis] != home.orient[row][axis] {
+                return false;
+            }
+        }
+    }
+    true
+}
+
 fn transpose(m: &Mat3i) -> Mat3i {
     let mut out = [[0; 3]; 3];
     for r in 0..3 {
@@ -149,7 +169,7 @@ impl Cube3 {
         self.cubies
             .iter()
             .zip(solved.cubies.iter())
-            .all(|(a, b)| a.pos == b.pos && a.orient == b.orient)
+            .all(|(a, b)| a.pos == b.pos && visible_orientation_matches(a, b))
     }
 
     /// Applies `move_count` random quarter turns (never repeating the immediately preceding
@@ -265,6 +285,29 @@ mod tests {
         let mut cube = Cube3::solved();
         assert!(cube.is_solved());
         cube.twist(Face::U, false);
+        assert!(!cube.is_solved());
+    }
+
+    #[test]
+    fn a_centers_own_rotation_does_not_prevent_is_solved() {
+        // Same fix/reasoning as Cube4's identically-named test -- see visible_orientation_matches's
+        // doc. Directly construct a cube where every cubie matches solved except U's own
+        // face-center's orient; only column 1 (U's own axis) is checked for this cubie, and that
+        // column happens to be unaffected by this particular rotation.
+        let mut cube = Cube3::solved();
+        let u_center = cube.cubies.iter().position(|c| c.pos == (0, 1, 0)).unwrap();
+        cube.cubies[u_center].orient = Face::U.clockwise_matrix();
+        assert!(cube.is_solved());
+    }
+
+    #[test]
+    fn an_edges_own_stickers_out_of_orientation_still_fails_is_solved() {
+        // An edge (2 stickers) has only 1 empty column in 3D -- not enough for any rotation to
+        // hide in -- so this behaves exactly like before: an edge's actual sticker axes (0/1
+        // here) going wrong is genuinely visible and must still fail.
+        let mut cube = Cube3::solved();
+        let edge = cube.cubies.iter().position(|c| c.pos == (1, 1, 0)).unwrap();
+        cube.cubies[edge].orient = Face::U.clockwise_matrix();
         assert!(!cube.is_solved());
     }
 

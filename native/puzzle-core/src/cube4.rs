@@ -142,6 +142,47 @@ fn mat_mat_mul(a: &Mat4i, b: &Mat4i) -> Mat4i {
     out
 }
 
+/// True iff `current`'s orientation matches solved (`home.orient`, always IDENTITY4) on every
+/// axis this piece actually has a sticker on -- i.e. `home.pos`'s nonzero coordinates (`home` is
+/// this piece's own solved-state entry, so `home.pos` IS its home position). An axis with no
+/// sticker at all (home coordinate 0) has nothing rendered to reveal which global direction
+/// `orient` currently maps it to: `twist_layer` still carries that column along through every
+/// twist like any other (see that fn's doc), but a solid-colored cube face looks identical
+/// regardless of which way an axis nobody's using happens to be facing. A "center" (1 sticker)
+/// has 3 such empty columns; a "ridge" (2 stickers) has 2 -- both enough for a real rotation to
+/// hide in (a rotation needs at least 2 axes to have anywhere to act), which is why comparing
+/// the *whole* orient matrix used to wrongly fail states that were, in every way a player can
+/// actually perceive, completely solved. An "edge" (3 stickers) or "corner" (4) has at most 1
+/// empty column, not enough for any rotation to hide in -- effectively no different from
+/// comparing the whole matrix, so this doesn't loosen anything for those.
+///
+/// Deliberately column-by-column rather than excluding whole piece types by sticker count: a
+/// ridge's *two actual* stickers can still end up wrong relative to each other (e.g. swapped in
+/// place by a rotation confined to axes 0/1 instead of the empty 2/3) -- that must still fail,
+/// and only checking the columns that actually have a sticker gets both cases right at once,
+/// without needing a separate "which piece types get an exemption" rule to keep in sync with
+/// this one. Confirmed as the actual cause of a real report (2026-07-30): a puzzle that looked
+/// and scene-dump-verified as perfectly solved (every visible sticker in its correct room slot)
+/// still reported not-solved. An earlier attempt at this fix excluded whole piece types by
+/// sticker count instead (first just centers, matching Cube3's real constraint below; then
+/// widened to centers+ridges once centers alone turned out insufficient for Cube4) -- replaced
+/// by this column-precise version once the "swapped ridge stickers" gap above was noticed during
+/// review, before it shipped.
+fn visible_orientation_matches(current: &Piece4, home: &Piece4) -> bool {
+    let home_coords = [home.pos.0, home.pos.1, home.pos.2, home.pos.3];
+    for axis in 0..4 {
+        if home_coords[axis] == 0 {
+            continue;
+        }
+        for row in 0..4 {
+            if current.orient[row][axis] != home.orient[row][axis] {
+                return false;
+            }
+        }
+    }
+    true
+}
+
 /// A 90-degree rotation in the plane spanned by axes `a`/`b`, holding the other two axes
 /// fixed. `clockwise` just needs to be consistent and self-inverse-under-negation; there's no
 /// real-world chirality convention to match in 4D the way cube3 matches physical cubes.
@@ -212,7 +253,7 @@ impl Cube4 {
         self.pieces
             .iter()
             .zip(solved.pieces.iter())
-            .all(|(a, b)| a.pos == b.pos && a.orient == b.orient)
+            .all(|(a, b)| a.pos == b.pos && visible_orientation_matches(a, b))
     }
 
     /// Applies `move_count` random quarter turns (never repeating the immediately preceding
@@ -354,6 +395,56 @@ mod tests {
         let mut cube = Cube4::solved();
         assert!(cube.is_solved());
         cube.twist(Cell4::U, Axis4::X, false);
+        assert!(!cube.is_solved());
+    }
+
+    #[test]
+    fn a_centers_own_rotation_does_not_prevent_is_solved() {
+        // Confirmed bug (2026-07-30): is_solved used to require every piece's orient to exactly
+        // match solved, including single-sticker centers -- but a center's rotation is invisible
+        // (one featureless sticker; O's own center isn't even rendered at all) and irrelevant to
+        // what a player can actually perceive as "solved." O's center has 3 empty columns (its
+        // home position is (0,0,0,1)); rotating axes 0/1 (both empty for this piece) leaves its
+        // one actual sticker (axis 3) untouched -- see visible_orientation_matches's doc.
+        let mut cube = Cube4::solved();
+        let o_center = cube.pieces.iter().position(|p| p.pos == (0, 0, 0, 1)).unwrap();
+        cube.pieces[o_center].orient = plane_rotation(0, 1, true);
+        assert!(cube.is_solved());
+    }
+
+    #[test]
+    fn a_ridges_empty_axis_rotation_does_not_prevent_is_solved() {
+        // Same reasoning one sticker-count higher: a ridge (2 stickers, home (1,1,0,0) here) has
+        // 2 empty columns (axes 2/3) -- rotating *only* those leaves both of its actual stickers
+        // (axes 0/1) untouched, so it must still count as solved. This is the case an earlier,
+        // whole-piece-type-exclusion version of this fix originally targeted -- confirmed against
+        // the real device report before landing this more precise column-by-column version.
+        let mut cube = Cube4::solved();
+        let ridge = cube.pieces.iter().position(|p| p.pos == (1, 1, 0, 0)).unwrap();
+        cube.pieces[ridge].orient = plane_rotation(2, 3, true);
+        assert!(cube.is_solved());
+    }
+
+    #[test]
+    fn a_ridges_own_stickers_out_of_orientation_still_fails_is_solved() {
+        // The flip side of the test above: rotating a ridge's *actual* sticker axes (0/1, not
+        // the empty 2/3) swaps its two real stickers in place -- genuinely visible (its colors
+        // land on the wrong faces), so this must still fail despite the piece being a ridge.
+        // This is exactly the gap a cruder "exclude every ridge/center wholesale" fix would have
+        // missed -- noticed during review before that version ever shipped.
+        let mut cube = Cube4::solved();
+        let ridge = cube.pieces.iter().position(|p| p.pos == (1, 1, 0, 0)).unwrap();
+        cube.pieces[ridge].orient = plane_rotation(0, 1, true);
+        assert!(!cube.is_solved());
+    }
+
+    #[test]
+    fn a_corners_orientation_must_still_match_exactly() {
+        // A corner (4 stickers) has zero empty columns -- no room for any rotation to hide in,
+        // so this is unaffected by the fix above and must keep behaving exactly like before.
+        let mut cube = Cube4::solved();
+        let corner = cube.pieces.iter().position(|p| p.pos == (1, 1, 1, 1)).unwrap();
+        cube.pieces[corner].orient = plane_rotation(0, 1, true);
         assert!(!cube.is_solved());
     }
 
