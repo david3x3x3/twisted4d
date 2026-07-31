@@ -137,6 +137,19 @@ class MainActivity : AppCompatActivity() {
     // scrambleMoveCount4D, so @Volatile for the same reason.
     @Volatile private var historyIndex4D = 0
 
+    // Guards performUndo/performRedo against overlapping GL-thread requests -- set true right
+    // before queueing an undo/redo, cleared once that queued work actually runs (whether it
+    // succeeded or was rejected because a previous twist/room-rotation was still animating).
+    // Without this, historyIndex4D used to be advanced immediately/optimistically on the UI
+    // thread for every press, regardless of whether the queued GL-thread call would actually
+    // succeed -- a real repro (2026-07-30) sent 5 rapid undo presses (faster than the ~220ms
+    // twist animation) and left historyIndex4D claiming "fully undone" while the puzzle was
+    // still visibly scrambled, because some of those undos were silently dropped by
+    // HypercubeRenderer.applyTwistInternal's own animating guard. Read/written from both threads
+    // (UI thread checks/sets it before queueing; the GL thread clears it once the queued work
+    // runs), so @Volatile for the same reason as historyIndex4D/scrambleMoveCount4D.
+    @Volatile private var undoRedoInFlight = false
+
     // Set by loadState() (called once, before the first rebuildUi()) when a saved puzzle state
     // exists for that mode; consumed (and nulled) by build3DScreen/build4DScreen the first time
     // they run afterward, restoring native state instead of the fresh solved() reset that
@@ -459,31 +472,51 @@ class MainActivity : AppCompatActivity() {
         updateTurnCount()
 
         /** Steps [historyIndex4D] back one and reverses that move -- see [historyIndex4D]'s doc.
-         * A no-op at the very start of history. */
+         * A no-op once back at [scrambleMoveCount4D] -- the scramble itself was never meant to be
+         * a real, undoable move sequence (it's a single instantaneous shuffle, not something the
+         * player did one twist at a time), so undo stops at "freshly scrambled," not "solved."
+         * Confirmed as a real bug via a repro (2026-07-30): undoing was able to walk all the way
+         * back past the scramble to the original solved state, which shouldn't be reachable via
+         * undo at all. Also a no-op while [undoRedoInFlight] -- see that field's doc: historyIndex4D
+         * only advances once the queued GL-thread undo reports back that it actually applied. */
         fun performUndo() {
+            if (undoRedoInFlight) return
+            val targetIndex: Int
+            val record: TwistRecord
             synchronized(moveHistory4D) {
-                if (historyIndex4D > 0) {
-                    historyIndex4D--
-                    val record = moveHistory4D[historyIndex4D]
-                    surfaceView.queueEvent { renderer.undoTwist(record.cell, record.fixAxis2, record.prime) }
-                }
+                if (historyIndex4D <= scrambleMoveCount4D) return
+                targetIndex = historyIndex4D - 1
+                record = moveHistory4D[targetIndex]
             }
-            updateTurnCount()
+            undoRedoInFlight = true
+            surfaceView.queueEvent {
+                val applied = renderer.undoTwist(record.cell, record.fixAxis2, record.prime)
+                if (applied) historyIndex4D = targetIndex
+                undoRedoInFlight = false
+                runOnUiThread { updateTurnCount() }
+            }
         }
 
         /** Re-applies whatever move undo last stepped back over and advances [historyIndex4D]
          * again -- see [historyIndex4D]'s doc. A no-op once caught back up to the end of history
          * (nothing to redo, either because nothing was undone or a new move already overwrote the
-         * abandoned branch). */
+         * abandoned branch), or while [undoRedoInFlight] -- same reasoning as [performUndo]. */
         fun performRedo() {
+            if (undoRedoInFlight) return
+            val targetIndex: Int
+            val record: TwistRecord
             synchronized(moveHistory4D) {
-                if (historyIndex4D < moveHistory4D.size) {
-                    val record = moveHistory4D[historyIndex4D]
-                    historyIndex4D++
-                    surfaceView.queueEvent { renderer.redoTwist(record.cell, record.fixAxis2, record.prime) }
-                }
+                if (historyIndex4D >= moveHistory4D.size) return
+                record = moveHistory4D[historyIndex4D]
+                targetIndex = historyIndex4D + 1
             }
-            updateTurnCount()
+            undoRedoInFlight = true
+            surfaceView.queueEvent {
+                val applied = renderer.redoTwist(record.cell, record.fixAxis2, record.prime)
+                if (applied) historyIndex4D = targetIndex
+                undoRedoInFlight = false
+                runOnUiThread { updateTurnCount() }
+            }
         }
 
         // STICK (default): left stick (and/or d-pad, see GamepadInputHandler.onDpadStick)

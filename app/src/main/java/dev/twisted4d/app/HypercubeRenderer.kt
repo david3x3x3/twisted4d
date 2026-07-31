@@ -1010,17 +1010,21 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
     }
 
     /** Re-applies [cell]/[fixAxis2] with [prime] inverted, without notifying [onTwistApplied] --
-     * for undo, where the caller is already responsible for popping its own history entry. */
-    fun undoTwist(cell: Cell4, fixAxis2: Axis4, prime: Boolean) {
-        applyTwistInternal(cell, fixAxis2, !prime)
+     * for undo, where the caller is already responsible for popping its own history entry.
+     * Returns whether the undo actually applied (false if another twist/room-rotation was still
+     * animating -- see [applyTwistInternal]'s guard) -- the caller must not advance its own
+     * history pointer on a false return, since nothing actually happened to the puzzle. */
+    fun undoTwist(cell: Cell4, fixAxis2: Axis4, prime: Boolean): Boolean {
+        return applyTwistInternal(cell, fixAxis2, !prime)
     }
 
     /** Redo counterpart to [undoTwist] -- re-applies [cell]/[fixAxis2]/[prime] exactly as
      * originally recorded (no inversion), also without notifying [onTwistApplied]: the caller
      * (MainActivity's redo path) already owns advancing its own history pointer, the same
-     * responsibility-split undo already has, just in the opposite direction. */
-    fun redoTwist(cell: Cell4, fixAxis2: Axis4, prime: Boolean) {
-        applyTwistInternal(cell, fixAxis2, prime)
+     * responsibility-split undo already has, just in the opposite direction. Same false-means-
+     * nothing-happened contract as [undoTwist]. */
+    fun redoTwist(cell: Cell4, fixAxis2: Axis4, prime: Boolean): Boolean {
+        return applyTwistInternal(cell, fixAxis2, prime)
     }
 
     private fun applyTwistInternal(cell: Cell4, fixAxis2: Axis4, prime: Boolean): Boolean {
