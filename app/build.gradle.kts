@@ -43,15 +43,16 @@ android {
         // upgrade") -- bump it by 1 on every future release regardless of versionName.
         // versionName is the free-form user-visible string; semantic versioning
         // (MAJOR.MINOR.PATCH) is the usual convention. 0.x.y means "pre-1.0" -- no promise of
-        // stability yet -- per the user's explicit choice (2026-07-26). 0.6.2 (2026-07-31):
-        // post-0.6.1 polish from real-device testing of the true-projection work -- smoother
-        // twist/room-rotation anchor motion, a whole-puzzle-rotation emphasis bug, and two
-        // real-solve bugs (undo/redo could desync under rapid input or cross the scramble
-        // boundary; is_solved could stay stuck on a scramble that twisted a never-rendered cell
-        // like O). Still not 1.0: whether Fire TV is even a 1.0 target remains undecided, and
-        // Settings is still missing its D-pad-assignment rows.
-        versionCode = 5
-        versionName = "0.6.2"
+        // stability yet -- per the user's explicit choice (2026-07-26). 0.7.0 (2026-08-01):
+        // the portrait+landscape virtual touch controller -- 4D mode is now fully playable
+        // without a physical gamepad, closing the biggest known gap before a Play Store listing
+        // would make sense. Minor bump (not patch) since it's a real new capability, not just a
+        // fix, per the "0.x.y means pre-1.0, no stability promise" framing above -- there's no
+        // API/save-format compatibility contract to be careful about breaking yet. Still not
+        // 1.0: whether Fire TV is even a 1.0 target remains undecided, and Settings is still
+        // missing its D-pad-assignment rows.
+        versionCode = 6
+        versionName = "0.7.0"
         buildConfigField("String", "GIT_VERSION", "\"$gitVersion\"")
     }
 
