@@ -7,6 +7,7 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.res.Configuration
 import android.hardware.input.InputManager
 import android.opengl.GLSurfaceView
 import android.os.Bundle
@@ -70,6 +71,15 @@ class MainActivity : AppCompatActivity() {
     // design doc's accessibility section) -- hidden while any menu is already open (per feedback:
     // it just sat there uselessly, and confusingly overlapped the Filters panel's own tiles).
     private lateinit var menuButton: Button
+
+    // Portrait-only interactive touch controller (see VirtualClusterView's class doc) -- built
+    // once per build4DScreen call, alongside the landscape gamepadOverlayView/menuButton pair,
+    // with only one of the two pairs visible at a time (see updateControlVisibilityForOrientation).
+    // Null in 3D mode/before build4DScreen has run -- 3D mode keeps its own existing on-screen
+    // buttons untouched, this is 4D-only for now, same scoping as startMenuView/filtersMenuView.
+    private var virtualClusterLeft: VirtualClusterView? = null
+    private var virtualClusterRight: VirtualClusterView? = null
+    private var gamepadOverlay: GamepadOverlayView? = null
 
     // Set by build4DScreen, read by sceneDumpReceiver -- lets an adb-triggered broadcast query
     // the live scene without any on-screen debug button (see sceneDumpReceiver's doc). Null in 3D
@@ -548,48 +558,220 @@ class MainActivity : AppCompatActivity() {
         // holding the stick performed a twist nobody asked for.
         var menuWasOpenLastStick = false
 
+        /** Left stick's continuous handling -- extracted (2026-08-01) so both the real gamepad's
+         * onLeftStick wiring below and the portrait virtual controller's left-cluster stick (see
+         * virtualClusterLeft further down) drive cell selection/menu highlight/RKT arm-disarm
+         * through the exact same code, rather than two copies that could silently drift apart. */
+        fun handleLeftStickInput(x: Float, y: Float) {
+            val menu = activeMenu()
+            if (menu != null) {
+                // Radial-style menu selection (see StartMenuView.setHighlightFromStick's
+                // doc): hold the stick toward a tile, the highlight follows immediately, then
+                // press Confirm -- not an incremental "move the cursor one step" scheme, so no
+                // edge/arm-detection is needed here, unlike RKT's push-and-return below.
+                menu.setHighlightFromStick(x, y)
+                menuWasOpenLastStick = true
+                return
+            }
+            if (menuWasOpenLastStick) {
+                // Resync, don't blindly re-arm: if the stick is still held past FIRE (toward
+                // whichever tile was just confirmed), start disarmed on that axis so it can't
+                // fire immediately -- only a genuine return-to-center afterward re-arms it.
+                // Harmless (a no-op re-sync) in STICK mode, which doesn't read these flags.
+                rktStickArmedX = abs(x) < RKT_STICK_FIRE_THRESHOLD
+                rktStickArmedY = abs(y) < RKT_STICK_FIRE_THRESHOLD
+                menuWasOpenLastStick = false
+            }
+            if (inputMode == GamepadInputMode.STICK) {
+                surfaceView.queueEvent { renderer.updateCell4Selection(x, y) }
+            } else if (inputMode == GamepadInputMode.RKT) {
+                // A second control path to the *exact same* requestRktITwist calls the D-pad
+                // branch below already makes -- same axis/prime mapping (LEFT/RIGHT -> Y-axis,
+                // UP/DOWN -> X-axis), just triggered by push-to-near-full-and-return instead of
+                // a button press. Not a separate feature, just an alternate way to reach it.
+                if (abs(x) < RKT_STICK_REARM_THRESHOLD) {
+                    rktStickArmedX = true
+                } else if (rktStickArmedX && abs(x) > RKT_STICK_FIRE_THRESHOLD) {
+                    surfaceView.queueEvent { renderer.requestRktITwist(HypercubeRenderer.AXIS_Y, x > 0) }
+                    rktStickArmedX = false
+                }
+                if (abs(y) < RKT_STICK_REARM_THRESHOLD) {
+                    rktStickArmedY = true
+                } else if (rktStickArmedY && abs(y) > RKT_STICK_FIRE_THRESHOLD) {
+                    surfaceView.queueEvent { renderer.requestRktITwist(HypercubeRenderer.AXIS_X, y > 0) }
+                    rktStickArmedY = false
+                }
+            }
+        }
+
+        /** [RotationButton] dispatch (menu confirm/back, twists, Select-held whole-room
+         * rotation) -- extracted (2026-08-01), same reasoning as [handleLeftStickInput]: shared
+         * verbatim by the real gamepad's on4DRotationButton wiring below and the portrait virtual
+         * controller's Y/X/B/A/R1/R2 taps (see virtualClusterRight further down). */
+        fun handleRotationButton(button: RotationButton) {
+            val menu = activeMenu()
+            if (menu != null) {
+                // Confirm/Back reuse the same already-Nintendo/Xbox-normalized A/B mapping
+                // ROTATION_BUTTON_MAP always has (see GamepadInputHandler.layoutSwappedKeyCode's
+                // doc): normalized-A always fires as RotationButton.DOWN, normalized-B as
+                // RotationButton.RIGHT, regardless of GamepadVisualState.nintendoLayout --
+                // that normalization is exactly what makes "physically-bottom button =
+                // Confirm" hold on both Xbox- and Nintendo-position pads with no separate
+                // menu-specific layout handling needed. Back steps up one level (see
+                // goBackOneLevel's doc), not necessarily closing everything.
+                when (button) {
+                    RotationButton.DOWN -> menu.confirm()
+                    RotationButton.RIGHT -> goBackOneLevel()
+                    else -> Unit
+                }
+                return
+            }
+            // Read *now*, on the UI thread, at the exact instant the button was pressed --
+            // not inside queueEvent's deferred block below, which runs on the GL thread
+            // whenever it next gets a frame. Confirmed as a real bug via an adb
+            // `input keycombination SELECT Y`-style repro: Select's own release (also
+            // dispatched on the UI thread) could flip selectHeld back to false *before* the
+            // GL thread got around to running Y's queued job, if the two were pressed and
+            // released within the same handful of milliseconds -- exactly the fast
+            // hold-then-tap-then-release pattern a real modifier-key press produces, so this
+            // wasn't just an artifact of adb timing.
+            val selectHeldAtPress = GamepadVisualState.selectHeld
+            surfaceView.queueEvent {
+                // Twisting without actively re-selecting via the stick (e.g. pressing a
+                // rotation button while it's centered, reusing the last selection) should
+                // still realign the view -- see HypercubeRenderer.snapViewToNearestCardinalOrientation.
+                // Works unchanged for RKT too: renderer.selectedCell4/selectedRoomCell both
+                // already resolve to R there, since setInputMode pins selectedRoomAxis/Sign to
+                // R's slot.
+                renderer.snapViewToNearestCardinalOrientation()
+
+                // Select-held modifier (added 2026-07-26): reuses the same 6 physical
+                // buttons/axis-sense pairing an individual twist uses, but rotates the *whole
+                // room* 90 degrees instead of the selected cell -- same "feel" as the
+                // Y/A/X/B/R1/R2 axis pairing already has, generalized from one piece to
+                // everything at once (the 4D-room equivalent of WCA cube-rotation notation's
+                // x/y/z, as opposed to a face turn). button.literalAxis is the one axis
+                // excluded from the rotation (X excluded -> spins Y/Z; Y excluded -> spins
+                // X/Z; Z excluded -> spins X/Y) -- deliberately never W/I/O, unlike "move to
+                // I," since this is meant to feel like re-gripping the physical puzzle, not
+                // reaching into it (confirmed correct 2026-07-26: I never moves under any of
+                // these, and each axis's snap-rotated sense matches the sense that same
+                // button already gives I when twisting it directly, unmodified).
+                if (selectHeldAtPress) {
+                    val spatialAxes = listOf(HypercubeRenderer.AXIS_X, HypercubeRenderer.AXIS_Y, HypercubeRenderer.AXIS_Z)
+                    val (axisA, axisB) = spatialAxes.filter { it != button.literalAxis.nativeIndex }
+                    // Y was correct with reverse = primaryPrime directly; X was confirmed
+                    // backwards on real-device testing (the Y/A button pair), and Z was
+                    // *assumed* correct rather than independently confirmed the same way --
+                    // now also reported backwards on real-device testing (R1/R2, both of
+                    // which share literalAxis Z) -- same real-device-handedness-correction
+                    // pattern as every other per-axis table in this file
+                    // (rotationInvertedForCell, the RKT X/Z prime flip, etc.).
+                    val reverse = if (button.literalAxis == Axis4.X || button.literalAxis == Axis4.Z) {
+                        !button.primaryPrime
+                    } else {
+                        button.primaryPrime
+                    }
+                    renderer.requestCameraRotate90(axisA, axisB, reverse = reverse)
+                    return@queueEvent
+                }
+
+                val cell = renderer.selectedCell4
+                val fixAxis2 = renderer.resolveRotationButtonFixAxis2(button.literalAxis)
+                // rotationInvertedForCell corrects for a rendering property of the *wall* the
+                // twist is happening in, not the native cell occupying it -- see
+                // HypercubeRenderer.selectedRoomCell's doc for why this must be the room slot,
+                // not `cell` (native), once the room's been rotated away from default.
+                val roomCell = renderer.selectedRoomCell
+                val roomFixAxis2 = renderer.roomFixAxis2For(button.literalAxis)
+                val rawPrime = button.primaryPrime != Notation.rotationInvertedForCell(button, roomCell)
+                // rawPrime is the room-level, orientation-independent community-notation
+                // intent -- correctedPrimeForDisplay resolves it into that intent once here;
+                // correctedNativePrimeForRoomTwist then finds whichever native prime actually
+                // renders that intent for the *current* orientation (see its own doc for why a
+                // room-keyed table alone isn't enough once reoriented -- the confirmed
+                // reoriented-LU-renders-CCW bug).
+                val displayApostrophe = Notation.correctedPrimeForDisplay(roomCell, roomFixAxis2, rawPrime)
+                val prime = renderer.correctedNativePrimeForRoomTwist(cell, fixAxis2, roomCell, roomFixAxis2, displayApostrophe)
+                renderer.requestTwist(cell, fixAxis2, prime, roomCell, roomFixAxis2, displayApostrophe)
+            }
+        }
+
+        /** [NavigationButton] dispatch (Start, Select-held undo/redo, move-to-I, RKT twists) --
+         * extracted (2026-08-01), same reasoning as [handleLeftStickInput]: shared verbatim by
+         * the real gamepad's on4DNavigate wiring below and the portrait virtual controller's
+         * Start/C/L1/L2 taps (see virtualClusterLeft/virtualClusterRight further down). */
+        fun handleNavigateButton(button: NavigationButton) {
+            // Start always toggles the *whole* menu system open/closed, regardless of how
+            // deep a submenu is open -- takes priority over everything else below, including
+            // the Select-held modifier. See toggleTopLevelMenu's doc for how this differs from
+            // Back (which steps up one level at a time instead).
+            if (button == NavigationButton.START) {
+                toggleTopLevelMenu()
+                return
+            }
+            // Swallow everything else while a menu's open (Select-held undo/redo, RKT-mode
+            // twists, etc. below) -- highlight movement itself is handled continuously by
+            // onLeftStick/onDpadStick above, not by these discrete button presses.
+            if (activeMenu() != null) return
+            // Same UI-thread-capture-before-queueEvent pattern as on4DRotationButton above,
+            // and the same reason: checking a live GamepadVisualState flag from inside a
+            // deferred GL-thread block risks a fast press-release window missing the modifier.
+            val selectHeldAtPress = GamepadVisualState.selectHeld
+            if (selectHeldAtPress && (button == NavigationButton.BUMPER_L || button == NavigationButton.TRIGGER_L)) {
+                // Select-held modifier, undo/redo (added 2026-07-26) -- which trigger is which
+                // doesn't matter functionally, L1=undo/L2=redo was an arbitrary pick. Applies
+                // in every input mode, same as the Select+twist-button snap-rotation modifier
+                // above (this check isn't gated on inputMode either), so it overrides
+                // BUMPER_L/TRIGGER_L's normal RKT-mode IF/IF' twist while held.
+                if (button == NavigationButton.BUMPER_L) performUndo() else performRedo()
+            } else {
+                surfaceView.queueEvent {
+                    when (inputMode) {
+                        GamepadInputMode.STICK ->
+                            // Moves the stick-selected cell to I (see
+                            // HypercubeRenderer.requestMoveSelectedCellToI's doc). THUMB_L
+                            // (stick click) is the original control; BUTTON_C is a second, for
+                            // controllers with no stick click to fall back on -- see
+                            // NavigationButton.BUTTON_C's doc.
+                            if (button == NavigationButton.THUMB_L || button == NavigationButton.BUTTON_C) {
+                                renderer.snapViewToNearestCardinalOrientation()
+                                renderer.requestMoveSelectedCellToI()
+                            }
+                        // Community notation: LEFT=IU, RIGHT=IU', UP=IR', DOWN=IR, BUMPER_L(L1)=IF,
+                        // TRIGGER_L(L2)=IF'. SELECT/START/BUTTON_C/THUMB_L are unbound -- no role
+                        // specified for RKT mode (no cell selection exists there to move to I).
+                        // The X/Z axis pairs need prime flipped relative to what their label would
+                        // naively suggest -- real-device-confirmed: Y (LEFT/RIGHT) was already
+                        // correct, and Z (BUMPER_L/TRIGGER_L) needed flipping. X (UP/DOWN) was
+                        // ALSO re-confirmed backwards a second time on real-hardware testing
+                        // (2026-07-28, Retroid D-pad) after an earlier fix had flipped it the
+                        // wrong way -- this is the corrected mapping. Requesting a "non-prime"
+                        // twist on I doesn't consistently mean the same rotation sense across
+                        // different fixAxis2 choices -- same root cause as the other per-cell/
+                        // per-axis correction tables in this file (Cube4::twist's rotating-axis
+                        // handedness is a mechanical function of axis index order, not something
+                        // that adapts to match an external notation convention).
+                        GamepadInputMode.RKT ->
+                            when (button) {
+                                NavigationButton.LEFT -> renderer.requestRktITwist(HypercubeRenderer.AXIS_Y, false)
+                                NavigationButton.RIGHT -> renderer.requestRktITwist(HypercubeRenderer.AXIS_Y, true)
+                                NavigationButton.UP -> renderer.requestRktITwist(HypercubeRenderer.AXIS_X, false)
+                                NavigationButton.DOWN -> renderer.requestRktITwist(HypercubeRenderer.AXIS_X, true)
+                                NavigationButton.BUMPER_L -> renderer.requestRktITwist(HypercubeRenderer.AXIS_Z, true)
+                                NavigationButton.TRIGGER_L -> renderer.requestRktITwist(HypercubeRenderer.AXIS_Z, false)
+                                NavigationButton.SELECT -> Unit
+                                NavigationButton.THUMB_L -> Unit
+                                NavigationButton.START -> Unit
+                                NavigationButton.BUTTON_C -> Unit
+                            }
+                    }
+                }
+            }
+        }
+
         gamepadInput = GamepadInputHandler(
-            onLeftStick = leftStick@{ x, y ->
-                val menu = activeMenu()
-                if (menu != null) {
-                    // Radial-style menu selection (see StartMenuView.setHighlightFromStick's
-                    // doc): hold the stick toward a tile, the highlight follows immediately, then
-                    // press Confirm -- not an incremental "move the cursor one step" scheme, so no
-                    // edge/arm-detection is needed here, unlike RKT's push-and-return below.
-                    menu.setHighlightFromStick(x, y)
-                    menuWasOpenLastStick = true
-                    return@leftStick
-                }
-                if (menuWasOpenLastStick) {
-                    // Resync, don't blindly re-arm: if the stick is still held past FIRE (toward
-                    // whichever tile was just confirmed), start disarmed on that axis so it can't
-                    // fire immediately -- only a genuine return-to-center afterward re-arms it.
-                    // Harmless (a no-op re-sync) in STICK mode, which doesn't read these flags.
-                    rktStickArmedX = abs(x) < RKT_STICK_FIRE_THRESHOLD
-                    rktStickArmedY = abs(y) < RKT_STICK_FIRE_THRESHOLD
-                    menuWasOpenLastStick = false
-                }
-                if (inputMode == GamepadInputMode.STICK) {
-                    surfaceView.queueEvent { renderer.updateCell4Selection(x, y) }
-                } else if (inputMode == GamepadInputMode.RKT) {
-                    // A second control path to the *exact same* requestRktITwist calls the D-pad
-                    // branch below already makes -- same axis/prime mapping (LEFT/RIGHT -> Y-axis,
-                    // UP/DOWN -> X-axis), just triggered by push-to-near-full-and-return instead of
-                    // a button press. Not a separate feature, just an alternate way to reach it.
-                    if (abs(x) < RKT_STICK_REARM_THRESHOLD) {
-                        rktStickArmedX = true
-                    } else if (rktStickArmedX && abs(x) > RKT_STICK_FIRE_THRESHOLD) {
-                        surfaceView.queueEvent { renderer.requestRktITwist(HypercubeRenderer.AXIS_Y, x > 0) }
-                        rktStickArmedX = false
-                    }
-                    if (abs(y) < RKT_STICK_REARM_THRESHOLD) {
-                        rktStickArmedY = true
-                    } else if (rktStickArmedY && abs(y) > RKT_STICK_FIRE_THRESHOLD) {
-                        surfaceView.queueEvent { renderer.requestRktITwist(HypercubeRenderer.AXIS_X, y > 0) }
-                        rktStickArmedY = false
-                    }
-                }
-            },
+            onLeftStick = { x, y -> handleLeftStickInput(x, y) },
             onRightStick = { x, y -> renderer.stickX = x; renderer.stickY = y },
             // Lets controllers without a left stick still drive STICK mode's selection (and, while
             // a menu's open, the same radial highlight selection as the stick) -- always active
@@ -604,162 +786,8 @@ class MainActivity : AppCompatActivity() {
                 }
             },
             onFaceButton = { _, _ -> },
-            on4DRotationButton = rotationButton@{ button ->
-                val menu = activeMenu()
-                if (menu != null) {
-                    // Confirm/Back reuse the same already-Nintendo/Xbox-normalized A/B mapping
-                    // ROTATION_BUTTON_MAP always has (see GamepadInputHandler.layoutSwappedKeyCode's
-                    // doc): normalized-A always fires as RotationButton.DOWN, normalized-B as
-                    // RotationButton.RIGHT, regardless of GamepadVisualState.nintendoLayout --
-                    // that normalization is exactly what makes "physically-bottom button =
-                    // Confirm" hold on both Xbox- and Nintendo-position pads with no separate
-                    // menu-specific layout handling needed. Back steps up one level (see
-                    // goBackOneLevel's doc), not necessarily closing everything.
-                    when (button) {
-                        RotationButton.DOWN -> menu.confirm()
-                        RotationButton.RIGHT -> goBackOneLevel()
-                        else -> Unit
-                    }
-                    return@rotationButton
-                }
-                // Read *now*, on the UI thread, at the exact instant the button was pressed --
-                // not inside queueEvent's deferred block below, which runs on the GL thread
-                // whenever it next gets a frame. Confirmed as a real bug via an adb
-                // `input keycombination SELECT Y`-style repro: Select's own release (also
-                // dispatched on the UI thread) could flip selectHeld back to false *before* the
-                // GL thread got around to running Y's queued job, if the two were pressed and
-                // released within the same handful of milliseconds -- exactly the fast
-                // hold-then-tap-then-release pattern a real modifier-key press produces, so this
-                // wasn't just an artifact of adb timing.
-                val selectHeldAtPress = GamepadVisualState.selectHeld
-                surfaceView.queueEvent {
-                    // Twisting without actively re-selecting via the stick (e.g. pressing a
-                    // rotation button while it's centered, reusing the last selection) should
-                    // still realign the view -- see HypercubeRenderer.snapViewToNearestCardinalOrientation.
-                    // Works unchanged for RKT too: renderer.selectedCell4/selectedRoomCell both
-                    // already resolve to R there, since setInputMode pins selectedRoomAxis/Sign to
-                    // R's slot.
-                    renderer.snapViewToNearestCardinalOrientation()
-
-                    // Select-held modifier (added 2026-07-26): reuses the same 6 physical
-                    // buttons/axis-sense pairing an individual twist uses, but rotates the *whole
-                    // room* 90 degrees instead of the selected cell -- same "feel" as the
-                    // Y/A/X/B/R1/R2 axis pairing already has, generalized from one piece to
-                    // everything at once (the 4D-room equivalent of WCA cube-rotation notation's
-                    // x/y/z, as opposed to a face turn). button.literalAxis is the one axis
-                    // excluded from the rotation (X excluded -> spins Y/Z; Y excluded -> spins
-                    // X/Z; Z excluded -> spins X/Y) -- deliberately never W/I/O, unlike "move to
-                    // I," since this is meant to feel like re-gripping the physical puzzle, not
-                    // reaching into it (confirmed correct 2026-07-26: I never moves under any of
-                    // these, and each axis's snap-rotated sense matches the sense that same
-                    // button already gives I when twisting it directly, unmodified).
-                    if (selectHeldAtPress) {
-                        val spatialAxes = listOf(HypercubeRenderer.AXIS_X, HypercubeRenderer.AXIS_Y, HypercubeRenderer.AXIS_Z)
-                        val (axisA, axisB) = spatialAxes.filter { it != button.literalAxis.nativeIndex }
-                        // Y was correct with reverse = primaryPrime directly; X was confirmed
-                        // backwards on real-device testing (the Y/A button pair), and Z was
-                        // *assumed* correct rather than independently confirmed the same way --
-                        // now also reported backwards on real-device testing (R1/R2, both of
-                        // which share literalAxis Z) -- same real-device-handedness-correction
-                        // pattern as every other per-axis table in this file
-                        // (rotationInvertedForCell, the RKT X/Z prime flip, etc.).
-                        val reverse = if (button.literalAxis == Axis4.X || button.literalAxis == Axis4.Z) {
-                            !button.primaryPrime
-                        } else {
-                            button.primaryPrime
-                        }
-                        renderer.requestCameraRotate90(axisA, axisB, reverse = reverse)
-                        return@queueEvent
-                    }
-
-                    val cell = renderer.selectedCell4
-                    val fixAxis2 = renderer.resolveRotationButtonFixAxis2(button.literalAxis)
-                    // rotationInvertedForCell corrects for a rendering property of the *wall* the
-                    // twist is happening in, not the native cell occupying it -- see
-                    // HypercubeRenderer.selectedRoomCell's doc for why this must be the room slot,
-                    // not `cell` (native), once the room's been rotated away from default.
-                    val roomCell = renderer.selectedRoomCell
-                    val roomFixAxis2 = renderer.roomFixAxis2For(button.literalAxis)
-                    val rawPrime = button.primaryPrime != Notation.rotationInvertedForCell(button, roomCell)
-                    // rawPrime is the room-level, orientation-independent community-notation
-                    // intent -- correctedPrimeForDisplay resolves it into that intent once here;
-                    // correctedNativePrimeForRoomTwist then finds whichever native prime actually
-                    // renders that intent for the *current* orientation (see its own doc for why a
-                    // room-keyed table alone isn't enough once reoriented -- the confirmed
-                    // reoriented-LU-renders-CCW bug).
-                    val displayApostrophe = Notation.correctedPrimeForDisplay(roomCell, roomFixAxis2, rawPrime)
-                    val prime = renderer.correctedNativePrimeForRoomTwist(cell, fixAxis2, roomCell, roomFixAxis2, displayApostrophe)
-                    renderer.requestTwist(cell, fixAxis2, prime, roomCell, roomFixAxis2, displayApostrophe)
-                }
-            },
-            on4DNavigate = navigate@{ button ->
-                // Start always toggles the *whole* menu system open/closed, regardless of how
-                // deep a submenu is open -- takes priority over everything else below, including
-                // the Select-held modifier. See toggleTopLevelMenu's doc for how this differs from
-                // Back (which steps up one level at a time instead).
-                if (button == NavigationButton.START) {
-                    toggleTopLevelMenu()
-                    return@navigate
-                }
-                // Swallow everything else while a menu's open (Select-held undo/redo, RKT-mode
-                // twists, etc. below) -- highlight movement itself is handled continuously by
-                // onLeftStick/onDpadStick above, not by these discrete button presses.
-                if (activeMenu() != null) return@navigate
-                // Same UI-thread-capture-before-queueEvent pattern as on4DRotationButton above,
-                // and the same reason: checking a live GamepadVisualState flag from inside a
-                // deferred GL-thread block risks a fast press-release window missing the modifier.
-                val selectHeldAtPress = GamepadVisualState.selectHeld
-                if (selectHeldAtPress && (button == NavigationButton.BUMPER_L || button == NavigationButton.TRIGGER_L)) {
-                    // Select-held modifier, undo/redo (added 2026-07-26) -- which trigger is which
-                    // doesn't matter functionally, L1=undo/L2=redo was an arbitrary pick. Applies
-                    // in every input mode, same as the Select+twist-button snap-rotation modifier
-                    // above (this check isn't gated on inputMode either), so it overrides
-                    // BUMPER_L/TRIGGER_L's normal RKT-mode IF/IF' twist while held.
-                    if (button == NavigationButton.BUMPER_L) performUndo() else performRedo()
-                } else {
-                    surfaceView.queueEvent {
-                        when (inputMode) {
-                            GamepadInputMode.STICK ->
-                                // Moves the stick-selected cell to I (see
-                                // HypercubeRenderer.requestMoveSelectedCellToI's doc). THUMB_L
-                                // (stick click) is the original control; BUTTON_C is a second, for
-                                // controllers with no stick click to fall back on -- see
-                                // NavigationButton.BUTTON_C's doc.
-                                if (button == NavigationButton.THUMB_L || button == NavigationButton.BUTTON_C) {
-                                    renderer.snapViewToNearestCardinalOrientation()
-                                    renderer.requestMoveSelectedCellToI()
-                                }
-                            // Community notation: LEFT=IU, RIGHT=IU', UP=IR', DOWN=IR, BUMPER_L(L1)=IF,
-                            // TRIGGER_L(L2)=IF'. SELECT/START/BUTTON_C/THUMB_L are unbound -- no role
-                            // specified for RKT mode (no cell selection exists there to move to I).
-                            // The X/Z axis pairs need prime flipped relative to what their label would
-                            // naively suggest -- real-device-confirmed: Y (LEFT/RIGHT) was already
-                            // correct, and Z (BUMPER_L/TRIGGER_L) needed flipping. X (UP/DOWN) was
-                            // ALSO re-confirmed backwards a second time on real-hardware testing
-                            // (2026-07-28, Retroid D-pad) after an earlier fix had flipped it the
-                            // wrong way -- this is the corrected mapping. Requesting a "non-prime"
-                            // twist on I doesn't consistently mean the same rotation sense across
-                            // different fixAxis2 choices -- same root cause as the other per-cell/
-                            // per-axis correction tables in this file (Cube4::twist's rotating-axis
-                            // handedness is a mechanical function of axis index order, not something
-                            // that adapts to match an external notation convention).
-                            GamepadInputMode.RKT ->
-                                when (button) {
-                                    NavigationButton.LEFT -> renderer.requestRktITwist(HypercubeRenderer.AXIS_Y, false)
-                                    NavigationButton.RIGHT -> renderer.requestRktITwist(HypercubeRenderer.AXIS_Y, true)
-                                    NavigationButton.UP -> renderer.requestRktITwist(HypercubeRenderer.AXIS_X, false)
-                                    NavigationButton.DOWN -> renderer.requestRktITwist(HypercubeRenderer.AXIS_X, true)
-                                    NavigationButton.BUMPER_L -> renderer.requestRktITwist(HypercubeRenderer.AXIS_Z, true)
-                                    NavigationButton.TRIGGER_L -> renderer.requestRktITwist(HypercubeRenderer.AXIS_Z, false)
-                                    NavigationButton.SELECT -> Unit
-                                    NavigationButton.THUMB_L -> Unit
-                                    NavigationButton.START -> Unit
-                                    NavigationButton.BUTTON_C -> Unit
-                                }
-                        }
-                    }
-                }
-            },
+            on4DRotationButton = { button -> handleRotationButton(button) },
+            on4DNavigate = { button -> handleNavigateButton(button) },
         )
         inputManager.registerInputDeviceListener(gamepadInput, null)
         gamepadInput.logAlreadyConnectedDevices()
@@ -1102,18 +1130,81 @@ class MainActivity : AppCompatActivity() {
         rootLayout.addView(surfaceView)
         rootLayout.addView(statusText, topCenterParams())
         rootLayout.addView(lastMoveColumn, topStartParams())
-        rootLayout.addView(gamepadOverlayView(), bottomStartParams())
+        gamepadOverlay = gamepadOverlayView()
+        rootLayout.addView(gamepadOverlay, bottomStartParams())
         rootLayout.addView(buildNumberLabel(), bottomEndParams())
         // Persistent, always-tappable entry point for controller-less users (see the design
         // doc's accessibility section and updateMenuButtonLabel's doc) -- always visible, relabeled
         // Menu/Close/Back by current menu depth. The gamepad Start button opens/closes the same
-        // menu via toggleTopLevelMenu() in on4DNavigate above.
+        // menu via toggleTopLevelMenu() in on4DNavigate above. Hidden in portrait -- see
+        // updateControlVisibilityForOrientation's doc for why the virtual controller's own Start
+        // pill makes this redundant there.
         updateMenuButtonLabel()
         rootLayout.addView(menuButton, bottomCenterParams(bottomMargin = 12))
+
+        // Portrait-only virtual controller (see VirtualClusterView's class doc and the
+        // handleLeftStickInput/handleRotationButton/handleNavigateButton functions above, which
+        // this reuses verbatim rather than reimplementing any dispatch logic). Built here,
+        // unconditionally, same as the landscape gamepadOverlay/menuButton pair above -- only
+        // *visibility* differs by orientation (see updateControlVisibilityForOrientation), so
+        // switching orientation never needs to tear down/rebuild either pair.
+        virtualClusterLeft = VirtualClusterView(
+            context = this,
+            topLeftLabel = "About",
+            topRightLabel = "Select",
+            onTopLeftTap = { showHelpDialog() },
+            // A true hold, not a tap -- writes the same GamepadVisualState.selectHeld flag a
+            // real Select button press/release does, so handleRotationButton/handleNavigateButton
+            // (both already keyed off that one flag) pick up the modifier with zero extra code:
+            // hold Select + tap a twist button for whole-room rotation, or + L1/L2 for undo/redo,
+            // exactly like the physical controller.
+            onTopRightTap = { GamepadVisualState.selectHeld = true },
+            onTopRightRelease = { GamepadVisualState.selectHeld = false },
+            shoulderLeftLabel = "L2",
+            shoulderRightLabel = "L1",
+            // Deliberately performRedo()/performUndo() directly, NOT handleNavigateButton(TRIGGER_L/
+            // BUMPER_L) -- that path only does anything while Select is held (see
+            // handleNavigateButton's doc), which on a real pad is a natural same-hand hold+press but
+            // on a touchscreen means pinning Select with one finger while another reaches L1/L2 on
+            // the *same* (left) cluster -- confirmed clunky/easy to fumble via on-emulator testing.
+            // Undo/redo is common enough to deserve a plain, unmodified tap. The real trade-off this
+            // makes: virtual L1/L2 can't reach RKT mode's IF/IF' twist (handleNavigateButton's other
+            // BUMPER_L/TRIGGER_L role) -- an accepted first-pass gap, not an oversight, since RKT is
+            // an advanced/optional mode a touch-only new player is unlikely to need immediately.
+            onShoulderLeftTap = { performRedo() },
+            onShoulderRightTap = { performUndo() },
+            mainControl = VirtualClusterView.MainControl.Stick(onChanged = { x, y -> handleLeftStickInput(x, y) }),
+        )
+        virtualClusterRight = VirtualClusterView(
+            context = this,
+            topLeftLabel = "Start",
+            topRightLabel = "C",
+            onTopLeftTap = { toggleTopLevelMenu() },
+            onTopRightTap = { handleNavigateButton(NavigationButton.BUTTON_C) },
+            shoulderLeftLabel = "R1",
+            shoulderRightLabel = "R2",
+            onShoulderLeftTap = { handleRotationButton(RotationButton.BUMPER_R) },
+            onShoulderRightTap = { handleRotationButton(RotationButton.TRIGGER_R) },
+            mainControl = VirtualClusterView.MainControl.FaceDiamond(
+                topLabel = "Y", onTopTap = { handleRotationButton(RotationButton.UP) },
+                leftLabel = "X", onLeftTap = { handleRotationButton(RotationButton.LEFT) },
+                rightLabel = "B", onRightTap = { handleRotationButton(RotationButton.RIGHT) },
+                bottomLabel = "A", onBottomTap = { handleRotationButton(RotationButton.DOWN) },
+            ),
+        )
+        rootLayout.addView(virtualClusterLeft, virtualClusterParams(startSide = true))
+        rootLayout.addView(virtualClusterRight, virtualClusterParams(startSide = false))
+        updateControlVisibilityForOrientation()
+
         // Added last so each draws (and, once VISIBLE, receives touch) above every view before it.
-        rootLayout.addView(startMenuView, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        // startMenuView/settingsMenuView use menuOverlayParams (see its doc) instead of a blanket
+        // MATCH_PARENT, so they never cover the portrait control bar; filtersMenuView keeps plain
+        // MATCH_PARENT -- its compact style already doesn't consume touches outside its own small
+        // panel (see StartMenuView's class doc), so it was never able to block the control bar to
+        // begin with.
+        rootLayout.addView(startMenuView, menuOverlayParams())
         rootLayout.addView(filtersMenuView, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-        rootLayout.addView(settingsMenuView, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        rootLayout.addView(settingsMenuView, menuOverlayParams())
     }
 
     /** Drag on the main view controls the ordinary 3D-feeling rotation, same as [handle3DDrag]. */
@@ -1305,6 +1396,108 @@ class MainActivity : AppCompatActivity() {
         FrameLayout.LayoutParams.WRAP_CONTENT,
         Gravity.BOTTOM or Gravity.END,
     ).apply { bottomMargin = 12; rightMargin = 12 }
+
+    /** Each portrait virtual-controller cluster is a fixed-width block (not stretched to fill
+     * its half of the screen -- see VirtualClusterView's class doc for why: the same width-driven
+     * internal layout needs to drop into a landscape side-margin unchanged later). Needs an
+     * explicit pixel width, unlike this file's other *Params helpers -- VirtualClusterView.onMeasure
+     * reads the resolved MeasureSpec size directly to lay itself out, which WRAP_CONTENT alone
+     * wouldn't reliably supply. */
+    private fun virtualClusterParams(startSide: Boolean) = FrameLayout.LayoutParams(
+        (resources.displayMetrics.widthPixels * VIRTUAL_CLUSTER_WIDTH_FRACTION).toInt(),
+        FrameLayout.LayoutParams.WRAP_CONTENT,
+        Gravity.BOTTOM or if (startSide) Gravity.START else Gravity.END,
+    ).apply {
+        val marginPx = (12 * resources.displayMetrics.density).toInt()
+        leftMargin = marginPx
+        rightMargin = marginPx
+        bottomMargin = marginPx
+    }
+
+    /** [startMenuView]/[settingsMenuView]'s bounds -- fullscreen style, per StartMenuView's class
+     * doc, meaning it consumes *every* touch within its own bounds while open. Confined here (in
+     * portrait) to stop exactly above the virtual control bar's reserved footprint, rather than
+     * the old blanket MATCH_PARENT -- confirmed via emulator testing as a real bug otherwise: the
+     * menu's own tile grid physically overlapped the same screen region the virtual controller's
+     * pills sit in, so a tap meant to reach a control (e.g. the Start pill again, to close the
+     * menu) instead landed on whatever tile happened to occupy that position (one test run
+     * accidentally triggered Reset this way). Confining the menu's bounds this way also means no
+     * dedicated "Close" affordance is needed for touch-only portrait play: the virtual controller
+     * (never covered) stays reachable the whole time a menu is open, and its B/Back pill already
+     * calls goBackOneLevel() via handleRotationButton -- the exact same one-press-closes-from-the-
+     * top-level behavior menuButton's own "Close" label describes today.
+     *
+     * This is a first, minimal slice of a larger reserved-control-strip redesign discussed
+     * 2026-08-01 (constant-width-relative-to-screen control regions defining an inset "game
+     * display" the puzzle's camera -- and now menus -- both frame themselves around, eventually
+     * covering landscape's currently-deferred side strips too) -- landscape doesn't need an inset
+     * here yet since menuButton already sits below the menu's tile grid without one (see
+     * menuButton's own doc), so this only branches for portrait. Recomputed on every call (not
+     * cached), same reasoning as virtualClusterParams -- the reserved height is 45%-of-*current*-
+     * screen-width-derived, which swaps on every rotation. */
+    private fun menuOverlayParams(): FrameLayout.LayoutParams {
+        val portrait = resources.configuration.orientation == Configuration.ORIENTATION_PORTRAIT
+        if (!portrait) {
+            return FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+        }
+        val clusterWidth = resources.displayMetrics.widthPixels * VIRTUAL_CLUSTER_WIDTH_FRACTION
+        val clusterHeight = VirtualClusterView.heightForWidth(clusterWidth)
+        val marginPx = 12 * resources.displayMetrics.density
+        val reservedBottom = (clusterHeight + marginPx * 2).toInt()
+        return FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            resources.displayMetrics.heightPixels - reservedBottom,
+            Gravity.TOP,
+        )
+    }
+
+    /** Re-applies [menuOverlayParams] to both fullscreen menus -- called once from build4DScreen
+     * and again from [onConfigurationChanged], same "recompute, don't just toggle visibility"
+     * reasoning as [updateControlVisibilityForOrientation]. A fresh LayoutParams instance per
+     * view, deliberately, not one shared object -- Android views don't reliably share a single
+     * LayoutParams instance across siblings. */
+    private fun updateMenuOverlayBounds() {
+        if (!::startMenuView.isInitialized) return
+        startMenuView.layoutParams = menuOverlayParams()
+        settingsMenuView.layoutParams = menuOverlayParams()
+    }
+
+    /** Portrait shows the interactive virtual controller -- which has its own Start pill, making
+     * the touch-only [menuButton] redundant there -- and hides the landscape-only
+     * [gamepadOverlay] HUD/[menuButton] pair; landscape is the exact reverse (no virtual controls
+     * drawn there yet, per David's explicit "focus on portrait first" scoping). Called once right
+     * after [build4DScreen] creates both pairs, and again from [onConfigurationChanged] on every
+     * rotation. Deliberately never calls [rebuildUi]/[build4DScreen] again itself -- that would
+     * wipe moveHistory4D (see [pendingRestoreState4D]'s doc) for no reason other than a rotation;
+     * both pairs already exist, only their visibility needs to change. A no-op in 3D mode/before
+     * build4DScreen has run, since the nullable fields are simply still null there. */
+    private fun updateControlVisibilityForOrientation() {
+        val portrait = resources.configuration.orientation == Configuration.ORIENTATION_PORTRAIT
+        // Re-derived every call, not just at build4DScreen time -- virtualClusterParams's width
+        // is 45% of the *current* screen width, which swaps with every rotation; reusing
+        // whichever LayoutParams instance build4DScreen originally created would leave both
+        // clusters sized for whatever orientation was active on first build (confirmed as a real
+        // bug via emulator screenshot: rotating after launch left each cluster ~45% of the old
+        // landscape width, which is nearly the *entire* portrait width, so the two fully
+        // overlapped instead of sitting in their own halves).
+        virtualClusterLeft?.layoutParams = virtualClusterParams(startSide = true)
+        virtualClusterRight?.layoutParams = virtualClusterParams(startSide = false)
+        virtualClusterLeft?.visibility = if (portrait) View.VISIBLE else View.GONE
+        virtualClusterRight?.visibility = if (portrait) View.VISIBLE else View.GONE
+        gamepadOverlay?.visibility = if (portrait) View.GONE else View.VISIBLE
+        if (::menuButton.isInitialized) {
+            menuButton.visibility = if (portrait) View.GONE else View.VISIBLE
+        }
+    }
+
+    /** [AndroidManifest.xml]'s `configChanges="orientation|screenSize|..."` on MainActivity routes
+     * rotation here instead of recreating the Activity -- see [updateControlVisibilityForOrientation]'s
+     * doc for why that's the only thing a rotation needs to do. */
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        updateControlVisibilityForOrientation()
+        updateMenuOverlayBounds()
+    }
 
     /** Small, always-present build-identity label. [BuildConfig.VERSION_NAME] is the semantic
      * version (the same string set as `versionName` in build.gradle.kts, e.g. "0.5.0") -- for an
@@ -1507,6 +1700,12 @@ class MainActivity : AppCompatActivity() {
         // the stick has to genuinely come back toward center before another push counts.
         private const val RKT_STICK_FIRE_THRESHOLD = 0.8f
         private const val RKT_STICK_REARM_THRESHOLD = 0.4f
+
+        // Shared by virtualClusterParams (sizes each cluster) and menuOverlayParams (insets the
+        // fullscreen Start/Settings menus to stop exactly above the control bar) -- both need to
+        // agree on the same fraction or the menu's reserved bottom strip would drift out of sync
+        // with the control bar's actual footprint.
+        private const val VIRTUAL_CLUSTER_WIDTH_FRACTION = 0.45f
 
         private const val SOLVED_LABEL = "SOLVED"
         private const val SAVE_FILE_NAME = "puzzle_state.json"
