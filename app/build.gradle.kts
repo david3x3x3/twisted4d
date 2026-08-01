@@ -47,13 +47,22 @@ val gitVersion = gitCommand("rev-parse", "--short=8", "HEAD") +
 
 android {
     namespace = "dev.twisted4d.app"
-    compileSdk = 34
+    // 36, not 34 -- confirmed via developer.android.com/google/play/requirements/target-sdk
+    // (2026-08-01) that Play requires a genuinely *new* app (this one's never been published)
+    // to target API 36 starting Aug 31, 2026, which is essentially now; existing apps get one
+    // level of grace (35) but there's no reason to under-shoot that for a first submission. Not
+    // stopping at 35 -- would just mean bumping again almost immediately. minSdk stays 26
+    // unchanged; targetSdk doesn't gate which devices can install the app, only which platform
+    // behavior version the app opts into (see the release_signing_backup_locations-adjacent
+    // conversation, 2026-08-01, for why this doesn't affect device compatibility, e.g. David's
+    // Retroid).
+    compileSdk = 36
     ndkVersion = "27.2.12479018"
 
     defaultConfig {
         applicationId = "dev.twisted4d.app"
         minSdk = 26
-        targetSdk = 34
+        targetSdk = 36
         // versionCode is the Play-Store-style monotonically-increasing build counter (never
         // shown to users, just what the package manager compares to decide "is this an
         // upgrade") -- bump it by 1 on every future release regardless of versionName.

@@ -42,6 +42,19 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var rootLayout: FrameLayout
     private lateinit var inputManager: InputManager
+
+    // Real device pixels the system bars (status bar, gesture/3-button nav bar) occupy right now
+    // -- populated by the OnApplyWindowInsetsListener registered in onCreate, read by every
+    // screen-edge-anchored *Params helper below (topStartParams, virtualClusterParams, etc.) so
+    // their margins clear the system bars instead of overlapping them. Needed as of the API 36
+    // target bump (2026-08-01): targeting 35+ enforces edge-to-edge display, so the OS no longer
+    // auto-reserves system bar space the way it used to -- confirmed as a real regression via
+    // emulator screenshot (the bottom-right build-number label and the portrait virtual
+    // controller's own bottom edge both started rendering under/through the gesture nav bar).
+    // Starts at NONE (zero on every side) since insets aren't known yet on the very first
+    // `build4DScreen` call (they're dispatched asynchronously, after the initial layout pass) --
+    // the listener re-triggers a layout refresh once the real values arrive.
+    private var systemBarInsets: androidx.core.graphics.Insets = androidx.core.graphics.Insets.NONE
     private lateinit var gamepadInput: GamepadInputHandler
 
     private var glSurfaceView: GLSurfaceView? = null
@@ -71,6 +84,13 @@ class MainActivity : AppCompatActivity() {
     // design doc's accessibility section) -- hidden while any menu is already open (per feedback:
     // it just sat there uselessly, and confusingly overlapped the Filters panel's own tiles).
     private lateinit var menuButton: Button
+
+    // Class-level references (not just build3DScreen/build4DScreen locals) purely so
+    // reapplyEdgeAnchoredLayouts can re-apply their LayoutParams once systemBarInsets is actually
+    // known -- see that function's doc. Null in whichever mode/before-first-build isn't currently
+    // active, same as the other nullable view fields.
+    private var statusTextLabel: TextView? = null
+    private var buildNumberLabelView: TextView? = null
 
     // Portrait-only interactive touch controller (see VirtualClusterView's class doc) -- built
     // once per build4DScreen call, alongside the landscape gamepadOverlayView/menuButton pair,
@@ -274,6 +294,16 @@ class MainActivity : AppCompatActivity() {
         loadState()
         rootLayout = FrameLayout(this)
         setContentView(rootLayout)
+        // See systemBarInsets's own doc for why this exists. Doesn't consume the insets (returns
+        // them unchanged) -- the GL surface itself should stay genuinely full-screen/edge-to-edge
+        // for the puzzle rendering, only the UI controls need to dodge the system bars, and they
+        // each read systemBarInsets directly rather than relying on any padding applied here.
+        ViewCompat.setOnApplyWindowInsetsListener(rootLayout) { _, windowInsets ->
+            systemBarInsets = windowInsets.getInsets(WindowInsetsCompat.Type.systemBars())
+            updateControlVisibility()
+            updateMenuOverlayBounds()
+            windowInsets
+        }
         startMenuView = StartMenuView(this)
         // 3x3, not a 1x4 list -- a D-pad-as-stick controller (see GamepadInputHandler.onDpadStick's
         // doc) only ever reports -1/0/+1 per axis, never an intermediate value, so a single-axis
@@ -362,6 +392,7 @@ class MainActivity : AppCompatActivity() {
         gamepadInput.logAlreadyConnectedDevices()
 
         val statusText = statusTextView(initiallySolved)
+        statusTextLabel = statusText
         renderer.onStateChanged = { solved ->
             runOnUiThread { statusText.text = if (solved) SOLVED_LABEL else "" }
         }
@@ -406,8 +437,11 @@ class MainActivity : AppCompatActivity() {
         rootLayout.addView(twistRow, bottomCenterParams(bottomMargin = 48))
         rootLayout.addView(modeToggleButton(), topStartParams())
         rootLayout.addView(utilityRow, topEndParams())
-        rootLayout.addView(gamepadOverlayView(), bottomStartParams())
-        rootLayout.addView(buildNumberLabel(), bottomEndParams())
+        gamepadOverlay = gamepadOverlayView()
+        rootLayout.addView(gamepadOverlay, bottomStartParams())
+        val buildLabel = buildNumberLabel()
+        buildNumberLabelView = buildLabel
+        rootLayout.addView(buildLabel, bottomEndParams())
     }
 
     private fun handle3DDrag(surfaceView: GLSurfaceView, renderer: CubeRenderer, event: MotionEvent): Boolean {
@@ -844,6 +878,7 @@ class MainActivity : AppCompatActivity() {
         pollBattery.run()
 
         val statusText = statusTextView(initiallySolved)
+        statusTextLabel = statusText
         renderer.onStateChanged = { solved ->
             runOnUiThread { statusText.text = if (solved) SOLVED_LABEL else "" }
         }
@@ -1227,7 +1262,9 @@ class MainActivity : AppCompatActivity() {
         rootLayout.addView(lastMoveColumnView, topStartParams())
         gamepadOverlay = gamepadOverlayView()
         rootLayout.addView(gamepadOverlay, bottomStartParams())
-        rootLayout.addView(buildNumberLabel(), bottomEndParams())
+        val buildLabel = buildNumberLabel()
+        buildNumberLabelView = buildLabel
+        rootLayout.addView(buildLabel, bottomEndParams())
         // Persistent, always-tappable entry point for controller-less users (see the design
         // doc's accessibility section and updateMenuButtonLabel's doc) -- always visible, relabeled
         // Menu/Close/Back by current menu depth. The gamepad Start button opens/closes the same
@@ -1506,7 +1543,7 @@ class MainActivity : AppCompatActivity() {
         FrameLayout.LayoutParams.WRAP_CONTENT,
         FrameLayout.LayoutParams.WRAP_CONTENT,
         Gravity.TOP or Gravity.CENTER_HORIZONTAL,
-    ).apply { topMargin = 24 }
+    ).apply { topMargin = 24 + systemBarInsets.top }
 
     /** In landscape, the virtual controller's left cluster is vertically centered (see
      * [virtualClusterParams]) and tall enough (~68% of a typical landscape height) that pushing
@@ -1531,9 +1568,9 @@ class MainActivity : AppCompatActivity() {
             FrameLayout.LayoutParams.WRAP_CONTENT,
             Gravity.TOP or Gravity.START,
         )
-        params.topMargin = 24
+        params.topMargin = 24 + systemBarInsets.top
         val portrait = resources.configuration.orientation == Configuration.ORIENTATION_PORTRAIT
-        params.leftMargin = if (portrait || GamepadInputHandler.anyGamepadConnected()) {
+        params.leftMargin = systemBarInsets.left + if (portrait || GamepadInputHandler.anyGamepadConnected()) {
             24
         } else {
             val marginPx = 12 * resources.displayMetrics.density
@@ -1546,37 +1583,50 @@ class MainActivity : AppCompatActivity() {
         FrameLayout.LayoutParams.WRAP_CONTENT,
         FrameLayout.LayoutParams.WRAP_CONTENT,
         Gravity.TOP or Gravity.END,
-    ).apply { topMargin = 24; rightMargin = 24 }
+    ).apply { topMargin = 24 + systemBarInsets.top; rightMargin = 24 + systemBarInsets.right }
 
     private fun bottomCenterParams(bottomMargin: Int) = FrameLayout.LayoutParams(
         FrameLayout.LayoutParams.WRAP_CONTENT,
         FrameLayout.LayoutParams.WRAP_CONTENT,
         Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL,
-    ).apply { this.bottomMargin = bottomMargin }
+    ).apply { this.bottomMargin = bottomMargin + systemBarInsets.bottom }
 
     private fun centerStartParams() = FrameLayout.LayoutParams(
         FrameLayout.LayoutParams.WRAP_CONTENT,
         FrameLayout.LayoutParams.WRAP_CONTENT,
         Gravity.CENTER_VERTICAL or Gravity.START,
-    ).apply { leftMargin = 12 }
+    ).apply { leftMargin = 12 + systemBarInsets.left }
 
     private fun centerEndParams() = FrameLayout.LayoutParams(
         FrameLayout.LayoutParams.WRAP_CONTENT,
         FrameLayout.LayoutParams.WRAP_CONTENT,
         Gravity.CENTER_VERTICAL or Gravity.END,
-    ).apply { rightMargin = 12 }
+    ).apply { rightMargin = 12 + systemBarInsets.right }
 
     private fun bottomStartParams() = FrameLayout.LayoutParams(
         (150 * resources.displayMetrics.density).toInt(),
         (130 * resources.displayMetrics.density).toInt(),
         Gravity.BOTTOM or Gravity.START,
-    ).apply { leftMargin = 12; bottomMargin = 12 }
+    ).apply { leftMargin = 12 + systemBarInsets.left; bottomMargin = 12 + systemBarInsets.bottom }
 
-    private fun bottomEndParams() = FrameLayout.LayoutParams(
-        FrameLayout.LayoutParams.WRAP_CONTENT,
-        FrameLayout.LayoutParams.WRAP_CONTENT,
-        Gravity.BOTTOM or Gravity.END,
-    ).apply { bottomMargin = 12; rightMargin = 12 }
+    // marginPx used to be a bare "12" here (raw pixels, not dp) -- harmless before the API 36
+    // target bump only because the OS auto-reserved system bar space back then, keeping this
+    // corner comfortably clear of the nav bar regardless of how tiny the margin actually was.
+    // Once edge-to-edge became enforced, that tiny margin put this label's text directly under/
+    // through the gesture nav bar (confirmed via emulator screenshot, 2026-08-01) -- fixed to
+    // match every other *Params helper's proper dp-scaled margin, plus the same systemBarInsets
+    // fold-in the rest of them now use.
+    private fun bottomEndParams(): FrameLayout.LayoutParams {
+        val marginPx = (12 * resources.displayMetrics.density).toInt()
+        return FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.WRAP_CONTENT,
+            FrameLayout.LayoutParams.WRAP_CONTENT,
+            Gravity.BOTTOM or Gravity.END,
+        ).apply {
+            bottomMargin = marginPx + systemBarInsets.bottom
+            rightMargin = marginPx + systemBarInsets.right
+        }
+    }
 
     /** Each virtual-controller cluster's own width -- basis is `min(width, height)`, i.e.
      * whichever screen dimension is currently the *short* one: the full screen width in portrait
@@ -1612,9 +1662,9 @@ class MainActivity : AppCompatActivity() {
             Gravity.CENTER_VERTICAL or if (startSide) Gravity.START else Gravity.END
         }
         return FrameLayout.LayoutParams(clusterWidthPx().toInt(), FrameLayout.LayoutParams.WRAP_CONTENT, gravity).apply {
-            leftMargin = marginPx
-            rightMargin = marginPx
-            if (portrait) bottomMargin = marginPx
+            leftMargin = marginPx + systemBarInsets.left
+            rightMargin = marginPx + systemBarInsets.right
+            if (portrait) bottomMargin = marginPx + systemBarInsets.bottom
         }
     }
 
@@ -1645,14 +1695,24 @@ class MainActivity : AppCompatActivity() {
         val clusterWidth = clusterWidthPx()
         val marginPx = 12 * resources.displayMetrics.density
         return if (portrait) {
-            val reservedBottom = (VirtualClusterView.heightForWidth(clusterWidth) + marginPx * 2).toInt()
+            // Matches virtualClusterParams's own portrait bottomMargin (marginPx + insets.bottom)
+            // exactly -- this reserved strip has to be at least as tall as the cluster's actual
+            // footprint, insets included, or the menu would creep back into the space the system
+            // bar fold-in just cleared for the controls.
+            val reservedBottom = (VirtualClusterView.heightForWidth(clusterWidth) + marginPx * 2).toInt() + systemBarInsets.bottom
             FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 resources.displayMetrics.heightPixels - reservedBottom,
                 Gravity.TOP,
             )
         } else {
-            val reservedSide = (clusterWidth + marginPx * 2).toInt()
+            // CENTER_HORIZONTAL with a symmetric reduced width can't reserve *different* amounts
+            // per side, so this uses whichever side's inset is larger for both -- conservative
+            // (never under-reserves), at worst wastes a little width on the smaller-inset side,
+            // which in practice is usually 0 anyway (landscape nav-bar insets are typically
+            // one-sided or absent, not equal-on-both-sides).
+            val sideInset = maxOf(systemBarInsets.left, systemBarInsets.right)
+            val reservedSide = (clusterWidth + marginPx * 2).toInt() + sideInset
             FrameLayout.LayoutParams(
                 resources.displayMetrics.widthPixels - reservedSide * 2,
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -1716,10 +1776,23 @@ class MainActivity : AppCompatActivity() {
         if (::menuButton.isInitialized) {
             menuButton.visibility = View.GONE
         }
-        // topStartParams's landscape top margin depends on the left cluster's current height --
-        // see its doc -- so it goes stale on rotation exactly like virtualClusterParams/
-        // menuOverlayParams above if not re-applied here too.
+        // Every *Params call below re-applies LayoutParams that fold in systemBarInsets (see its
+        // doc) -- needed not just on rotation (insets can change size, e.g. a landscape nav bar
+        // moving to a different edge) but also because this whole function is now *also* called
+        // by the OnApplyWindowInsetsListener the moment insets first become known, which happens
+        // asynchronously, strictly after these views' *initial* construction-time LayoutParams
+        // were already set with systemBarInsets still at NONE. Without this, they'd stay
+        // permanently stuck at zero-inset margins from cold start onward -- confirmed as a real
+        // bug via emulator screenshot (2026-08-01): the build-number label and gamepadOverlay
+        // both stayed put even after systemBarInsets became correctly non-zero elsewhere, since
+        // nothing had ever told *them* to recompute.
         lastMoveColumn?.layoutParams = topStartParams()
+        statusTextLabel?.layoutParams = topCenterParams()
+        buildNumberLabelView?.layoutParams = bottomEndParams()
+        gamepadOverlay?.layoutParams = bottomStartParams()
+        if (::menuButton.isInitialized) {
+            menuButton.layoutParams = bottomCenterParams(bottomMargin = 12)
+        }
     }
 
     /** [AndroidManifest.xml]'s `configChanges="orientation|screenSize|..."` on MainActivity routes
