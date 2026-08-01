@@ -74,7 +74,7 @@ class MainActivity : AppCompatActivity() {
 
     // Portrait-only interactive touch controller (see VirtualClusterView's class doc) -- built
     // once per build4DScreen call, alongside the landscape gamepadOverlayView/menuButton pair,
-    // with only one of the two pairs visible at a time (see updateControlVisibilityForOrientation).
+    // with only one of the two pairs visible at a time (see updateControlVisibility).
     // Null in 3D mode/before build4DScreen has run -- 3D mode keeps its own existing on-screen
     // buttons untouched, this is 4D-only for now, same scoping as startMenuView/filtersMenuView.
     private var virtualClusterLeft: VirtualClusterView? = null
@@ -82,7 +82,7 @@ class MainActivity : AppCompatActivity() {
     private var gamepadOverlay: GamepadOverlayView? = null
 
     // Needs a class-level reference (not just a build4DScreen local, like most of its siblings)
-    // so updateControlVisibilityForOrientation can re-apply topStartParams() on every rotation --
+    // so updateControlVisibility can re-apply topStartParams() on every rotation --
     // see that function's doc for why a fresh LayoutParams every time (not just at build time)
     // matters: its landscape top margin depends on the virtual controller's current cluster
     // height, which is meaningless (and would go stale) for whichever orientation was active when
@@ -809,6 +809,12 @@ class MainActivity : AppCompatActivity() {
             onFaceButton = { _, _ -> },
             on4DRotationButton = { button -> handleRotationButton(button) },
             on4DNavigate = { button -> handleNavigateButton(button) },
+            // Swaps between the virtual touch controller and the real-gamepad HUD the instant a
+            // pad connects/disconnects (see updateControlVisibility's doc) --
+            // confirmed as a real gap via testing (2026-08-01): connecting a Bluetooth controller
+            // did nothing until this existed, leaving the virtual controls on screen (and the
+            // real-input HUD hidden) even with a pad actively in use.
+            onGamepadConnectionChanged = { updateControlVisibility() },
         )
         inputManager.registerInputDeviceListener(gamepadInput, null)
         gamepadInput.logAlreadyConnectedDevices()
@@ -1226,7 +1232,7 @@ class MainActivity : AppCompatActivity() {
         // doc's accessibility section and updateMenuButtonLabel's doc) -- always visible, relabeled
         // Menu/Close/Back by current menu depth. The gamepad Start button opens/closes the same
         // menu via toggleTopLevelMenu() in on4DNavigate above. Hidden in portrait -- see
-        // updateControlVisibilityForOrientation's doc for why the virtual controller's own Start
+        // updateControlVisibility's doc for why the virtual controller's own Start
         // pill makes this redundant there.
         updateMenuButtonLabel()
         rootLayout.addView(menuButton, bottomCenterParams(bottomMargin = 12))
@@ -1235,7 +1241,7 @@ class MainActivity : AppCompatActivity() {
         // handleLeftStickInput/handleRotationButton/handleNavigateButton functions above, which
         // this reuses verbatim rather than reimplementing any dispatch logic). Built here,
         // unconditionally, same as the landscape gamepadOverlay/menuButton pair above -- only
-        // *visibility* differs by orientation (see updateControlVisibilityForOrientation), so
+        // *visibility* differs by orientation (see updateControlVisibility), so
         // switching orientation never needs to tear down/rebuild either pair. virtualAction/
         // virtualStickAction/applyInputModeToVirtualController are declared earlier (see their
         // docs, up by rebuildStartMenuTiles) rather than here where they're first *used*.
@@ -1314,7 +1320,7 @@ class MainActivity : AppCompatActivity() {
         // -- a no-op today since inputMode always starts STICK, but harmless/correct insurance if
         // that ever changes.
         applyInputModeToVirtualController()
-        updateControlVisibilityForOrientation()
+        updateControlVisibility()
 
         // Added last so each draws (and, once VISIBLE, receives touch) above every view before it.
         // startMenuView/settingsMenuView use menuOverlayParams (see its doc) instead of a blanket
@@ -1485,11 +1491,14 @@ class MainActivity : AppCompatActivity() {
      * overlap there either). An earlier attempt pushed this down by the cluster's top-edge
      * position instead -- looked right on paper but still overlapped the cluster's top-row pills
      * in practice, since clearing just the cluster's top *edge* isn't the same as clearing the
-     * pills' own height. Portrait doesn't need any of this: the cluster sits at the bottom there,
-     * nowhere near this corner. Harmless for build3DScreen's modeToggleButton (this function's
-     * other caller) too -- 3D mode has no virtual controller to clear, so this just nudges that
-     * button right slightly in landscape for no real reason, not a problem worth special-casing
-     * around. */
+     * pills' own height. Only applies while the cluster is actually the thing showing there (see
+     * [updateControlVisibility]'s doc) -- with a real gamepad connected, the small
+     * [gamepadOverlay] HUD box takes its place instead, which doesn't reach anywhere near this
+     * corner, so clearing space for the (now-hidden) cluster would just waste it for nothing.
+     * Portrait doesn't need any of this: the cluster sits at the bottom there, nowhere near this
+     * corner. Harmless for build3DScreen's modeToggleButton (this function's other caller) too --
+     * 3D mode has no virtual controller to clear, so this just nudges that button right slightly
+     * in landscape for no real reason, not a problem worth special-casing around. */
     private fun topStartParams(): FrameLayout.LayoutParams {
         val params = FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.WRAP_CONTENT,
@@ -1497,7 +1506,8 @@ class MainActivity : AppCompatActivity() {
             Gravity.TOP or Gravity.START,
         )
         params.topMargin = 24
-        params.leftMargin = if (resources.configuration.orientation == Configuration.ORIENTATION_PORTRAIT) {
+        val portrait = resources.configuration.orientation == Configuration.ORIENTATION_PORTRAIT
+        params.leftMargin = if (portrait || GamepadInputHandler.anyGamepadConnected()) {
             24
         } else {
             val marginPx = 12 * resources.displayMetrics.density
@@ -1627,7 +1637,7 @@ class MainActivity : AppCompatActivity() {
 
     /** Re-applies [menuOverlayParams] to both fullscreen menus -- called once from build4DScreen
      * and again from [onConfigurationChanged], same "recompute, don't just toggle visibility"
-     * reasoning as [updateControlVisibilityForOrientation]. A fresh LayoutParams instance per
+     * reasoning as [updateControlVisibility]. A fresh LayoutParams instance per
      * view, deliberately, not one shared object -- Android views don't reliably share a single
      * LayoutParams instance across siblings. */
     private fun updateMenuOverlayBounds() {
@@ -1636,20 +1646,33 @@ class MainActivity : AppCompatActivity() {
         settingsMenuView.layoutParams = menuOverlayParams()
     }
 
-    /** The virtual controller is now shown in *both* orientations (landscape added 2026-08-01,
-     * per David: "exactly the same as portrait but with the two halves moved to either side of
-     * the screen") -- [virtualClusterParams] handles the actual repositioning, this just always
-     * shows both clusters and always hides the older landscape-only [gamepadOverlay] HUD /
-     * [menuButton] pair, which the virtual controller's own Start/face-button pills make fully
-     * redundant now (menuButton's "free up more space for the puzzle" removal was explicit,
-     * 2026-08-01). Called once right after [build4DScreen] creates both pairs, and again from
-     * [onConfigurationChanged] on every rotation (clusters still need repositioning even though
-     * their visibility no longer changes). Deliberately never calls [rebuildUi]/[build4DScreen]
-     * again itself -- that would wipe moveHistory4D (see [pendingRestoreState4D]'s doc) for no
-     * reason other than a rotation; both pairs already exist, only layout needs to change. A
-     * no-op in 3D mode/before build4DScreen has run, since the nullable fields are simply still
-     * null there. */
-    private fun updateControlVisibilityForOrientation() {
+    /** The virtual controller shows in *both* orientations (landscape added 2026-08-01, per
+     * David: "exactly the same as portrait but with the two halves moved to either side of the
+     * screen") -- [virtualClusterParams] handles the actual repositioning. Which of the virtual
+     * clusters vs. the older [gamepadOverlay] HUD is actually *visible* now depends on whether a
+     * real gamepad is currently connected ([GamepadInputHandler.anyGamepadConnected], added
+     * 2026-08-01 after David found connecting a Bluetooth controller did nothing -- the virtual
+     * controls just stayed up, HUD stayed hidden, regardless of a pad actively being used): no
+     * pad connected shows the virtual clusters (today's original behavior); a pad connected shows
+     * the HUD instead, since the virtual controls would just be redundant screen clutter over
+     * whatever's reachable with the pad. [menuButton] stays hidden either way -- the virtual
+     * controller's Start pill covers the no-pad case, the pad's own physical Start button covers
+     * the other, so it's never actually needed anymore (its "free up more space for the puzzle"
+     * removal was explicit, 2026-08-01). The puzzle's own reserved-space math
+     * ([HypercubeRenderer]'s viewport, [menuOverlayParams]) is *not* conditioned on this the same
+     * way -- it stays constant regardless of which control scheme is currently shown, so the
+     * puzzle doesn't jump in size the instant a controller connects or disconnects.
+     *
+     * Called once right after [build4DScreen] creates both pairs (this also covers a gamepad
+     * already connected *before* the app launched, which fires no add/remove event of its own to
+     * react to), again from [onConfigurationChanged] on every rotation (clusters still need
+     * repositioning even when their visibility doesn't change), and again from
+     * [GamepadInputHandler.onGamepadConnectionChanged] on every connect/disconnect. Deliberately
+     * never calls [rebuildUi]/[build4DScreen] again itself -- that would wipe moveHistory4D (see
+     * [pendingRestoreState4D]'s doc) for no reason other than a layout change; both pairs already
+     * exist, only layout/visibility need to change. A no-op in 3D mode/before build4DScreen has
+     * run, since the nullable fields are simply still null there. */
+    private fun updateControlVisibility() {
         // Re-derived every call, not just at build4DScreen time -- virtualClusterParams's size
         // and position are derived from the *current* screen dimensions/orientation, which swap
         // on every rotation; reusing whichever LayoutParams instance build4DScreen originally
@@ -1660,9 +1683,10 @@ class MainActivity : AppCompatActivity() {
         // in their own halves).
         virtualClusterLeft?.layoutParams = virtualClusterParams(startSide = true)
         virtualClusterRight?.layoutParams = virtualClusterParams(startSide = false)
-        virtualClusterLeft?.visibility = View.VISIBLE
-        virtualClusterRight?.visibility = View.VISIBLE
-        gamepadOverlay?.visibility = View.GONE
+        val realGamepadConnected = GamepadInputHandler.anyGamepadConnected()
+        virtualClusterLeft?.visibility = if (realGamepadConnected) View.GONE else View.VISIBLE
+        virtualClusterRight?.visibility = if (realGamepadConnected) View.GONE else View.VISIBLE
+        gamepadOverlay?.visibility = if (realGamepadConnected) View.VISIBLE else View.GONE
         if (::menuButton.isInitialized) {
             menuButton.visibility = View.GONE
         }
@@ -1673,11 +1697,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     /** [AndroidManifest.xml]'s `configChanges="orientation|screenSize|..."` on MainActivity routes
-     * rotation here instead of recreating the Activity -- see [updateControlVisibilityForOrientation]'s
+     * rotation here instead of recreating the Activity -- see [updateControlVisibility]'s
      * doc for why that's the only thing a rotation needs to do. */
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
-        updateControlVisibilityForOrientation()
+        updateControlVisibility()
         updateMenuOverlayBounds()
     }
 

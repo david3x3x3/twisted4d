@@ -96,6 +96,14 @@ class GamepadInputHandler(
     private val on4DRotationButton: (RotationButton) -> Unit = {},
     private val on4DNavigate: (NavigationButton) -> Unit = {},
     private val onDpadStick: (x: Float, y: Float) -> Unit = { _, _ -> },
+    // Fires on any gamepad connect, and on *any* device disconnect (not just a confirmed-gamepad
+    // one -- onInputDeviceRemoved only gets a deviceId, not the device itself, since it's already
+    // gone by the time this fires, so there's no sources to check; callers just re-query
+    // [anyGamepadConnected] fresh, cheap enough that an occasional no-op call for a non-gamepad
+    // device disconnecting is not worth filtering out). Lets MainActivity switch between the
+    // virtual touch controller and the real-gamepad HUD the moment a pad connects/disconnects,
+    // not just on the next button press -- see MainActivity.updateControlVisibilityForOrientation.
+    private val onGamepadConnectionChanged: () -> Unit = {},
 ) : InputManager.InputDeviceListener {
 
     @Volatile private var invertHeld = false
@@ -127,11 +135,13 @@ class GamepadInputHandler(
         val device = InputDevice.getDevice(deviceId) ?: return
         if (isGamepadSource(device.sources)) {
             Log.i(TAG, "Gamepad connected: ${device.name} (id=$deviceId)")
+            onGamepadConnectionChanged()
         }
     }
 
     override fun onInputDeviceRemoved(deviceId: Int) {
         Log.i(TAG, "Input device disconnected: id=$deviceId")
+        onGamepadConnectionChanged()
     }
 
     override fun onInputDeviceChanged(deviceId: Int) = Unit
@@ -348,10 +358,32 @@ class GamepadInputHandler(
         private const val TAG = "Twisted4DGamepad"
         private const val DEADZONE = 0.15f
 
-        fun isGamepadSource(sources: Int): Boolean =
-            (sources and InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD ||
-                (sources and InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK ||
-                (sources and InputDevice.SOURCE_DPAD) == InputDevice.SOURCE_DPAD
+        /** SOURCE_DPAD alone (no SOURCE_GAMEPAD/SOURCE_JOYSTICK bit) still counts -- see
+         * `dpad_as_stick_controllers`/`android_gamepad_dpad_input` memory: some real controllers
+         * (confirmed on the 8BitDo Micro) only ever report SOURCE_DPAD, never SOURCE_GAMEPAD.
+         * *Except* when the device is also flagged SOURCE_KEYBOARD -- confirmed via `adb shell
+         * dumpsys input` (2026-08-01) that the Android emulator's own built-in virtual keyboard
+         * ("qwerty2") reports `Sources: KEYBOARD | DPAD`, which without this exclusion made
+         * [anyGamepadConnected] (added the same day, to decide virtual-controller-vs-HUD
+         * visibility) permanently think a gamepad was connected on every emulator session, even
+         * with nothing attached. A real gamepad reporting bare DPAD is never also a keyboard, so
+         * this exclusion only ever affects devices like the emulator's fake one. */
+        fun isGamepadSource(sources: Int): Boolean {
+            if ((sources and InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD) return true
+            if ((sources and InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK) return true
+            val hasDpad = (sources and InputDevice.SOURCE_DPAD) == InputDevice.SOURCE_DPAD
+            val isKeyboard = (sources and InputDevice.SOURCE_KEYBOARD) == InputDevice.SOURCE_KEYBOARD
+            return hasDpad && !isKeyboard
+        }
+
+        /** True the instant any real gamepad is connected -- a static, no-instance-needed query
+         * (same [InputDevice.getDeviceIds] enumeration [logAlreadyConnectedDevices]/
+         * [currentGamepadBatteryFraction] already use) so MainActivity can call it directly, both
+         * from [onGamepadConnectionChanged]'s callback and once up front at screen-build time (a
+         * gamepad already connected before the app launched fires no add/remove event, so the
+         * initial virtual-vs-HUD decision needs this queried directly, not just reacted to). */
+        fun anyGamepadConnected(): Boolean =
+            InputDevice.getDeviceIds().any { id -> InputDevice.getDevice(id)?.let { isGamepadSource(it.sources) } == true }
 
         /** Index matches U/D/L/R/F/B's position (0-5) in both [Face] and [Cell4]'s enum order.
          * 3D mode only -- see [onFaceButton]. Keys assume Xbox-position face buttons; callers
