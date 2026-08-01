@@ -46,13 +46,12 @@ android {
         // stability yet -- per the user's explicit choice (2026-07-26). 0.7.0 (2026-08-01):
         // the portrait+landscape virtual touch controller -- 4D mode is now fully playable
         // without a physical gamepad, closing the biggest known gap before a Play Store listing
-        // would make sense. Minor bump (not patch) since it's a real new capability, not just a
-        // fix, per the "0.x.y means pre-1.0, no stability promise" framing above -- there's no
-        // API/save-format compatibility contract to be careful about breaking yet. Still not
-        // 1.0: whether Fire TV is even a 1.0 target remains undecided, and Settings is still
-        // missing its D-pad-assignment rows.
-        versionCode = 6
-        versionName = "0.7.0"
+        // would make sense. 0.7.1 (2026-08-01): patch fix found minutes after 0.7.0 shipped --
+        // connecting a real gamepad didn't hide the virtual controller or restore the old HUD.
+        // Still not 1.0: whether Fire TV is even a 1.0 target remains undecided, and Settings is
+        // still missing its D-pad-assignment rows.
+        versionCode = 7
+        versionName = "0.7.1"
         buildConfigField("String", "GIT_VERSION", "\"$gitVersion\"")
     }
 
