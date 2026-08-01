@@ -4,6 +4,15 @@
 .idea/
 local.properties
 .DS_Store
+
+# Release signing key + its passwords -- NEVER commit these. Losing the keystore means losing
+# the ability to ever publish an update to the same app identity on Google Play again, and a
+# leaked keystore.properties exposes the passwords needed to sign a malicious update in your
+# name -- see keystore.properties.example for the format a fresh checkout needs to recreate this
+# locally (or ask David for the real file/keystore, backed up outside git).
+app/*.jks
+app/*.keystore
+keystore.properties
 build/
 captures/
 .externalNativeBuild/

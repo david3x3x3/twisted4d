@@ -1,9 +1,25 @@
 import java.text.SimpleDateFormat
 import java.util.Date
+import java.util.Properties
 
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
+}
+
+// Release signing credentials -- deliberately never committed (see .gitignore and
+// keystore.properties.example): storePassword/keyPassword there are what actually let someone
+// sign an update to this app's Play Store identity, so a leaked copy is as sensitive as a leaked
+// login. Loaded from a properties file, not hardcoded here, so this whole build.gradle.kts file
+// stays safe to commit even though it references where the real secrets live. Absent on a fresh
+// clone (or anyone else's checkout) -- releaseSigningConfig is null in that case, and the
+// `release` build type below just skips attaching a signingConfig, so `assembleDebug` and other
+// day-to-day tasks keep working; only `assembleRelease`/`bundleRelease` actually need this.
+val keystorePropertiesFile = rootProject.file("keystore.properties")
+val releaseSigningProps = if (keystorePropertiesFile.exists()) {
+    Properties().apply { load(keystorePropertiesFile.inputStream()) }
+} else {
+    null
 }
 
 // Runs `git <args>` in the repo root and returns trimmed stdout -- used below to stamp each build
@@ -59,9 +75,28 @@ android {
         buildConfig = true
     }
 
+    signingConfigs {
+        // Only created when keystore.properties actually exists (see its doc above) -- Gradle's
+        // signingConfigs block can't easily be skipped conditionally from the outside, so this
+        // creates it either way but points storeFile at a file that simply won't exist without
+        // the properties backing it, which is caught below rather than left to fail obscurely
+        // deep in the signing step.
+        if (releaseSigningProps != null) {
+            create("release") {
+                storeFile = rootProject.file(releaseSigningProps.getProperty("storeFile"))
+                storePassword = releaseSigningProps.getProperty("storePassword")
+                keyAlias = releaseSigningProps.getProperty("keyAlias")
+                keyPassword = releaseSigningProps.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
+            if (releaseSigningProps != null) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
 
