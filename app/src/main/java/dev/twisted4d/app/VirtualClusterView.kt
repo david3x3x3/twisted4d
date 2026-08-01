@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.RectF
 import android.view.MotionEvent
 import android.view.View
@@ -36,7 +37,7 @@ class VirtualClusterView(
     private val shoulderRightLabel: String,
     private val onShoulderLeftTap: () -> Unit,
     private val onShoulderRightTap: () -> Unit,
-    private val mainControl: MainControl,
+    mainControl: MainControl,
     // Optional true hold-state pairing for onTop*/onShoulder*Tap above -- default no-op, since
     // every one of these 4 pills except Select (see MainActivity.virtualClusterLeft) only cares
     // about the instant it's pressed, same as a real gamepad button tap. Select needs both halves
@@ -53,7 +54,12 @@ class VirtualClusterView(
     /** [Stick]'s [onChanged] fires continuously while dragging (and once more with (0,0) on
      * release) -- same -1..1 range [GamepadInputHandler]'s real stick already reports, so callers
      * can feed it into [HypercubeRenderer.updateCell4Selection] identically either way.
-     * [FaceDiamond]'s 4 taps are discrete, one call per press, matching a real face button. */
+     * [FaceDiamond]'s 4 taps are discrete, one call per press, matching a real face button.
+     * [DPad] is the same 4-discrete-direction shape as [FaceDiamond] (same positions, same hit-
+     * testing) but drawn with arrow glyphs instead of letter labels and wired to directions
+     * instead of named buttons -- used in place of [Stick] for the left cluster while RKT mode is
+     * active, since RKT has no cell-selection role for a stick to drive (see
+     * MainActivity.applyInputModeToVirtualController's doc). */
     sealed class MainControl {
         class Stick(val onChanged: (x: Float, y: Float) -> Unit) : MainControl()
         class FaceDiamond(
@@ -66,11 +72,35 @@ class VirtualClusterView(
             val bottomLabel: String,
             val onBottomTap: () -> Unit,
         ) : MainControl()
+        class DPad(
+            val onUpTap: () -> Unit,
+            val onLeftTap: () -> Unit,
+            val onRightTap: () -> Unit,
+            val onDownTap: () -> Unit,
+        ) : MainControl()
     }
+
+    /** Which of the diamond's 4 positions a touch at (x, y) is closest to -- shared by
+     * [FaceDiamond] and [DPad], which are positionally identical, just drawn/labeled
+     * differently. */
+    private enum class DiamondDirection { UP, LEFT, RIGHT, DOWN }
+
+    // Mutable (not the constructor's fixed val this started as) so MainActivity can swap the left
+    // cluster between Stick and DPad when RKT mode toggles, without tearing down and recreating
+    // the whole view (see applyInputModeToVirtualController's doc). Resets any in-flight stick
+    // drag on every change -- a gesture that started against the old control shouldn't silently
+    // keep driving whatever replaced it.
+    var mainControl: MainControl = mainControl
+        set(value) {
+            stickPointerId = -1
+            currentStickOffset = 0f to 0f
+            field = value
+            invalidate()
+        }
 
     private val outlinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
-        strokeWidth = 3f
+        strokeWidth = EDGE_INSET * 2f
         color = Color.argb(150, 150, 165, 200)
     }
     private val litPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -85,6 +115,11 @@ class VirtualClusterView(
         color = Color.argb(210, 220, 225, 235)
         textAlign = Paint.Align.CENTER
     }
+    private val arrowFillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+        color = Color.argb(210, 220, 225, 235)
+    }
+    private val arrowPath = Path()
     private val rect = RectF()
 
     // Recomputed in onSizeChanged, reused by both onDraw and touch hit-testing so the two can
@@ -118,36 +153,55 @@ class VirtualClusterView(
     }
 
     companion object {
-        /** Mirrors onMeasure's own stacking exactly (see its former inline comment, preserved
-         * here: two pills per row with a gap between them, then the same gap again before a
-         * square main control -- not stretched to fill whatever height is available, that's the
-         * whole point of this cluster's fixed-width-driven layout). Exposed so MainActivity can
-         * compute a cluster's rendered height *before* it's actually measured/laid out -- e.g. to
-         * size the portrait Start Menu's bounds to stop exactly above the control bar (see
-         * MainActivity.menuOverlayParams's doc), without depending on this view's own
-         * asynchronous layout pass timing. */
+        // Half of outlinePaint's stroke width -- Paint.Style.STROKE draws centered on the path,
+        // so a rect whose edge sits exactly on this view's own boundary gets half that stroke
+        // clipped away by the view's own bounds (confirmed via emulator screenshot: the top row's
+        // outline looked cut off right where the puzzle display ends and the control bar begins).
+        // Every rect in onSizeChanged is inset by this on all 4 sides so no stroke ever sits
+        // exactly on an edge. A plain constant (not derived from outlinePaint.strokeWidth) since
+        // heightForWidth below needs it before any instance -- and therefore any Paint -- exists.
+        private const val EDGE_INSET = 1.5f
+
+        // How wide each cluster is, as a fraction of the full screen width -- shared by
+        // MainActivity (sizing/positioning the actual views, and insetting the portrait Start
+        // Menu above them) and HypercubeRenderer (centering the puzzle's own viewport in the
+        // leftover space above the control bar). All three need to agree on the same fraction or
+        // their reserved-space math would drift out of sync with each other.
+        const val WIDTH_FRACTION_OF_SCREEN = 0.45f
+
+        /** Mirrors onSizeChanged's own stacking exactly (see its comments there: two pills per
+         * row with a gap between them, then the same gap again before a square main control --
+         * not stretched to fill whatever height is available, that's the whole point of this
+         * cluster's fixed-width-driven layout), including the EDGE_INSET margin on every side.
+         * Exposed so MainActivity can compute a cluster's rendered height *before* it's actually
+         * measured/laid out -- e.g. to size the portrait Start Menu's bounds to stop exactly above
+         * the control bar (see MainActivity.menuOverlayParams's doc), without depending on this
+         * view's own asynchronous layout pass timing. */
         fun heightForWidth(width: Float): Float {
-            val gap = width * 0.05f
-            val pillH = (width - gap) / 2f / 2.3f
-            return pillH + gap + pillH + gap + width
+            val innerWidth = width - EDGE_INSET * 2f
+            val gap = innerWidth * 0.05f
+            val pillH = (innerWidth - gap) / 2f / 2.3f
+            return pillH + gap + pillH + gap + innerWidth + EDGE_INSET * 2f
         }
     }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
-        val width = w.toFloat()
+        // Every rect below is offset by EDGE_INSET on all 4 sides -- see its doc for why (an
+        // outline stroke sitting exactly on the view's own boundary gets half clipped away).
+        val width = w.toFloat() - EDGE_INSET * 2f
         val gap = width * 0.05f
         val pillW = (width - gap) / 2f
         val pillH = pillW / 2.3f
         pillCornerRadius = pillH * 0.22f
 
-        topLeftRect.set(0f, 0f, pillW, pillH)
-        topRightRect.set(pillW + gap, 0f, width, pillH)
-        val shoulderTop = pillH + gap
-        shoulderLeftRect.set(0f, shoulderTop, pillW, shoulderTop + pillH)
-        shoulderRightRect.set(pillW + gap, shoulderTop, width, shoulderTop + pillH)
+        topLeftRect.set(EDGE_INSET, EDGE_INSET, EDGE_INSET + pillW, EDGE_INSET + pillH)
+        topRightRect.set(EDGE_INSET + pillW + gap, EDGE_INSET, EDGE_INSET + width, EDGE_INSET + pillH)
+        val shoulderTop = EDGE_INSET + pillH + gap
+        shoulderLeftRect.set(EDGE_INSET, shoulderTop, EDGE_INSET + pillW, shoulderTop + pillH)
+        shoulderRightRect.set(EDGE_INSET + pillW + gap, shoulderTop, EDGE_INSET + width, shoulderTop + pillH)
         val mainTop = shoulderTop + pillH + gap
-        mainRect.set(0f, mainTop, width, mainTop + width)
+        mainRect.set(EDGE_INSET, mainTop, EDGE_INSET + width, mainTop + width)
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -161,6 +215,7 @@ class VirtualClusterView(
         when (val control = mainControl) {
             is MainControl.Stick -> drawStick(canvas, control)
             is MainControl.FaceDiamond -> drawFaceDiamond(canvas, control)
+            is MainControl.DPad -> drawDpad(canvas)
         }
     }
 
@@ -197,6 +252,47 @@ class VirtualClusterView(
     private fun drawFaceButton(canvas: Canvas, cx: Float, cy: Float, r: Float, label: String, held: Boolean) {
         canvas.drawCircle(cx, cy, r, if (held) litPaint else outlinePaint)
         canvas.drawText(label, cx, cy + labelPaint.textSize * 0.35f, labelPaint)
+    }
+
+    private fun drawDpad(canvas: Canvas) {
+        val cx = mainRect.centerX()
+        val cy = mainRect.centerY()
+        val spread = mainRect.width() * 0.27f
+        val r = mainRect.width() * 0.16f
+        drawArrowButton(canvas, cx, cy - spread, r, DiamondDirection.UP, "faceTop" in heldRegions)
+        drawArrowButton(canvas, cx - spread, cy, r, DiamondDirection.LEFT, "faceLeft" in heldRegions)
+        drawArrowButton(canvas, cx + spread, cy, r, DiamondDirection.RIGHT, "faceRight" in heldRegions)
+        drawArrowButton(canvas, cx, cy + spread, r, DiamondDirection.DOWN, "faceBottom" in heldRegions)
+    }
+
+    private fun drawArrowButton(canvas: Canvas, cx: Float, cy: Float, r: Float, direction: DiamondDirection, held: Boolean) {
+        canvas.drawCircle(cx, cy, r, if (held) litPaint else outlinePaint)
+        val s = r * 0.45f
+        arrowPath.reset()
+        when (direction) {
+            DiamondDirection.UP -> {
+                arrowPath.moveTo(cx, cy - s)
+                arrowPath.lineTo(cx - s, cy + s * 0.6f)
+                arrowPath.lineTo(cx + s, cy + s * 0.6f)
+            }
+            DiamondDirection.DOWN -> {
+                arrowPath.moveTo(cx, cy + s)
+                arrowPath.lineTo(cx - s, cy - s * 0.6f)
+                arrowPath.lineTo(cx + s, cy - s * 0.6f)
+            }
+            DiamondDirection.LEFT -> {
+                arrowPath.moveTo(cx - s, cy)
+                arrowPath.lineTo(cx + s * 0.6f, cy - s)
+                arrowPath.lineTo(cx + s * 0.6f, cy + s)
+            }
+            DiamondDirection.RIGHT -> {
+                arrowPath.moveTo(cx + s, cy)
+                arrowPath.lineTo(cx - s * 0.6f, cy - s)
+                arrowPath.lineTo(cx - s * 0.6f, cy + s)
+            }
+        }
+        arrowPath.close()
+        canvas.drawPath(arrowPath, arrowFillPaint)
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
@@ -246,6 +342,7 @@ class VirtualClusterView(
                     updateStick(x, y)
                 }
                 is MainControl.FaceDiamond -> handleFaceDiamondDown(control, x, y)
+                is MainControl.DPad -> handleDpadDown(control, x, y)
             }
         }
         invalidate()
@@ -266,18 +363,35 @@ class VirtualClusterView(
         }
     }
 
-    private fun handleFaceDiamondDown(control: MainControl.FaceDiamond, x: Float, y: Float) {
-        val cx = mainRect.centerX()
-        val cy = mainRect.centerY()
-        val dx = x - cx
-        val dy = y - cy
-        // Whichever of the 4 cardinal directions the touch is closest to -- a plain nearest-of-4
-        // by angle, not exact per-circle hit-testing, so a tap anywhere in the diamond's quadrant
-        // (not just precisely on a drawn circle) still registers -- more forgiving for a thumb.
-        if (kotlin.math.abs(dx) > kotlin.math.abs(dy)) {
-            if (dx > 0) { heldRegions.add("faceRight"); control.onRightTap() } else { heldRegions.add("faceLeft"); control.onLeftTap() }
+    // Whichever of the 4 cardinal directions (x, y) is closest to -- a plain nearest-of-4 by
+    // angle, not exact per-circle hit-testing, so a tap anywhere in the diamond's quadrant (not
+    // just precisely on a drawn circle) still registers -- more forgiving for a thumb. Shared by
+    // FaceDiamond and DPad, which are positionally identical.
+    private fun resolveDiamondDirection(x: Float, y: Float): DiamondDirection {
+        val dx = x - mainRect.centerX()
+        val dy = y - mainRect.centerY()
+        return if (kotlin.math.abs(dx) > kotlin.math.abs(dy)) {
+            if (dx > 0) DiamondDirection.RIGHT else DiamondDirection.LEFT
         } else {
-            if (dy > 0) { heldRegions.add("faceBottom"); control.onBottomTap() } else { heldRegions.add("faceTop"); control.onTopTap() }
+            if (dy > 0) DiamondDirection.DOWN else DiamondDirection.UP
+        }
+    }
+
+    private fun handleFaceDiamondDown(control: MainControl.FaceDiamond, x: Float, y: Float) {
+        when (resolveDiamondDirection(x, y)) {
+            DiamondDirection.RIGHT -> { heldRegions.add("faceRight"); control.onRightTap() }
+            DiamondDirection.LEFT -> { heldRegions.add("faceLeft"); control.onLeftTap() }
+            DiamondDirection.DOWN -> { heldRegions.add("faceBottom"); control.onBottomTap() }
+            DiamondDirection.UP -> { heldRegions.add("faceTop"); control.onTopTap() }
+        }
+    }
+
+    private fun handleDpadDown(control: MainControl.DPad, x: Float, y: Float) {
+        when (resolveDiamondDirection(x, y)) {
+            DiamondDirection.RIGHT -> { heldRegions.add("faceRight"); control.onRightTap() }
+            DiamondDirection.LEFT -> { heldRegions.add("faceLeft"); control.onLeftTap() }
+            DiamondDirection.DOWN -> { heldRegions.add("faceBottom"); control.onDownTap() }
+            DiamondDirection.UP -> { heldRegions.add("faceTop"); control.onUpTap() }
         }
     }
 
@@ -287,14 +401,17 @@ class VirtualClusterView(
         val r = mainRect.width() / 2f
         // A slightly larger drag radius than the drawn circle before saturating -- a bare thumb
         // rarely lands exactly on the visual edge, so this gives a little slack before clamping
-        // to a full deflection rather than requiring pixel-precise reach to the rim.
-        val dragR = r * 1.4f
+        // to a full deflection rather than requiring pixel-precise reach to the rim. Was 1.4x
+        // (real-device-tested 2026-08-01 as too sluggish -- reaching full deflection took a full-
+        // width thumb drag); 0.9x keeps a little forgiveness while tracking the thumb far more
+        // directly.
+        val dragR = r * 0.9f
         var nx = (x - cx) / dragR
         var ny = (y - cy) / dragR
         val mag = hypot(nx, ny)
         if (mag > 1f) { nx /= mag; ny /= mag }
         currentStickOffset = nx to ny
-        (mainControl as MainControl.Stick).onChanged(nx, ny)
+        (mainControl as? MainControl.Stick)?.onChanged?.invoke(nx, ny)
         invalidate()
     }
 
@@ -302,7 +419,7 @@ class VirtualClusterView(
         if (pointerId == stickPointerId) {
             stickPointerId = -1
             currentStickOffset = 0f to 0f
-            (mainControl as MainControl.Stick).onChanged(0f, 0f)
+            (mainControl as? MainControl.Stick)?.onChanged?.invoke(0f, 0f)
         }
         // Only the exact pointer that claimed a pill releases it -- important for a
         // hold-style button like Select: a *different* finger lifting elsewhere (e.g. the

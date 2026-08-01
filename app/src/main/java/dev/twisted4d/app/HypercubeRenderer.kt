@@ -691,23 +691,32 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
      *
      * In portrait (taller than wide -- see the [android:screenOrientation] change that made this
      * reachable at all), that same trick would do the opposite of what's wanted: a fixed vertical
-     * FOV filling the *whole* tall height would render the puzzle tiny and vertically centered,
-     * wasting equal space above and below, when what portrait's virtual-controller layout needs
-     * is a square pinned flush to the *top*, with the bottom strip left empty for touch controls
-     * (ordinary Android views, not GL content). So portrait instead uses a real square GL
-     * viewport (side length = surface width, the constraining dimension), positioned so its top
-     * edge lands at the very top of the surface -- glViewport's y is measured from the bottom in
-     * GL's window-coordinate convention, hence `height - squareSize`, not 0 -- with the
-     * projection's aspect fixed at 1.0 to match that viewport's actual shape. Portrait vs.
-     * landscape is decided purely from the surface's own reported dimensions (taller-than-wide),
-     * not a separate orientation flag threaded in from MainActivity, so this adapts correctly on
-     * its own the moment the device actually rotates and onSurfaceChanged fires again.
+     * FOV filling the *whole* tall height would render the puzzle tiny and vertically centered
+     * across the *entire* surface, when portrait's virtual controller only needs the puzzle
+     * centered in whatever's left *above* it -- the control bar (ordinary Android views, not GL
+     * content) occupies a known, fixed-fraction-of-width strip at the bottom (see
+     * VirtualClusterView.heightForWidth/WIDTH_FRACTION_OF_SCREEN, the same formula
+     * MainActivity.menuOverlayParams uses to reserve that same strip for the Start Menu). So
+     * portrait uses a real square GL viewport (side length = surface width, the constraining
+     * dimension) centered in the surface height *minus* that reserved strip -- initially pinned
+     * flush to the very top of the surface instead, which real-device testing (2026-08-01,
+     * David's Pixel) confirmed looked wrong: crowded against the top edge with all the slack
+     * dumped below, rather than evenly framed in the space actually available above the controls.
+     * glViewport's y is measured from the bottom in GL's window-coordinate convention, hence
+     * `height - squareSize - topGap`, not `height - squareSize`, with the projection's aspect
+     * fixed at 1.0 to match that viewport's actual shape. Portrait vs. landscape is decided purely
+     * from the surface's own reported dimensions (taller-than-wide), not a separate orientation
+     * flag threaded in from MainActivity, so this adapts correctly on its own the moment the
+     * device actually rotates and onSurfaceChanged fires again.
      */
     override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
         val aspect: Float
         if (height > width) {
             val squareSize = width
-            GLES30.glViewport(0, height - squareSize, squareSize, squareSize)
+            val reservedBottom = VirtualClusterView.heightForWidth(width * VirtualClusterView.WIDTH_FRACTION_OF_SCREEN)
+            val availableHeight = (height - reservedBottom).coerceAtLeast(squareSize.toFloat())
+            val topGap = ((availableHeight - squareSize) / 2f).coerceAtLeast(0f).toInt()
+            GLES30.glViewport(0, height - squareSize - topGap, squareSize, squareSize)
             aspect = 1f
         } else {
             GLES30.glViewport(0, 0, width, height)

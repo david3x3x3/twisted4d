@@ -81,6 +81,14 @@ class MainActivity : AppCompatActivity() {
     private var virtualClusterRight: VirtualClusterView? = null
     private var gamepadOverlay: GamepadOverlayView? = null
 
+    // Needs a class-level reference (not just a build4DScreen local, like most of its siblings)
+    // so updateControlVisibilityForOrientation can re-apply topStartParams() on every rotation --
+    // see that function's doc for why a fresh LayoutParams every time (not just at build time)
+    // matters: its landscape top margin depends on the virtual controller's current cluster
+    // height, which is meaningless (and would go stale) for whichever orientation was active when
+    // build4DScreen last ran. Null in 3D mode/before build4DScreen has run.
+    private var lastMoveColumn: LinearLayout? = null
+
     // Set by build4DScreen, read by sceneDumpReceiver -- lets an adb-triggered broadcast query
     // the live scene without any on-screen debug button (see sceneDumpReceiver's doc). Null in 3D
     // mode/before build4DScreen has run.
@@ -197,7 +205,20 @@ class MainActivity : AppCompatActivity() {
             startMenuView.isOpen -> "Close"
             else -> "Menu"
         }
+        // See onMenuStateChangedForVirtualController's own doc for why this lives inside the one
+        // function every menu open/close path already calls, rather than adding a new call at
+        // each of openMainMenu/openFiltersMenu/openSettingsMenu/closeAllMenus individually.
+        onMenuStateChangedForVirtualController?.invoke()
     }
+
+    /** Set once by build4DScreen (to its local applyInputModeToVirtualController) -- lets
+     * [updateMenuButtonLabel] (already the one function every menu open/close path in this file
+     * calls) also keep the portrait virtual controller's left-cluster control in sync with menu
+     * state, without those menu functions needing to reach into build4DScreen's local closures
+     * directly. Null in 3D mode/before build4DScreen has run, same as the other virtual-
+     * controller fields -- see applyInputModeToVirtualController's own doc for what this actually
+     * does once invoked. */
+    private var onMenuStateChangedForVirtualController: (() -> Unit)? = null
 
     private fun openMainMenu() {
         filtersMenuView.close()
@@ -793,18 +814,23 @@ class MainActivity : AppCompatActivity() {
         gamepadInput.logAlreadyConnectedDevices()
 
         // Polled, not event-driven -- see GamepadInputHandler.currentGamepadBatteryFraction's
-        // doc. Blank (not "N/A" or similar) when nothing to show, matching statusText's own
+        // doc. GONE (not just blank text) when nothing to show, matching statusText's own
         // empty-when-nothing-to-say convention -- most controllers connected over USB, or devices
-        // below API 31, will simply never populate this.
+        // below API 31, will simply never populate this. GONE rather than merely-blank per
+        // feedback (2026-08-01): a LinearLayout child with empty text still reserves its own
+        // line height, leaving a visible gap and pushing inputModeText down for no reason --
+        // every conditionally-blank field in lastMoveColumn below follows the same GONE pattern.
         val batteryText = TextView(this).apply {
             textSize = 14f
             alpha = 0.6f
             setPadding(24, 8, 24, 0)
+            visibility = View.GONE
         }
         val pollBattery = object : Runnable {
             override fun run() {
                 val fraction = gamepadInput.currentGamepadBatteryFraction()
                 batteryText.text = if (fraction != null) "Battery: ${(fraction * 100).roundToInt()}%" else ""
+                batteryText.visibility = if (fraction != null) View.VISIBLE else View.GONE
                 batteryPollHandler.postDelayed(this, BATTERY_POLL_INTERVAL_MS)
             }
         }
@@ -814,14 +840,6 @@ class MainActivity : AppCompatActivity() {
         val statusText = statusTextView(initiallySolved)
         renderer.onStateChanged = { solved ->
             runOnUiThread { statusText.text = if (solved) SOLVED_LABEL else "" }
-        }
-
-        // Shows the most recent twist in community notation (e.g. "IF'") -- lets the notation
-        // convention (see communityNotation's doc) be surveyed twist-by-twist directly against
-        // what's on screen, without an MC4D export/import round trip for every single move.
-        val lastMoveText = TextView(this).apply {
-            textSize = 22f
-            setPadding(24, 8, 24, 8)
         }
 
         // Troubleshooting aid: which room the app will actually twist right now, and which native
@@ -842,12 +860,12 @@ class MainActivity : AppCompatActivity() {
         // Added once Hide 4c/Hide 3c became reachable from the Start Menu (see StartMenuView's
         // tiles below), not just the always-visible filterColumn buttons -- without this, a
         // filter left on has no on-screen reminder once its toggle isn't permanently visible.
-        // Blank (matching this column's other blank-when-nothing-to-say fields) when neither
-        // filter is active.
+        // GONE (see batteryText's doc for why) when neither filter is active.
         val filterStatusText = TextView(this).apply {
             textSize = 14f
             alpha = 0.6f
             setPadding(24, 0, 24, 8)
+            visibility = View.GONE
         }
         fun updateFilterStatusText() {
             val active = listOfNotNull(
@@ -857,6 +875,7 @@ class MainActivity : AppCompatActivity() {
                 "4c Corners".takeIf { renderer.hideCorners },
             )
             filterStatusText.text = if (active.isEmpty()) "" else "Filter: ${active.joinToString(", ")}"
+            filterStatusText.visibility = if (active.isEmpty()) View.GONE else View.VISIBLE
         }
 
         // Added once the Start Menu's Stick Mode/RKT Mode tiles stopped showing an active-state
@@ -885,19 +904,24 @@ class MainActivity : AppCompatActivity() {
                 moveHistory4D.add(record)
                 historyIndex4D = moveHistory4D.size
             }
-            val label = Notation.communityNotation(record)
-            runOnUiThread { lastMoveText.text = label; updateTurnCount() }
+            runOnUiThread { updateTurnCount() }
         }
 
-        val lastMoveColumn = LinearLayout(this).apply {
+        // The big last-move notation display (e.g. "RU'") that used to live here was removed
+        // 2026-08-01 -- it was only ever a cell-selection-debugging aid (see communityNotation's
+        // doc history) and David confirmed it's no longer needed day-to-day. Every remaining
+        // field here is GONE (not just blank) when it has nothing to say -- see batteryText's doc
+        // -- so this column always sits flush at the very top-left with no dead gaps between
+        // whichever fields currently have content.
+        val lastMoveColumnView = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             addView(turnCountText)
-            addView(lastMoveText)
             addView(selectedCellText)
             addView(filterStatusText)
             addView(inputModeText)
             addView(batteryText)
         }
+        lastMoveColumn = lastMoveColumnView
 
         /** Shared by the utility column's "MC4D" button and the Start Menu's "Export" tile (see
          * the menu design doc: Export always runs whichever format Settings specifies, which for
@@ -942,7 +966,6 @@ class MainActivity : AppCompatActivity() {
             moveHistory4D.clear()
             scrambleMoveCount4D = 0
             historyIndex4D = 0
-            lastMoveText.text = ""
             updateTurnCount()
         }
 
@@ -1019,6 +1042,64 @@ class MainActivity : AppCompatActivity() {
         }
         rebuildSettingsTiles()
 
+        /** Wraps a virtual-button action so pressing it marks the on-screen controller as the
+         * "current" one for [PerControllerSettings] purposes -- same as how every real gamepad
+         * button/stick event already calls [PerControllerSettings.noteActiveDevice], so Settings'
+         * "Controller:" display and its per-controller toggles (Z Dir Right, used for R1/R2
+         * further down) follow touch input exactly the way they already follow whichever real pad
+         * sent input most recently. Declared here (ahead of rebuildStartMenuTiles below, which
+         * needs applyInputModeToVirtualController just below) rather than down where
+         * virtualClusterLeft/Right actually get built -- Kotlin local functions must be declared
+         * before whatever references them, even inside a not-yet-invoked closure. */
+        fun virtualAction(action: () -> Unit): () -> Unit = {
+            PerControllerSettings.noteVirtualControllerActive()
+            action()
+        }
+        fun virtualStickAction(action: (Float, Float) -> Unit): (Float, Float) -> Unit = { x, y ->
+            PerControllerSettings.noteVirtualControllerActive()
+            action(x, y)
+        }
+
+        /** Swaps the left cluster's main control between [VirtualClusterView.MainControl.Stick]
+         * (STICK mode -- drives cell selection; also used in RKT mode *while a menu is open*, see
+         * below) and [VirtualClusterView.MainControl.DPad] (RKT mode with no menu open -- RKT has
+         * no cell-selection role at all, so a stick would just sit there inert; a D-pad instead
+         * reaches the exact same requestRktITwist calls the real D-pad already does, via
+         * handleNavigateButton's RKT branch).
+         *
+         * The stick-while-a-menu's-open exception (added 2026-08-01, David's idea) works around a
+         * real gap the D-pad has no fix for: a real gamepad's D-pad drives menu navigation through
+         * a separate always-on channel (GamepadInputHandler.onDpadStick) that works regardless of
+         * inputMode, but the virtual D-pad's 4 arrow buttons call handleNavigateButton directly,
+         * which explicitly swallows everything while a menu's open -- so RKT mode's virtual D-pad
+         * had no way to navigate menus at all (see the virtual_dpad_no_menu_nav memory). Rather
+         * than teach the D-pad to synthesize a stick-like value (it has no held/combined-direction
+         * state to do that with -- see that memory for why), just show the actual stick while any
+         * menu's open: handleLeftStickInput already drives menu.setHighlightFromStick before it
+         * ever looks at inputMode, so this needs zero new dispatch logic, only this swap.
+         *
+         * Called whenever inputMode changes (Start Menu's Mode toggle tile's onSelect) AND
+         * whenever menu open/close state changes (via onMenuStateChangedForVirtualController,
+         * itself invoked from updateMenuButtonLabel -- see its doc) -- both need to re-evaluate
+         * this same STICK-vs-DPad decision. virtualClusterLeft is still null the first time this
+         * runs (called once further down, right after it's actually built, to cover the merely-
+         * hypothetical case of a future non-STICK initial inputMode -- today inputMode always
+         * starts STICK with no menu open, so that first call is a no-op). */
+        fun applyInputModeToVirtualController() {
+            val showDpad = inputMode == GamepadInputMode.RKT && activeMenu() == null
+            virtualClusterLeft?.mainControl = if (showDpad) {
+                VirtualClusterView.MainControl.DPad(
+                    onUpTap = virtualAction { handleNavigateButton(NavigationButton.UP) },
+                    onLeftTap = virtualAction { handleNavigateButton(NavigationButton.LEFT) },
+                    onRightTap = virtualAction { handleNavigateButton(NavigationButton.RIGHT) },
+                    onDownTap = virtualAction { handleNavigateButton(NavigationButton.DOWN) },
+                )
+            } else {
+                VirtualClusterView.MainControl.Stick(onChanged = virtualStickAction { x, y -> handleLeftStickInput(x, y) })
+            }
+        }
+        onMenuStateChangedForVirtualController = ::applyInputModeToVirtualController
+
         // Start Menu tile grid (see StartMenuView's doc and the menu/settings design doc in
         // memory) -- row-major, matching the wireframe's layout. Rebuilt fresh every
         // build4DScreen call since the tiles close over this screen's renderer/surfaceView/
@@ -1031,63 +1112,71 @@ class MainActivity : AppCompatActivity() {
         // (belong on the real Settings screen, not built yet) and Undo (deliberately kept menu-
         // less per the design doc -- Select+L1 is its only binding -- but that leaves no touch-only
         // path now that its on-screen button is gone).
-        startMenuView.setTiles(
-            listOf(
-                MenuTile("Filters", onSelect = { openFiltersMenu() }),
-                MenuTile("Scramble", onSelect = {
-                    if (AppSettings.confirmBeforeScrambleReset) {
-                        AlertDialog.Builder(this@MainActivity)
-                            .setTitle("Scramble?")
-                            .setMessage("This will scramble the puzzle.")
-                            .setPositiveButton("Scramble") { _, _ -> closeAllMenus(); doScramble() }
-                            .setNegativeButton("Cancel", null)
-                            .show()
-                    } else {
+        //
+        // Stick Mode/RKT Mode used to be two separate tiles (top-right and middle-right); merged
+        // into a single toggle at middle-right per feedback (2026-08-01) -- top-right is now a
+        // reserved/unused `null` slot rather than repurposed for something else yet. Wrapped in a
+        // named, re-callable function (same rebuild-on-change pattern as rebuildSettingsTiles)
+        // since -- unlike every other tile here -- the toggle's own label needs to reflect
+        // whichever mode is *currently* active, not just fire an action once.
+        fun rebuildStartMenuTiles() {
+            startMenuView.setTiles(
+                listOf(
+                    MenuTile("Filters", onSelect = { openFiltersMenu() }),
+                    MenuTile("Scramble", onSelect = {
+                        if (AppSettings.confirmBeforeScrambleReset) {
+                            AlertDialog.Builder(this@MainActivity)
+                                .setTitle("Scramble?")
+                                .setMessage("This will scramble the puzzle.")
+                                .setPositiveButton("Scramble") { _, _ -> closeAllMenus(); doScramble() }
+                                .setNegativeButton("Cancel", null)
+                                .show()
+                        } else {
+                            closeAllMenus()
+                            doScramble()
+                        }
+                    }),
+                    null,
+                    // "Play 3D Puzzle" removed from here 2026-08-01 (per David: 3D mode isn't
+                    // ready to show new users yet, and having it one tap away was confusing) --
+                    // build3DScreen/CubeRenderer/modeToggleButton etc. are all still fully intact,
+                    // just not reachable from this menu for now. Reserved/unused slot, not
+                    // repurposed, matching the top-right slot's own null next to the Mode toggle.
+                    null,
+                    MenuTile("SETTINGS", onSelect = { rebuildSettingsTiles(); openSettingsMenu() }),
+                    MenuTile("Mode:\n${if (inputMode == GamepadInputMode.STICK) "Stick" else "RKT"}", onSelect = {
+                        inputMode = if (inputMode == GamepadInputMode.STICK) GamepadInputMode.RKT else GamepadInputMode.STICK
+                        surfaceView.queueEvent { renderer.setInputMode(inputMode) }
+                        updateInputModeText()
+                        applyInputModeToVirtualController()
+                        rebuildStartMenuTiles()
                         closeAllMenus()
-                        doScramble()
-                    }
-                }),
-                MenuTile("Stick\nMode", onSelect = {
-                    inputMode = GamepadInputMode.STICK
-                    surfaceView.queueEvent { renderer.setInputMode(inputMode) }
-                    updateInputModeText()
-                    closeAllMenus()
-                }),
-                MenuTile("Play 3D\nPuzzle", onSelect = {
-                    closeAllMenus()
-                    is4DMode = false
-                    rebuildUi()
-                }),
-                MenuTile("SETTINGS", onSelect = { rebuildSettingsTiles(); openSettingsMenu() }),
-                MenuTile("RKT\nMode", onSelect = {
-                    inputMode = GamepadInputMode.RKT
-                    surfaceView.queueEvent { renderer.setInputMode(inputMode) }
-                    updateInputModeText()
-                    closeAllMenus()
-                }),
-                MenuTile("Export", onSelect = {
-                    closeAllMenus()
-                    if (AppSettings.exportFormatIsMC4D) doExportMC4D() else doExportLog()
-                }),
-                MenuTile("Help", onSelect = {
-                    closeAllMenus()
-                    showHelpDialog()
-                }),
-                MenuTile("Reset", onSelect = {
-                    if (AppSettings.confirmBeforeScrambleReset) {
-                        AlertDialog.Builder(this@MainActivity)
-                            .setTitle("Reset?")
-                            .setMessage("This will reset the puzzle to solved.")
-                            .setPositiveButton("Reset") { _, _ -> closeAllMenus(); doReset() }
-                            .setNegativeButton("Cancel", null)
-                            .show()
-                    } else {
+                    }),
+                    MenuTile("Export", onSelect = {
                         closeAllMenus()
-                        doReset()
-                    }
-                }),
-            ),
-        )
+                        if (AppSettings.exportFormatIsMC4D) doExportMC4D() else doExportLog()
+                    }),
+                    MenuTile("Help", onSelect = {
+                        closeAllMenus()
+                        showHelpDialog()
+                    }),
+                    MenuTile("Reset", onSelect = {
+                        if (AppSettings.confirmBeforeScrambleReset) {
+                            AlertDialog.Builder(this@MainActivity)
+                                .setTitle("Reset?")
+                                .setMessage("This will reset the puzzle to solved.")
+                                .setPositiveButton("Reset") { _, _ -> closeAllMenus(); doReset() }
+                                .setNegativeButton("Cancel", null)
+                                .show()
+                        } else {
+                            closeAllMenus()
+                            doReset()
+                        }
+                    }),
+                ),
+            )
+        }
+        rebuildStartMenuTiles()
 
         // Filters submenu -- compact style (see StartMenuView's doc) so the puzzle stays visible
         // *and* draggable while adjusting these, per feedback that the old fullscreen-style
@@ -1129,7 +1218,7 @@ class MainActivity : AppCompatActivity() {
 
         rootLayout.addView(surfaceView)
         rootLayout.addView(statusText, topCenterParams())
-        rootLayout.addView(lastMoveColumn, topStartParams())
+        rootLayout.addView(lastMoveColumnView, topStartParams())
         gamepadOverlay = gamepadOverlayView()
         rootLayout.addView(gamepadOverlay, bottomStartParams())
         rootLayout.addView(buildNumberLabel(), bottomEndParams())
@@ -1147,53 +1236,84 @@ class MainActivity : AppCompatActivity() {
         // this reuses verbatim rather than reimplementing any dispatch logic). Built here,
         // unconditionally, same as the landscape gamepadOverlay/menuButton pair above -- only
         // *visibility* differs by orientation (see updateControlVisibilityForOrientation), so
-        // switching orientation never needs to tear down/rebuild either pair.
+        // switching orientation never needs to tear down/rebuild either pair. virtualAction/
+        // virtualStickAction/applyInputModeToVirtualController are declared earlier (see their
+        // docs, up by rebuildStartMenuTiles) rather than here where they're first *used*.
+
+        /** R1/R2's *labels* stay fixed to the 8BitDo Micro's own physical layout (R2 left of R1),
+         * but which literal twist each performs is resolved through the exact same per-controller
+         * Z Dir Right toggle a real pad's backwards-feeling shoulder buttons already use (see
+         * GamepadInputHandler.zDirSwappedKeyCode's doc) -- confirmed backwards on real-device
+         * testing (2026-08-01, David's Pixel), and PerControllerSettings.loadEntry now defaults
+         * this one descriptor's zDirRight to true specifically because of that, rather than
+         * hardcoding a one-off swap here that Settings could never re-expose or undo. */
+        fun handleVirtualR1Tap() {
+            PerControllerSettings.noteVirtualControllerActive()
+            val swapped = PerControllerSettings.current()?.zDirRight == true
+            handleRotationButton(if (swapped) RotationButton.TRIGGER_R else RotationButton.BUMPER_R)
+        }
+        fun handleVirtualR2Tap() {
+            PerControllerSettings.noteVirtualControllerActive()
+            val swapped = PerControllerSettings.current()?.zDirRight == true
+            handleRotationButton(if (swapped) RotationButton.BUMPER_R else RotationButton.TRIGGER_R)
+        }
+
         virtualClusterLeft = VirtualClusterView(
             context = this,
             topLeftLabel = "About",
             topRightLabel = "Select",
-            onTopLeftTap = { showHelpDialog() },
+            onTopLeftTap = virtualAction { showHelpDialog() },
             // A true hold, not a tap -- writes the same GamepadVisualState.selectHeld flag a
             // real Select button press/release does, so handleRotationButton/handleNavigateButton
             // (both already keyed off that one flag) pick up the modifier with zero extra code:
             // hold Select + tap a twist button for whole-room rotation, or + L1/L2 for undo/redo,
             // exactly like the physical controller.
-            onTopRightTap = { GamepadVisualState.selectHeld = true },
-            onTopRightRelease = { GamepadVisualState.selectHeld = false },
-            shoulderLeftLabel = "L2",
-            shoulderRightLabel = "L1",
-            // Deliberately performRedo()/performUndo() directly, NOT handleNavigateButton(TRIGGER_L/
-            // BUMPER_L) -- that path only does anything while Select is held (see
-            // handleNavigateButton's doc), which on a real pad is a natural same-hand hold+press but
-            // on a touchscreen means pinning Select with one finger while another reaches L1/L2 on
-            // the *same* (left) cluster -- confirmed clunky/easy to fumble via on-emulator testing.
-            // Undo/redo is common enough to deserve a plain, unmodified tap. The real trade-off this
-            // makes: virtual L1/L2 can't reach RKT mode's IF/IF' twist (handleNavigateButton's other
-            // BUMPER_L/TRIGGER_L role) -- an accepted first-pass gap, not an oversight, since RKT is
-            // an advanced/optional mode a touch-only new player is unlikely to need immediately.
-            onShoulderLeftTap = { performRedo() },
-            onShoulderRightTap = { performUndo() },
-            mainControl = VirtualClusterView.MainControl.Stick(onChanged = { x, y -> handleLeftStickInput(x, y) }),
+            onTopRightTap = virtualAction { GamepadVisualState.selectHeld = true },
+            onTopRightRelease = virtualAction { GamepadVisualState.selectHeld = false },
+            // L1 left of L2, matching the 8BitDo Micro's own physical shoulder layout.
+            shoulderLeftLabel = "L1",
+            shoulderRightLabel = "L2",
+            // Mode-aware, per David's live-testing feedback (2026-08-01): unmodified L1/L2 have
+            // no role at all in STICK mode (see handleNavigateButton's doc), so defaulting them
+            // to undo/redo there is pure upside -- but in RKT mode they're real, load-bearing
+            // controls (the Z/Z' twist), so hardcoding them to undo/redo *always* silently took
+            // away touch access to that twist entirely. Routing through handleNavigateButton in
+            // RKT mode restores it, Select-held-modifier and all (Select+L1/L2 still means undo/
+            // redo even in RKT, exactly like the physical controller -- see its doc).
+            onShoulderLeftTap = virtualAction {
+                if (inputMode == GamepadInputMode.RKT) handleNavigateButton(NavigationButton.BUMPER_L) else performUndo()
+            },
+            onShoulderRightTap = virtualAction {
+                if (inputMode == GamepadInputMode.RKT) handleNavigateButton(NavigationButton.TRIGGER_L) else performRedo()
+            },
+            mainControl = VirtualClusterView.MainControl.Stick(onChanged = virtualStickAction { x, y -> handleLeftStickInput(x, y) }),
         )
         virtualClusterRight = VirtualClusterView(
             context = this,
             topLeftLabel = "Start",
             topRightLabel = "C",
-            onTopLeftTap = { toggleTopLevelMenu() },
-            onTopRightTap = { handleNavigateButton(NavigationButton.BUTTON_C) },
-            shoulderLeftLabel = "R1",
-            shoulderRightLabel = "R2",
-            onShoulderLeftTap = { handleRotationButton(RotationButton.BUMPER_R) },
-            onShoulderRightTap = { handleRotationButton(RotationButton.TRIGGER_R) },
+            onTopLeftTap = virtualAction { toggleTopLevelMenu() },
+            onTopRightTap = virtualAction { handleNavigateButton(NavigationButton.BUTTON_C) },
+            // R2 left of R1, matching the 8BitDo Micro's own physical shoulder layout -- see
+            // handleVirtualR1Tap/handleVirtualR2Tap's doc for why *which twist* each performs is
+            // resolved dynamically instead of hardcoded here.
+            shoulderLeftLabel = "R2",
+            shoulderRightLabel = "R1",
+            onShoulderLeftTap = { handleVirtualR2Tap() },
+            onShoulderRightTap = { handleVirtualR1Tap() },
             mainControl = VirtualClusterView.MainControl.FaceDiamond(
-                topLabel = "Y", onTopTap = { handleRotationButton(RotationButton.UP) },
-                leftLabel = "X", onLeftTap = { handleRotationButton(RotationButton.LEFT) },
-                rightLabel = "B", onRightTap = { handleRotationButton(RotationButton.RIGHT) },
-                bottomLabel = "A", onBottomTap = { handleRotationButton(RotationButton.DOWN) },
+                topLabel = "Y", onTopTap = virtualAction { handleRotationButton(RotationButton.UP) },
+                leftLabel = "X", onLeftTap = virtualAction { handleRotationButton(RotationButton.LEFT) },
+                rightLabel = "B", onRightTap = virtualAction { handleRotationButton(RotationButton.RIGHT) },
+                bottomLabel = "A", onBottomTap = virtualAction { handleRotationButton(RotationButton.DOWN) },
             ),
         )
         rootLayout.addView(virtualClusterLeft, virtualClusterParams(startSide = true))
         rootLayout.addView(virtualClusterRight, virtualClusterParams(startSide = false))
+        // See applyInputModeToVirtualController's doc (declared earlier, by rebuildStartMenuTiles)
+        // -- a no-op today since inputMode always starts STICK, but harmless/correct insurance if
+        // that ever changes.
+        applyInputModeToVirtualController()
         updateControlVisibilityForOrientation()
 
         // Added last so each draws (and, once VISIBLE, receives touch) above every view before it.
@@ -1270,10 +1390,11 @@ class MainActivity : AppCompatActivity() {
             addView(Button(this@MainActivity).apply { text = "Help"; setOnClickListener { showHelpDialog() } })
         }
 
-    /** A scrollable documentation popup covering touch controls, both 3D and 4D gamepad schemes
-     * (including 4D's two selectable input modes), the on-screen buttons, and the gamepad
-     * overlay HUD -- the same content regardless of which screen the Help button was tapped
-     * from, so switching between 3D/4D doesn't need separate variants. */
+    /** A scrollable documentation popup covering 4D's gamepad scheme (including its two
+     * selectable input modes), the on-screen buttons, and the gamepad overlay HUD. 3D mode's own
+     * section was removed 2026-08-01 alongside its Start Menu entry point (see the tile list's
+     * doc) -- this can still be reached directly (build3DScreen's own Help button), so its doc
+     * staying generic/mode-agnostic rather than assuming 4D is intentional, not an oversight. */
     private fun showHelpDialog() {
         val scroll = ScrollView(this)
         val textView = TextView(this).apply {
@@ -1355,11 +1476,35 @@ class MainActivity : AppCompatActivity() {
         Gravity.TOP or Gravity.CENTER_HORIZONTAL,
     ).apply { topMargin = 24 }
 
-    private fun topStartParams() = FrameLayout.LayoutParams(
-        FrameLayout.LayoutParams.WRAP_CONTENT,
-        FrameLayout.LayoutParams.WRAP_CONTENT,
-        Gravity.TOP or Gravity.START,
-    ).apply { topMargin = 24; leftMargin = 24 }
+    /** In landscape, the virtual controller's left cluster is vertically centered (see
+     * [virtualClusterParams]) and tall enough (~68% of a typical landscape height) that pushing
+     * this text below its full height would waste most of the screen -- so instead of dodging
+     * vertically, this text starts to the *right* of the cluster's own right edge in landscape,
+     * keeping its normal top-left position otherwise (confirmed via emulator screenshot that the
+     * puzzle itself starts well to the right of that point too, so this doesn't create a new
+     * overlap there either). An earlier attempt pushed this down by the cluster's top-edge
+     * position instead -- looked right on paper but still overlapped the cluster's top-row pills
+     * in practice, since clearing just the cluster's top *edge* isn't the same as clearing the
+     * pills' own height. Portrait doesn't need any of this: the cluster sits at the bottom there,
+     * nowhere near this corner. Harmless for build3DScreen's modeToggleButton (this function's
+     * other caller) too -- 3D mode has no virtual controller to clear, so this just nudges that
+     * button right slightly in landscape for no real reason, not a problem worth special-casing
+     * around. */
+    private fun topStartParams(): FrameLayout.LayoutParams {
+        val params = FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.WRAP_CONTENT,
+            FrameLayout.LayoutParams.WRAP_CONTENT,
+            Gravity.TOP or Gravity.START,
+        )
+        params.topMargin = 24
+        params.leftMargin = if (resources.configuration.orientation == Configuration.ORIENTATION_PORTRAIT) {
+            24
+        } else {
+            val marginPx = 12 * resources.displayMetrics.density
+            (clusterWidthPx() + marginPx * 2 + 24).toInt()
+        }
+        return params
+    }
 
     private fun topEndParams() = FrameLayout.LayoutParams(
         FrameLayout.LayoutParams.WRAP_CONTENT,
@@ -1397,58 +1542,87 @@ class MainActivity : AppCompatActivity() {
         Gravity.BOTTOM or Gravity.END,
     ).apply { bottomMargin = 12; rightMargin = 12 }
 
-    /** Each portrait virtual-controller cluster is a fixed-width block (not stretched to fill
-     * its half of the screen -- see VirtualClusterView's class doc for why: the same width-driven
-     * internal layout needs to drop into a landscape side-margin unchanged later). Needs an
-     * explicit pixel width, unlike this file's other *Params helpers -- VirtualClusterView.onMeasure
-     * reads the resolved MeasureSpec size directly to lay itself out, which WRAP_CONTENT alone
-     * wouldn't reliably supply. */
-    private fun virtualClusterParams(startSide: Boolean) = FrameLayout.LayoutParams(
-        (resources.displayMetrics.widthPixels * VIRTUAL_CLUSTER_WIDTH_FRACTION).toInt(),
-        FrameLayout.LayoutParams.WRAP_CONTENT,
-        Gravity.BOTTOM or if (startSide) Gravity.START else Gravity.END,
-    ).apply {
+    /** Each virtual-controller cluster's own width -- basis is `min(width, height)`, i.e.
+     * whichever screen dimension is currently the *short* one: the full screen width in portrait
+     * (today's original formula), but the full screen *height* in landscape once rotated, not the
+     * (much larger) width -- naively reusing "45% of width" unchanged in landscape would size each
+     * cluster at nearly a whole portrait-screen's width, comically large for a side margin. Using
+     * the short dimension both ways keeps each cluster roughly the same *physical* thumb-reachable
+     * size in both orientations, matching David's "exactly the same as portrait" ask (2026-08-01)
+     * -- ergonomically the same control, just re-anchored to a different pair of edges. Shared by
+     * [virtualClusterParams] and [menuOverlayParams], which both need to agree on this size. */
+    private fun clusterWidthPx(): Float =
+        minOf(resources.displayMetrics.widthPixels, resources.displayMetrics.heightPixels) * VirtualClusterView.WIDTH_FRACTION_OF_SCREEN
+
+    /** Each virtual-controller cluster is a fixed-width block (not stretched to fill its half of
+     * the screen -- see VirtualClusterView's class doc for why: the same width-driven internal
+     * layout drops into either a portrait bottom bar or a landscape side-margin completely
+     * unchanged, only this function's *positioning* differs). Needs an explicit pixel width,
+     * unlike this file's other *Params helpers -- VirtualClusterView.onMeasure reads the resolved
+     * MeasureSpec size directly to lay itself out, which WRAP_CONTENT alone wouldn't reliably
+     * supply.
+     *
+     * Portrait: bottom-anchored, side-by-side (today's original layout). Landscape (added
+     * 2026-08-01): left/right-edge-anchored instead, vertically centered -- the direct rotation
+     * of the same idea, edge-anchored on the axis the two clusters *aren't* spread along either
+     * way (bottom in portrait, since they're spread left-right; vertically centered in landscape,
+     * since they're spread by being on opposite edges, not stacked). */
+    private fun virtualClusterParams(startSide: Boolean): FrameLayout.LayoutParams {
+        val portrait = resources.configuration.orientation == Configuration.ORIENTATION_PORTRAIT
         val marginPx = (12 * resources.displayMetrics.density).toInt()
-        leftMargin = marginPx
-        rightMargin = marginPx
-        bottomMargin = marginPx
+        val gravity = if (portrait) {
+            Gravity.BOTTOM or if (startSide) Gravity.START else Gravity.END
+        } else {
+            Gravity.CENTER_VERTICAL or if (startSide) Gravity.START else Gravity.END
+        }
+        return FrameLayout.LayoutParams(clusterWidthPx().toInt(), FrameLayout.LayoutParams.WRAP_CONTENT, gravity).apply {
+            leftMargin = marginPx
+            rightMargin = marginPx
+            if (portrait) bottomMargin = marginPx
+        }
     }
 
     /** [startMenuView]/[settingsMenuView]'s bounds -- fullscreen style, per StartMenuView's class
-     * doc, meaning it consumes *every* touch within its own bounds while open. Confined here (in
-     * portrait) to stop exactly above the virtual control bar's reserved footprint, rather than
-     * the old blanket MATCH_PARENT -- confirmed via emulator testing as a real bug otherwise: the
-     * menu's own tile grid physically overlapped the same screen region the virtual controller's
-     * pills sit in, so a tap meant to reach a control (e.g. the Start pill again, to close the
-     * menu) instead landed on whatever tile happened to occupy that position (one test run
-     * accidentally triggered Reset this way). Confining the menu's bounds this way also means no
-     * dedicated "Close" affordance is needed for touch-only portrait play: the virtual controller
-     * (never covered) stays reachable the whole time a menu is open, and its B/Back pill already
-     * calls goBackOneLevel() via handleRotationButton -- the exact same one-press-closes-from-the-
-     * top-level behavior menuButton's own "Close" label describes today.
+     * doc, meaning it consumes *every* touch within its own bounds while open. Confined here to
+     * stop exactly outside the virtual control bar's reserved footprint (bottom strip in portrait,
+     * left/right strips in landscape), rather than the old blanket MATCH_PARENT -- confirmed via
+     * emulator testing as a real bug otherwise: the menu's own tile grid physically overlapped the
+     * same screen region the virtual controller's pills sit in, so a tap meant to reach a control
+     * (e.g. the Start pill again, to close the menu) instead landed on whatever tile happened to
+     * occupy that position (one test run accidentally triggered Reset this way). Confining the
+     * menu's bounds this way also means no dedicated "Close" affordance is needed for touch-only
+     * play: the virtual controller (never covered) stays reachable the whole time a menu is open,
+     * and its B/Back pill already calls goBackOneLevel() via handleRotationButton -- the exact
+     * same one-press-closes-from-the-top-level behavior [menuButton]'s own now-unused "Close"
+     * label used to describe.
      *
      * This is a first, minimal slice of a larger reserved-control-strip redesign discussed
      * 2026-08-01 (constant-width-relative-to-screen control regions defining an inset "game
-     * display" the puzzle's camera -- and now menus -- both frame themselves around, eventually
-     * covering landscape's currently-deferred side strips too) -- landscape doesn't need an inset
-     * here yet since menuButton already sits below the menu's tile grid without one (see
-     * menuButton's own doc), so this only branches for portrait. Recomputed on every call (not
-     * cached), same reasoning as virtualClusterParams -- the reserved height is 45%-of-*current*-
-     * screen-width-derived, which swaps on every rotation. */
+     * display" the puzzle's camera could eventually frame itself around too, not just menus) --
+     * HypercubeRenderer's landscape viewport doesn't reserve side margins for the new controls yet
+     * (its existing fixed-vertical-FOV layout already leaves some natural side margin -- revisit
+     * once real-device testing shows whether that's enough). Recomputed on every call (not
+     * cached), same reasoning as [virtualClusterParams] -- reserved space is derived from the
+     * *current* screen size, which changes on every rotation. */
     private fun menuOverlayParams(): FrameLayout.LayoutParams {
         val portrait = resources.configuration.orientation == Configuration.ORIENTATION_PORTRAIT
-        if (!portrait) {
-            return FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
-        }
-        val clusterWidth = resources.displayMetrics.widthPixels * VIRTUAL_CLUSTER_WIDTH_FRACTION
-        val clusterHeight = VirtualClusterView.heightForWidth(clusterWidth)
+        val clusterWidth = clusterWidthPx()
         val marginPx = 12 * resources.displayMetrics.density
-        val reservedBottom = (clusterHeight + marginPx * 2).toInt()
-        return FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            resources.displayMetrics.heightPixels - reservedBottom,
-            Gravity.TOP,
-        )
+        return if (portrait) {
+            val reservedBottom = (VirtualClusterView.heightForWidth(clusterWidth) + marginPx * 2).toInt()
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                resources.displayMetrics.heightPixels - reservedBottom,
+                Gravity.TOP,
+            )
+        } else {
+            val reservedSide = (clusterWidth + marginPx * 2).toInt()
+            FrameLayout.LayoutParams(
+                resources.displayMetrics.widthPixels - reservedSide * 2,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                Gravity.CENTER_HORIZONTAL,
+            )
+        }
     }
 
     /** Re-applies [menuOverlayParams] to both fullscreen menus -- called once from build4DScreen
@@ -1462,32 +1636,40 @@ class MainActivity : AppCompatActivity() {
         settingsMenuView.layoutParams = menuOverlayParams()
     }
 
-    /** Portrait shows the interactive virtual controller -- which has its own Start pill, making
-     * the touch-only [menuButton] redundant there -- and hides the landscape-only
-     * [gamepadOverlay] HUD/[menuButton] pair; landscape is the exact reverse (no virtual controls
-     * drawn there yet, per David's explicit "focus on portrait first" scoping). Called once right
-     * after [build4DScreen] creates both pairs, and again from [onConfigurationChanged] on every
-     * rotation. Deliberately never calls [rebuildUi]/[build4DScreen] again itself -- that would
-     * wipe moveHistory4D (see [pendingRestoreState4D]'s doc) for no reason other than a rotation;
-     * both pairs already exist, only their visibility needs to change. A no-op in 3D mode/before
-     * build4DScreen has run, since the nullable fields are simply still null there. */
+    /** The virtual controller is now shown in *both* orientations (landscape added 2026-08-01,
+     * per David: "exactly the same as portrait but with the two halves moved to either side of
+     * the screen") -- [virtualClusterParams] handles the actual repositioning, this just always
+     * shows both clusters and always hides the older landscape-only [gamepadOverlay] HUD /
+     * [menuButton] pair, which the virtual controller's own Start/face-button pills make fully
+     * redundant now (menuButton's "free up more space for the puzzle" removal was explicit,
+     * 2026-08-01). Called once right after [build4DScreen] creates both pairs, and again from
+     * [onConfigurationChanged] on every rotation (clusters still need repositioning even though
+     * their visibility no longer changes). Deliberately never calls [rebuildUi]/[build4DScreen]
+     * again itself -- that would wipe moveHistory4D (see [pendingRestoreState4D]'s doc) for no
+     * reason other than a rotation; both pairs already exist, only layout needs to change. A
+     * no-op in 3D mode/before build4DScreen has run, since the nullable fields are simply still
+     * null there. */
     private fun updateControlVisibilityForOrientation() {
-        val portrait = resources.configuration.orientation == Configuration.ORIENTATION_PORTRAIT
-        // Re-derived every call, not just at build4DScreen time -- virtualClusterParams's width
-        // is 45% of the *current* screen width, which swaps with every rotation; reusing
-        // whichever LayoutParams instance build4DScreen originally created would leave both
-        // clusters sized for whatever orientation was active on first build (confirmed as a real
-        // bug via emulator screenshot: rotating after launch left each cluster ~45% of the old
-        // landscape width, which is nearly the *entire* portrait width, so the two fully
-        // overlapped instead of sitting in their own halves).
+        // Re-derived every call, not just at build4DScreen time -- virtualClusterParams's size
+        // and position are derived from the *current* screen dimensions/orientation, which swap
+        // on every rotation; reusing whichever LayoutParams instance build4DScreen originally
+        // created would leave both clusters sized/positioned for whatever orientation was active
+        // on first build (confirmed as a real bug via emulator screenshot, pre-dating landscape
+        // support: rotating after launch left each cluster ~45% of the old landscape width, which
+        // is nearly the *entire* portrait width, so the two fully overlapped instead of sitting
+        // in their own halves).
         virtualClusterLeft?.layoutParams = virtualClusterParams(startSide = true)
         virtualClusterRight?.layoutParams = virtualClusterParams(startSide = false)
-        virtualClusterLeft?.visibility = if (portrait) View.VISIBLE else View.GONE
-        virtualClusterRight?.visibility = if (portrait) View.VISIBLE else View.GONE
-        gamepadOverlay?.visibility = if (portrait) View.GONE else View.VISIBLE
+        virtualClusterLeft?.visibility = View.VISIBLE
+        virtualClusterRight?.visibility = View.VISIBLE
+        gamepadOverlay?.visibility = View.GONE
         if (::menuButton.isInitialized) {
-            menuButton.visibility = if (portrait) View.GONE else View.VISIBLE
+            menuButton.visibility = View.GONE
         }
+        // topStartParams's landscape top margin depends on the left cluster's current height --
+        // see its doc -- so it goes stale on rotation exactly like virtualClusterParams/
+        // menuOverlayParams above if not re-applied here too.
+        lastMoveColumn?.layoutParams = topStartParams()
     }
 
     /** [AndroidManifest.xml]'s `configChanges="orientation|screenSize|..."` on MainActivity routes
@@ -1701,12 +1883,6 @@ class MainActivity : AppCompatActivity() {
         private const val RKT_STICK_FIRE_THRESHOLD = 0.8f
         private const val RKT_STICK_REARM_THRESHOLD = 0.4f
 
-        // Shared by virtualClusterParams (sizes each cluster) and menuOverlayParams (insets the
-        // fullscreen Start/Settings menus to stop exactly above the control bar) -- both need to
-        // agree on the same fraction or the menu's reserved bottom strip would drift out of sync
-        // with the control bar's actual footprint.
-        private const val VIRTUAL_CLUSTER_WIDTH_FRACTION = 0.45f
-
         private const val SOLVED_LABEL = "SOLVED"
         private const val SAVE_FILE_NAME = "puzzle_state.json"
         private const val BATTERY_POLL_INTERVAL_MS = 30_000L
@@ -1722,12 +1898,6 @@ class MainActivity : AppCompatActivity() {
 &#8226; Drag the puzzle to rotate the view<br>
 &#8226; Pinch to zoom<br>
 &#8226; In 4D mode, twisting and cell selection are gamepad-only (see below)<br>
-<br>
-<b>3D MODE &#8212; GAMEPAD</b><br>
-&#8226; Left stick: rotate the view<br>
-&#8226; Y / A / X / B: twist U / D / L / R (screen-relative)<br>
-&#8226; L1 / R1: twist F / B<br>
-&#8226; Hold L2: reverse direction (prime) for any of the above<br>
 <br>
 <b>4D MODE &#8212; GAMEPAD</b><br>
 Two selectable input modes &#8212; pick one from the Start Menu's "Stick Mode" / "RKT Mode"
@@ -1789,7 +1959,6 @@ by how many colors a piece shows) &#8212; drawn as a small see-through panel so 
 visible and draggable while you adjust them<br>
 &#8226; Scramble / Reset<br>
 &#8226; Stick Mode / RKT Mode: pick the active input mode (see above)<br>
-&#8226; Play 3D Puzzle: switch modes<br>
 &#8226; Settings: Nintendo ABXY, Z Dir Left/Right, Export Format (MC4D or hypercubing.xyz-style
 Log), and Confirm Scramble/Reset -- see below<br>
 &#8226; Export: runs whichever format Settings' Export Format row specifies<br>
@@ -1799,8 +1968,8 @@ Log), and Confirm Scramble/Reset -- see below<br>
 &#8226; Controller: shows which controller these three rows apply to -- whichever one most
 recently sent input, saved per-controller so different pads can have different settings
 (press a button on the one you want to change before adjusting it)<br>
-&#8226; Nintendo ABXY: swaps A&#8596;B and X&#8596;Y (also affects 3D mode's twist buttons), for
-controllers/modes reporting face buttons in Nintendo's layout instead of Xbox's<br>
+&#8226; Nintendo ABXY: swaps A&#8596;B and X&#8596;Y, for controllers/modes reporting face buttons
+in Nintendo's layout instead of Xbox's<br>
 &#8226; Z Dir Left / Z Dir Right: independently swaps L1&#8596;L2 or R1&#8596;R2, for controllers
 whose bumper/trigger arrangement makes one or both sides feel backwards<br>
 &#8226; Export Format: MC4D (a real MagicCube4D .log file) or Log (hypercubing.xyz-style community

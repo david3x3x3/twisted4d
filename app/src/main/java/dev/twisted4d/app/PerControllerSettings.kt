@@ -54,6 +54,16 @@ object PerControllerSettings {
         if (device.name != null) entry.deviceName = device.name
     }
 
+    /** Same idea as [noteActiveDevice], but for the on-screen touch controller (see
+     * VirtualClusterView), which has no real [InputDevice] to read a descriptor from -- a fixed,
+     * well-known descriptor instead, since there's only ever one. Call on every virtual button
+     * press/stick move so [current] (and the Settings screen's "Controller:" display) follows
+     * touch input exactly the way it already follows whichever real pad was used most recently. */
+    fun noteVirtualControllerActive() {
+        lastActiveDescriptor = VIRTUAL_DESCRIPTOR
+        cache.getOrPut(VIRTUAL_DESCRIPTOR) { loadEntry(VIRTUAL_DESCRIPTOR) }.deviceName = "Virtual Controller"
+    }
+
     /** The most-recently-active controller's settings, or null if no gamepad has sent input yet
      * this session (e.g. the app just launched) -- callers should treat that the same as "every
      * toggle off, no controller to attribute a change to". */
@@ -73,9 +83,14 @@ object PerControllerSettings {
     private fun loadEntry(descriptor: String): Entry = Entry(
         nintendoLayout = prefs.getBoolean("$descriptor:nintendoLayout", false),
         zDirLeft = prefs.getBoolean("$descriptor:zDirLeft", false),
-        zDirRight = prefs.getBoolean("$descriptor:zDirRight", false),
+        // The virtual controller's R1/R2 shoulder taps were confirmed backwards vs. their labels
+        // on real-device testing (2026-08-01, David's Pixel) -- defaults to swapped for just this
+        // one descriptor rather than a code-level swap, so it stays a normal, re-toggleable
+        // Settings row like every other per-controller quirk here, not a hardcoded exception.
+        zDirRight = prefs.getBoolean("$descriptor:zDirRight", descriptor == VIRTUAL_DESCRIPTOR),
         deviceName = prefs.getString("$descriptor:deviceName", "") ?: "",
     )
 
     private const val PREFS_NAME = "controller_settings"
+    private const val VIRTUAL_DESCRIPTOR = "virtual-controller"
 }
