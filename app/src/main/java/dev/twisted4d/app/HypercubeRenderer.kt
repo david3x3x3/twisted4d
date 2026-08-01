@@ -683,9 +683,36 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         applyScreenRelativeRotation(0f, INITIAL_PITCH_DEG)
     }
 
+    /** In landscape (or square), the puzzle renders into the *whole* surface at that surface's
+     * actual aspect ratio -- a wide surface with a fixed 24-degree *vertical* FOV naturally
+     * leaves horizontal margins on both sides (that's the entire mechanism behind the puzzle
+     * looking "centered in a square with side space" today -- there's no explicit square crop,
+     * it falls out of the fixed-vertical-FOV/wide-aspect combination for free).
+     *
+     * In portrait (taller than wide -- see the [android:screenOrientation] change that made this
+     * reachable at all), that same trick would do the opposite of what's wanted: a fixed vertical
+     * FOV filling the *whole* tall height would render the puzzle tiny and vertically centered,
+     * wasting equal space above and below, when what portrait's virtual-controller layout needs
+     * is a square pinned flush to the *top*, with the bottom strip left empty for touch controls
+     * (ordinary Android views, not GL content). So portrait instead uses a real square GL
+     * viewport (side length = surface width, the constraining dimension), positioned so its top
+     * edge lands at the very top of the surface -- glViewport's y is measured from the bottom in
+     * GL's window-coordinate convention, hence `height - squareSize`, not 0 -- with the
+     * projection's aspect fixed at 1.0 to match that viewport's actual shape. Portrait vs.
+     * landscape is decided purely from the surface's own reported dimensions (taller-than-wide),
+     * not a separate orientation flag threaded in from MainActivity, so this adapts correctly on
+     * its own the moment the device actually rotates and onSurfaceChanged fires again.
+     */
     override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
-        GLES30.glViewport(0, 0, width, height)
-        val aspect = width.toFloat() / height.toFloat()
+        val aspect: Float
+        if (height > width) {
+            val squareSize = width
+            GLES30.glViewport(0, height - squareSize, squareSize, squareSize)
+            aspect = 1f
+        } else {
+            GLES30.glViewport(0, 0, width, height)
+            aspect = width.toFloat() / height.toFloat()
+        }
         // A narrower FOV (was 40f) than CubeRenderer's, paired with a proportionally longer
         // camera distance below, flattens the perspective -- less size difference between the
         // near and far walls (e.g. F/R vs. their opposite B/L) -- closer to an isometric look

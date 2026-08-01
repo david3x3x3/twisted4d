@@ -14,7 +14,7 @@
         <activity
             android:name=".SplashActivity"
             android:exported="true"
-            android:screenOrientation="landscape"
+            android:screenOrientation="unspecified"
             android:theme="@style/Theme.Twisted4D">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -22,10 +22,16 @@
             </intent-filter>
         </activity>
 
+        <!-- screenOrientation was "landscape" (hard-locked) until the portrait virtual-controller
+             work; see HypercubeRenderer.onSurfaceChanged's doc for how portrait's square-pinned-
+             to-the-top layout is computed. "unspecified" (not "sensor"/"fullSensor") deliberately
+             still respects the device's own rotation-lock setting, same as most apps: this adds
+             portrait as a possible orientation, it doesn't force rotation independent of what
+             the user already has their device set to. -->
         <activity
             android:name=".MainActivity"
             android:exported="false"
-            android:screenOrientation="landscape"
+            android:screenOrientation="unspecified"
             android:configChanges="orientation|screenSize|keyboardHidden|screenLayout" />
 
         <!-- Lets MainActivity.shareLogFile share a real, properly-named/extensioned file (e.g.
