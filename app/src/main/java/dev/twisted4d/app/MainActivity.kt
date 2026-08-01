@@ -1464,7 +1464,7 @@ class MainActivity : AppCompatActivity() {
      * matching how it only exists on the virtual controller in the first place. */
     private fun showAboutDialog() {
         val message = """
-            <b>twisted4d</b> &#8212; version ${BuildConfig.VERSION_NAME}<br>
+            <b>Twisted 4D</b> &#8212; version ${BuildConfig.VERSION_NAME}<br>
             <br>
             This game is designed for a Bluetooth or USB game controller, and is more precise and
             comfortable to play that way -- these on-screen touch controls are a convenience for
@@ -2020,20 +2020,10 @@ class MainActivity : AppCompatActivity() {
 <b>TOUCH CONTROLS</b><br>
 &#8226; Drag the puzzle to rotate the view<br>
 &#8226; Pinch to zoom<br>
-&#8226; In 4D mode, twisting and cell selection are gamepad-only (see below)<br>
 <br>
-<b>4D MODE &#8212; GAMEPAD</b><br>
-Two selectable input modes &#8212; pick one from the Start Menu's "Stick Mode" / "RKT Mode"
-tiles (see below).<br>
-<br>
-<b>Select (hold): a second layer of controls</b> &#8212; works the same in every mode.<br>
-&#8226; Y / A / X / B / R1 / R2: instead of twisting the selected/highlighted cell, snap-rotates
-the *entire puzzle* 90&#176; using the same button-to-axis feel an individual twist already has,
-just applied to everything at once (the 4D-room equivalent of a whole-cube rotation, as opposed
-to a face turn) &#8212; I never moves under any of these.<br>
-&#8226; L1 (bumper): Undo.<br>
-&#8226; L2 (trigger): Redo.<br>
-Release Select to go back to normal twisting/navigation.<br>
+<b>GAMEPAD CONTROLS</b><br>
+Two selectable input modes &#8212; a single "Mode" tile in the Start Menu toggles between them,
+its own label showing whichever one is currently active (see below).<br>
 <br>
 <b>Mode 1 &#8212; Stick Select (default)</b><br>
 &#8226; Left stick: select a cell (deflect toward it, release to keep the selection)<br>
@@ -2056,20 +2046,27 @@ them; push again (after returning to center) for another twist<br>
 &#8226; D-pad left / right: twist I as IU / IU'<br>
 &#8226; D-pad up / down: twist I as IR / IR'<br>
 &#8226; L1 / L2 (bumper / trigger): twist I as IF / IF'<br>
-&#8226; Button C: unused (Select still does whole-room snap rotation/undo/redo, see above)<br>
+&#8226; Button C: unused (Select still does whole-room snap rotation/undo/redo, see below)<br>
 <br>
-<b>4D TOP-LEFT STATUS</b><br>
+<b>Select (hold): a second layer of controls</b> &#8212; works the same in every mode.<br>
+&#8226; Y / A / X / B / R1 / R2: instead of twisting the selected/highlighted cell, snap-rotates
+the *entire puzzle* 90&#176; using the same button-to-axis feel an individual twist already has,
+just applied to everything at once (the 4D-room equivalent of a whole-cube rotation, as opposed
+to a face turn) &#8212; I never moves under any of these.<br>
+&#8226; L1 (bumper): Undo.<br>
+&#8226; L2 (trigger): Redo.<br>
+Release Select to go back to normal twisting/navigation.<br>
+<br>
+<b>TOP-LEFT STATUS</b><br>
 &#8226; Turns: twists made since the last scramble (or reset)<br>
-&#8226; The last twist performed, in hypercubing.xyz notation (e.g. "RU'")<br>
 &#8226; Selected X: showing Y -- the room slot that will actually twist right now, and which native
 cell currently occupies it<br>
 &#8226; Filter: which piece-type filters (if any) are currently hiding pieces<br>
-&#8226; Mode: Stick or RKT -- the active input mode (see the Start Menu's Stick Mode/RKT Mode
-tiles)<br>
+&#8226; Mode: Stick or RKT -- the active input mode (see the Start Menu's Mode tile)<br>
 &#8226; Battery: N% -- the connected gamepad's battery level, if it reports one (many wired
 controllers, and Android versions before 12, never do -- blank when unavailable)<br>
 <br>
-<b>4D START MENU</b><br>
+<b>START MENU</b><br>
 Press Start (or tap the on-screen button in the bottom center, for controller-less use) to open
 it. Move the highlight with the left stick or D-pad; Confirm/Back are whichever face buttons sit
 physically bottom/right on your pad. Press Start again to close it from anywhere, or Back to step
@@ -2081,7 +2078,7 @@ full touch-only substitute for Start/Back, no controller or system gesture requi
 by how many colors a piece shows) &#8212; drawn as a small see-through panel so the puzzle stays
 visible and draggable while you adjust them<br>
 &#8226; Scramble / Reset<br>
-&#8226; Stick Mode / RKT Mode: pick the active input mode (see above)<br>
+&#8226; Mode: toggles between Stick and RKT input (see above)<br>
 &#8226; Settings: Nintendo ABXY, Z Dir Left/Right, Export Format (MC4D or hypercubing.xyz-style
 Log), and Confirm Scramble/Reset -- see below<br>
 &#8226; Export: runs whichever format Settings' Export Format row specifies<br>
