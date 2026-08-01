@@ -1268,7 +1268,7 @@ class MainActivity : AppCompatActivity() {
             context = this,
             topLeftLabel = "About",
             topRightLabel = "Select",
-            onTopLeftTap = virtualAction { showHelpDialog() },
+            onTopLeftTap = virtualAction { showAboutDialog() },
             // A true hold, not a tap -- writes the same GamepadVisualState.selectHeld flag a
             // real Select button press/release does, so handleRotationButton/handleNavigateButton
             // (both already keyed off that one flag) pick up the modifier with zero extra code:
@@ -1412,6 +1412,32 @@ class MainActivity : AppCompatActivity() {
         AlertDialog.Builder(this)
             .setTitle("Help")
             .setView(scroll)
+            .setPositiveButton("Close", null)
+            .show()
+    }
+
+    /** The virtual controller's "About" pill opens this instead of the full [showHelpDialog] --
+     * deliberately much shorter (2026-08-01, per David: it used to just open the same full Help
+     * screen, which he felt wasn't the right first thing for a brand-new, controller-less player
+     * to see). Just enough to orient them: app name/version, a nudge that a real gamepad is the
+     * intended/more comfortable way to play (matches the original design intent for this button,
+     * from the virtual-controller planning discussion: "show new users the app is usable without
+     * a physical controller" -- not that touch play is the *recommended* way), and where to find
+     * the actual instructions. About is touch-only -- there's no physical-gamepad binding for it,
+     * matching how it only exists on the virtual controller in the first place. */
+    private fun showAboutDialog() {
+        val message = """
+            <b>twisted4d</b> &#8212; version ${BuildConfig.VERSION_NAME}<br>
+            <br>
+            This game is designed for a Bluetooth or USB game controller, and is more precise and
+            comfortable to play that way -- these on-screen touch controls are a convenience for
+            playing without one.<br>
+            <br>
+            For full instructions, press <b>Start</b>, then <b>Help</b>.
+        """.trimIndent()
+        AlertDialog.Builder(this)
+            .setTitle("About")
+            .setMessage(Html.fromHtml(message, Html.FROM_HTML_MODE_LEGACY))
             .setPositiveButton("Close", null)
             .show()
     }
