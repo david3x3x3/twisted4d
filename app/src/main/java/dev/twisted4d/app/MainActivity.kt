@@ -1678,7 +1678,7 @@ class MainActivity : AppCompatActivity() {
      * occupy that position (one test run accidentally triggered Reset this way). Confining the
      * menu's bounds this way also means no dedicated "Close" affordance is needed for touch-only
      * play: the virtual controller (never covered) stays reachable the whole time a menu is open,
-     * and its B/Back pill already calls goBackOneLevel() via handleRotationButton -- the exact
+     * and its B/Back button already calls goBackOneLevel() via handleRotationButton -- the exact
      * same one-press-closes-from-the-top-level behavior [menuButton]'s own now-unused "Close"
      * label used to describe.
      *
@@ -2071,7 +2071,7 @@ Press Start (real gamepad) or tap the virtual controller's Start pill (touch) to
 the highlight with the left stick, the D-pad, or the virtual controller's own stick -- it shows a
 stick here even in RKT mode, since RKT's D-pad has no way to navigate a menu. Confirm/Back are
 whichever face buttons sit physically bottom/right on a gamepad, or the virtual controller's
-matching A/B pills. Press Start again (or tap it again) to close from anywhere, or Back to step
+matching A/B buttons. Press Start again (or tap it again) to close from anywhere, or Back to step
 out one level at a time (submenu &#8594; menu &#8594; resume puzzle).<br>
 &#8226; Filters: opens a submenu of piece-type toggles (Centers / Ridges / 3c Edges / 4c Corners,
 by how many colors a piece shows) &#8212; drawn as a small see-through panel so the puzzle stays
