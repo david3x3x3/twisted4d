@@ -1080,7 +1080,7 @@ class MainActivity : AppCompatActivity() {
                     controllerToggleTile("Nintendo ABXY", { it.nintendoLayout }, { e, v -> e.nintendoLayout = v }),
                     null,
                     controllerToggleTile("Z Dir Left", { it.zDirLeft }, { e, v -> e.zDirLeft = v }),
-                    MenuTile("Confirm Scramble/Reset\n${onOff(AppSettings.confirmBeforeScrambleReset)}", onSelect = {
+                    MenuTile("Confirm\nScramble/Reset\n${onOff(AppSettings.confirmBeforeScrambleReset)}", onSelect = {
                         AppSettings.confirmBeforeScrambleReset = !AppSettings.confirmBeforeScrambleReset
                         saveAppSettings()
                         rebuildSettingsTiles()
