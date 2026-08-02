@@ -2067,13 +2067,12 @@ cell currently occupies it<br>
 controllers, and Android versions before 12, never do -- blank when unavailable)<br>
 <br>
 <b>START MENU</b><br>
-Press Start (or tap the on-screen button in the bottom center, for controller-less use) to open
-it. Move the highlight with the left stick or D-pad; Confirm/Back are whichever face buttons sit
-physically bottom/right on your pad. Press Start again to close it from anywhere, or Back to step
-out one level at a time (submenu &#8594; menu &#8594; resume puzzle). That same on-screen button
-relabels itself to match: "Menu" when closed (tap to open), "Close" with the Start Menu open (tap
-to exit), "Back" inside a submenu like Filters or Settings (tap to step up one level) -- so it's a
-full touch-only substitute for Start/Back, no controller or system gesture required.<br>
+Press Start (real gamepad) or tap the virtual controller's Start pill (touch) to open it. Move
+the highlight with the left stick, the D-pad, or the virtual controller's own stick -- it shows a
+stick here even in RKT mode, since RKT's D-pad has no way to navigate a menu. Confirm/Back are
+whichever face buttons sit physically bottom/right on a gamepad, or the virtual controller's
+matching A/B pills. Press Start again (or tap it again) to close from anywhere, or Back to step
+out one level at a time (submenu &#8594; menu &#8594; resume puzzle).<br>
 &#8226; Filters: opens a submenu of piece-type toggles (Centers / Ridges / 3c Edges / 4c Corners,
 by how many colors a piece shows) &#8212; drawn as a small see-through panel so the puzzle stays
 visible and draggable while you adjust them<br>
