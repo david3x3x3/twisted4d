@@ -91,15 +91,17 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
 
     /** Called (on the GL thread, from [onDrawFrame]) whenever [selectedRoomCell] or
      * [selectedCell4] changes -- a troubleshooting aid so a tester can see exactly which room the
-     * app will actually twist right now ([selectedRoomCell] -- the same value [requestTwist]'s
-     * `roomCell` and community notation's first letter come from, so this can never legitimately
-     * differ from "the first letter of the next twist"; confirmed via a real repro where an
-     * earlier version of this label showed the stick's raw, uncorrected wedge name instead and
-     * visibly diverged from the actual rotation's letter -- that was the bug, not a drag
-     * producing a "surprising" but correct room), and which native cell currently occupies it
-     * ([selectedCell4]). Fires continuously as selection changes in any input mode, not just on
-     * twists. */
-    @Volatile var onSelectedCellChanged: ((roomCell: Cell4, nativeCell: Cell4) -> Unit)? = null
+     * app has actively selected right now, if any ([selectedRoomCell]/[selectedCell4] -- both
+     * `null` once the stick/d-pad has been released, see [hasSelection]'s doc). Confirmed via a
+     * real repro where an earlier version of this label showed the stick's raw, uncorrected wedge
+     * name instead and visibly diverged from the actual rotation's letter -- that was the bug,
+     * not a drag producing a "surprising" but correct room. Note this can now legitimately differ
+     * from "the next twist's first letter" while both args are null: the next twist still resolves
+     * to a definite cell via [effectiveCell4] (R/U/F, or L/D/B under the THUMB_L/BUTTON_C
+     * modifier), but *which* one depends on which button gets pressed, so there's no single
+     * "currently selected" cell left to report here -- null means exactly that, not a bug. Fires
+     * continuously as selection changes in any input mode, not just on twists. */
+    @Volatile var onSelectedCellChanged: ((roomCell: Cell4?, nativeCell: Cell4?) -> Unit)? = null
     private var lastReportedRoomCell: Cell4? = null
     private var lastReportedNativeCell: Cell4? = null
 
@@ -140,10 +142,27 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
 
     // Persistent left-stick selection state: which room *slot* (axis+sign), not which resolved
     // cell, is selected -- see selectedCell4's doc for why. GL-thread-only (updateCell4Selection
-    // is only ever called via queueEvent; so is MainActivity's read of selectedCell4).
+    // is only ever called via queueEvent; so is MainActivity's read of selectedCell4). Stays
+    // stale once hasSelection goes false (nothing re-clears it) -- harmless, since every reader
+    // that cares about staleness (selectedCell4, selectedRoomCell, effectiveCell4/RoomCell,
+    // roomFixAxis2For) already goes through hasSelection/hasEffectiveSelection first.
     private var selectedRoomAxis = AXIS_Y
     private var selectedRoomSign = 1
-    private var stickHeld = false
+
+    // Whether STICK mode's left stick/d-pad currently has a selection actively held -- false
+    // the instant it returns to center (see updateCell4Selection), *forgetting* the last
+    // selection entirely rather than just hiding its highlight, per 2026-08-02 design: twisting
+    // with nothing selected should no longer silently reuse whatever was last touched (that was
+    // the confirmed bug -- the highlight already disappeared on release, but selectedCell4/
+    // selectedRoomCell kept resolving to the stale slot regardless). RKT mode never touches this
+    // (its selection is permanently pinned to R by setInputMode) -- see hasEffectiveSelection.
+    private var hasSelection = false
+
+    // hasSelection, plus RKT's permanent pin -- RKT's cell selection is never "released" the way
+    // STICK's is (there's no stick input driving it in RKT), so treating it as always-selected
+    // here is what keeps requestTwist/resolveRotationButtonFixAxis2 resolving to the pinned R
+    // slot exactly as before, unaffected by this feature.
+    private val hasEffectiveSelection: Boolean get() = hasSelection || inputMode == GamepadInputMode.RKT
 
     /** Which of the 2 left-hand input schemes is active -- see [GamepadInputMode]. Read from the
      * UI thread (MainActivity's on4DNavigate/onLeftStick closures, both running inside their own
@@ -175,18 +194,21 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         inputMode = mode
     }
 
-    /** Which [Cell4] the gamepad's left stick currently has selected for the next twist -- see
-     * [updateCell4Selection]. A computed property, re-resolved against the *current*
-     * [cubeOrientation4] on every read, rather than a cached value -- otherwise, since a
-     * physical stick held perfectly steady fires no new motion events, rotating the room (e.g.
-     * via [requestCameraRotate90]) while a selection is being held wouldn't update it until the
-     * next stick nudge: the highlight and any subsequent twist would silently act on whichever
-     * cell used to be in that slot, not whichever cell is actually there now. This is the
-     * *native* occupant's identity (via [nativeCellInRoomSlot]), which is what [requestTwist]
-     * needs -- for the on-screen highlight, see [emphasizedCell] instead, which is a
-     * deliberately different computation.
+    /** Which [Cell4] the gamepad's left stick currently has selected for the next twist, or
+     * `null` if nothing is ([hasEffectiveSelection] is false) -- see [updateCell4Selection]. A
+     * computed property, re-resolved against the *current* [cubeOrientation4] on every read,
+     * rather than a cached value -- otherwise, since a physical stick held perfectly steady
+     * fires no new motion events, rotating the room (e.g. via [requestCameraRotate90]) while a
+     * selection is being held wouldn't update it until the next stick nudge: the highlight and
+     * any subsequent twist would silently act on whichever cell used to be in that slot, not
+     * whichever cell is actually there now. This is the *native* occupant's identity (via
+     * [nativeCellInRoomSlot]), which is what [requestTwist] needs -- for the on-screen
+     * highlight, see [emphasizedCell] instead (a deliberately different computation, though it
+     * agrees with this one whenever both are non-null). For what a twist button should actually
+     * act on -- which still needs an answer even with nothing selected -- see [effectiveCell4]
+     * instead.
      */
-    val selectedCell4: Cell4 get() = nativeCellInRoomSlot(selectedRoomAxis, selectedRoomSign)
+    val selectedCell4: Cell4? get() = if (hasEffectiveSelection) nativeCellInRoomSlot(selectedRoomAxis, selectedRoomSign) else null
 
     /** The currently selected room slot's own fixed label (e.g. "the wall at +X is always R"),
      * *not* whichever native cell currently occupies it -- same distinction [emphasizedCell]
@@ -197,8 +219,43 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
      * rotated -- e.g. after moving some other cell to I, pressing a rotation button on a cell
      * that's now sitting in a *different* wall than its own name got the wrong on-screen
      * direction, because the correction table was consulted for the cell's native identity
-     * instead of the wall it's actually rendering in. */
-    val selectedRoomCell: Cell4 get() = cellFor(selectedRoomAxis, selectedRoomSign)
+     * instead of the wall it's actually rendering in. `null` under the same condition
+     * [selectedCell4] is -- see [effectiveRoomCell] for the twist-resolution equivalent that's
+     * never null. */
+    val selectedRoomCell: Cell4? get() = if (hasEffectiveSelection) cellFor(selectedRoomAxis, selectedRoomSign) else null
+
+    /** Which room axis a twist on [buttonLiteralAxis] should actually act relative to right now:
+     * the actively selected slot if there is one ([hasEffectiveSelection]), else
+     * [buttonLiteralAxis]'s own axis -- i.e. with nothing selected, an X-axis button (Up/Down)
+     * behaves as if R were selected, Y (Left/Right) as if U were, Z (bumper/trigger) as if F
+     * were, matching [Cell4]'s own axis pairing (R/U/F are each their axis's `+1`-sign cell --
+     * see [cellFor]). This is *why* [roomFixAxis2For]'s collision check ends up unconditionally
+     * true whenever nothing is selected: the default slot's axis is by construction always the
+     * same as the button's own, same as it would be if you'd actually selected R/U/F yourself. */
+    private fun effectiveRoomAxis(buttonLiteralAxis: Axis4): Int =
+        if (hasEffectiveSelection) selectedRoomAxis else buttonLiteralAxis.nativeIndex
+
+    /** The sign half of [effectiveRoomAxis] -- the actively selected slot's sign if there is
+     * one, else `+1` (R/U/F) normally, or `-1` (L/D/B, the *opposite* cell on that axis) when
+     * [defaultOpposite] is set -- see [MainActivity]'s THUMB_L/BUTTON_C-held modifier, which asks
+     * for exactly that: with nothing selected, holding that button flips a twist to act on the
+     * far side of the axis instead, the same cell holding the stick to the opposite compass
+     * wedge would have selected. Ignored entirely once something's actually selected -- the
+     * modifier only exists to pick a default, not to override a real selection. */
+    private fun effectiveRoomSign(defaultOpposite: Boolean): Int =
+        if (hasEffectiveSelection) selectedRoomSign else if (defaultOpposite) -1 else 1
+
+    /** The non-nullable twist-resolution counterpart to [selectedCell4]: whichever cell a twist
+     * on [buttonLiteralAxis] should actually act on right now, falling back to
+     * [effectiveRoomAxis]/[effectiveRoomSign] (R/U/F, or L/D/B if [defaultOpposite]) when nothing
+     * is selected instead of ever being null. */
+    fun effectiveCell4(buttonLiteralAxis: Axis4, defaultOpposite: Boolean = false): Cell4 =
+        nativeCellInRoomSlot(effectiveRoomAxis(buttonLiteralAxis), effectiveRoomSign(defaultOpposite))
+
+    /** The non-nullable twist-resolution counterpart to [selectedRoomCell] -- see
+     * [effectiveCell4]'s doc, same fallback, room-label instead of native identity. */
+    fun effectiveRoomCell(buttonLiteralAxis: Axis4, defaultOpposite: Boolean = false): Cell4 =
+        cellFor(effectiveRoomAxis(buttonLiteralAxis), effectiveRoomSign(defaultOpposite))
 
     /**
      * Resolves a rotation button's screen/room-relative axis (e.g. "Up" always means room axis X)
@@ -239,7 +296,7 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
      * see the mc4d_log_compatibility memory for why native identity is still exactly right for
      * the MC4D file export, just not for what's shown on screen. */
     fun roomFixAxis2For(buttonLiteralAxis: Axis4): Int =
-        if (buttonLiteralAxis.nativeIndex == selectedRoomAxis) AXIS_W else buttonLiteralAxis.nativeIndex
+        if (buttonLiteralAxis.nativeIndex == effectiveRoomAxis(buttonLiteralAxis)) AXIS_W else buttonLiteralAxis.nativeIndex
 
     /** One rendered sticker's current room position and color, as computed by [currentSceneColors]
      * -- [roomAxis]/[roomSign] is which wall it's on (or [AXIS_W]/`-1` for the I slot; the O slot
@@ -382,8 +439,7 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
     val emphasizedCell: Cell4?
         get() = when {
             inputMode == GamepadInputMode.RKT -> Cell4.I
-            stickHeld -> cellFor(selectedRoomAxis, selectedRoomSign)
-            else -> null
+            else -> selectedRoomCell
         }
 
     /** [GamepadInputMode.RKT]'s left-hand controls -- twists whichever native cell the room's I
@@ -791,10 +847,12 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
     /**
      * Rotates the room by exactly one 90-degree step so whichever cell the left stick currently
      * has selected ([selectedRoomAxis]/[selectedRoomSign] -- its *current* room slot, not its
-     * native identity) ends up in the I slot -- for the gamepad's left trigger. A no-op if the
-     * selection is already on the W axis (I or O), since there's no spatial axis left to pair
-     * with W for this: the two cells on the W axis can only swap via a *180*-degree turn, not a
-     * single quarter turn, and this only ever does quarter turns like every other rotation here.
+     * native identity) ends up in the I slot -- for the gamepad's left trigger. A no-op if
+     * nothing is actively selected ([hasSelection] false -- there's no longer a "last selection"
+     * to fall back on once the stick's released, see [hasSelection]'s doc) or if the selection is
+     * already on the W axis (I or O), since there's no spatial axis left to pair with W for this:
+     * the two cells on the W axis can only swap via a *180*-degree turn, not a single quarter
+     * turn, and this only ever does quarter turns like every other rotation here.
      *
      * The rotation direction (`reverse`) is derived, not looked up: [requestCameraRotate90]'s
      * `(axis, W)` quarter turn sends the room's own +axis direction to +W when [reverse] is
@@ -802,7 +860,7 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
      * sign alone picks the direction that lands there.
      */
     fun requestMoveSelectedCellToI() {
-        if (selectedRoomAxis == AXIS_W) return
+        if (!hasSelection || selectedRoomAxis == AXIS_W) return
         requestCameraRotate90(selectedRoomAxis, AXIS_W, reverse = selectedRoomSign > 0)
     }
 
@@ -973,16 +1031,20 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
      * rarely settles at exactly (0,0) once released, and without this, that residual noise
      * would silently reassign the selected cell out from under the user between presses (e.g.
      * selecting R, then having a twist button unexpectedly act on a totally different cell the
-     * stick never intentionally pointed at).
+     * stick never intentionally pointed at). This is also where the selection itself is forgotten
+     * (clears [hasSelection], not just [lastStickWedge]) -- releasing the stick/d-pad all the way
+     * to center clears the last selection rather than leaving it live-but-unhighlighted, so a
+     * twist right after release falls back to [effectiveCell4]'s per-axis default instead of
+     * silently reusing whatever was last selected (2026-08-02 design change).
      */
     fun updateCell4Selection(x: Float, y: Float) {
         val isSignificant = hypot(x, y) > SIGNIFICANT_STICK_MAGNITUDE
         if (!isSignificant) {
             lastStickWedge = -1
-            stickHeld = false
+            hasSelection = false
             return
         }
-        stickHeld = true
+        hasSelection = true
 
         // AXIS_Y is negative when pushed up, so negate it to get a standard math angle (0 deg
         // = right, 90 deg = up, increasing counterclockwise), then bucket it into one of 8

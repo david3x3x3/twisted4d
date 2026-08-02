@@ -56,7 +56,15 @@ enum class RotationButton(val literalAxis: Axis4, val primaryPrime: Boolean) {
  * to serve this same role but no longer does: it's being repurposed for something else, and the
  * 8BitDo Micro's lack of a stick click was the actual reason a second button was needed there in
  * the first place, so Button C replacing it (rather than living alongside it) is the cleaner fit.
- * START stays in the enum since it's still a distinct reportable button, just unbound for now. */
+ * START stays in the enum since it's still a distinct reportable button, just unbound for now.
+ *
+ * [THUMB_L]/[BUTTON_C] gained a second role (2026-08-02), same doubling-up trick as [SELECT]:
+ * with nothing actively selected, holding either while a [RotationButton] is pressed flips the
+ * twist to its axis's opposite default cell (L/D/B instead of R/U/F) -- see
+ * [GamepadVisualState.buttonCHeld]/`thumbLHeld` and [MainActivity]'s `moveModifierHeldAtPress`.
+ * A no-op alongside the original move-to-I tap once something's actually selected, same as the
+ * move-to-I tap is now itself a no-op with nothing selected (see
+ * `HypercubeRenderer.requestMoveSelectedCellToI`'s doc). */
 enum class NavigationButton { LEFT, RIGHT, UP, DOWN, BUMPER_L, TRIGGER_L, SELECT, THUMB_L, START, BUTTON_C }
 
 /**
@@ -256,6 +264,7 @@ class GamepadInputHandler(
                 KeyEvent.KEYCODE_DPAD_DOWN -> GamepadVisualState.dpadDownHeld = held
                 KeyEvent.KEYCODE_BUTTON_SELECT -> GamepadVisualState.selectHeld = held
                 KeyEvent.KEYCODE_BUTTON_THUMBL -> GamepadVisualState.thumbLHeld = held
+                KeyEvent.KEYCODE_BUTTON_C -> GamepadVisualState.buttonCHeld = held
             }
             when (keyCode) {
                 KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT,

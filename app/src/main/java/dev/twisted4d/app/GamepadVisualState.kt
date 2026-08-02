@@ -28,6 +28,11 @@ object GamepadVisualState {
     @Volatile var selectHeld = false
     @Volatile var thumbLHeld = false
 
+    // Load-bearing for gameplay (not just the debug overlay) since 2026-08-02: THUMB_L/BUTTON_C
+    // held with nothing selected is the "twist the opposite default cell" modifier -- see
+    // MainActivity.handleRotationButton's moveModifierHeldAtPress.
+    @Volatile var buttonCHeld = false
+
     // Nintendo ABXY moved to PerControllerSettings.Entry.nintendoLayout 2026-07-28 -- it's
     // per-controller now, not a single app-wide flag, so it no longer lives here. GamepadOverlayView
     // reads PerControllerSettings.current()?.nintendoLayout directly.

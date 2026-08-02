@@ -691,13 +691,20 @@ class MainActivity : AppCompatActivity() {
             // hold-then-tap-then-release pattern a real modifier-key press produces, so this
             // wasn't just an artifact of adb timing.
             val selectHeldAtPress = GamepadVisualState.selectHeld
+            // THUMB_L/BUTTON_C-held modifier (added 2026-08-02): with nothing actively selected,
+            // holding either flips a twist to its axis's *opposite* default cell (L/D/B instead
+            // of R/U/F) -- the same cell holding the stick to the opposite compass wedge would
+            // pick, e.g. Button C + R2 == stick-northeast (B) + R2. See
+            // HypercubeRenderer.effectiveRoomSign's doc; a no-op once something's actually
+            // selected. Read now, same UI-thread-timing reason as selectHeldAtPress above.
+            val moveModifierHeldAtPress = GamepadVisualState.thumbLHeld || GamepadVisualState.buttonCHeld
             surfaceView.queueEvent {
                 // Twisting without actively re-selecting via the stick (e.g. pressing a
                 // rotation button while it's centered, reusing the last selection) should
                 // still realign the view -- see HypercubeRenderer.snapViewToNearestCardinalOrientation.
-                // Works unchanged for RKT too: renderer.selectedCell4/selectedRoomCell both
+                // Works unchanged for RKT too: renderer.effectiveCell4/effectiveRoomCell both
                 // already resolve to R there, since setInputMode pins selectedRoomAxis/Sign to
-                // R's slot.
+                // R's slot and hasEffectiveSelection treats RKT as always-selected.
                 renderer.snapViewToNearestCardinalOrientation()
 
                 // Select-held modifier (added 2026-07-26): reuses the same 6 physical
@@ -731,13 +738,13 @@ class MainActivity : AppCompatActivity() {
                     return@queueEvent
                 }
 
-                val cell = renderer.selectedCell4
+                val cell = renderer.effectiveCell4(button.literalAxis, moveModifierHeldAtPress)
                 val fixAxis2 = renderer.resolveRotationButtonFixAxis2(button.literalAxis)
                 // rotationInvertedForCell corrects for a rendering property of the *wall* the
                 // twist is happening in, not the native cell occupying it -- see
                 // HypercubeRenderer.selectedRoomCell's doc for why this must be the room slot,
                 // not `cell` (native), once the room's been rotated away from default.
-                val roomCell = renderer.selectedRoomCell
+                val roomCell = renderer.effectiveRoomCell(button.literalAxis, moveModifierHeldAtPress)
                 val roomFixAxis2 = renderer.roomFixAxis2For(button.literalAxis)
                 val rawPrime = button.primaryPrime != Notation.rotationInvertedForCell(button, roomCell)
                 // rawPrime is the room-level, orientation-independent community-notation
@@ -883,19 +890,27 @@ class MainActivity : AppCompatActivity() {
             runOnUiThread { statusText.text = if (solved) SOLVED_LABEL else "" }
         }
 
-        // Troubleshooting aid: which room the app will actually twist right now, and which native
-        // cell currently occupies it -- see HypercubeRenderer.onSelectedCellChanged's doc. This
-        // MUST always agree with the next twist's community-notation first letter, since both
-        // come from the same selectedRoomCell value -- confirmed via a real repro where an
-        // earlier version (showing the stick's raw, uncorrected wedge instead) visibly diverged
-        // from the actual rotation. Updated live in any input mode, not just on twists.
+        // Troubleshooting aid: which room the app has actively selected right now, if any, and
+        // which native cell currently occupies it -- see HypercubeRenderer.onSelectedCellChanged's
+        // doc. Confirmed via a real repro where an earlier version (showing the stick's raw,
+        // uncorrected wedge instead) visibly diverged from the actual rotation. Updated live in
+        // any input mode, not just on twists. Shows "none" once the stick/d-pad is released
+        // (2026-08-02 design change) -- the next twist still resolves to a definite cell via
+        // effectiveCell4, but which one depends on which button gets pressed, so there's no
+        // single selection left to report.
         val selectedCellText = TextView(this).apply {
             textSize = 14f
             alpha = 0.6f
             setPadding(24, 0, 24, 8)
         }
         renderer.onSelectedCellChanged = { roomCell, nativeCell ->
-            runOnUiThread { selectedCellText.text = "Selected ${roomCell.label}: showing ${nativeCell.label}" }
+            runOnUiThread {
+                selectedCellText.text = if (roomCell != null && nativeCell != null) {
+                    "Selected ${roomCell.label}: showing ${nativeCell.label}"
+                } else {
+                    "Selected: none"
+                }
+            }
         }
 
         // Added once Hide 4c/Hide 3c became reachable from the Start Menu (see StartMenuView's
@@ -1336,7 +1351,15 @@ class MainActivity : AppCompatActivity() {
             topLeftLabel = "Start",
             topRightLabel = "C",
             onTopLeftTap = virtualAction { toggleTopLevelMenu() },
-            onTopRightTap = virtualAction { handleNavigateButton(NavigationButton.BUTTON_C) },
+            // Sets buttonCHeld for the same reason virtualClusterLeft's Select pill does (see
+            // its onTopRightTap/Release doc above): with nothing selected, this now doubles as
+            // the touch equivalent of holding THUMB_L/BUTTON_C as a twist modifier, on top of its
+            // original move-to-I tap.
+            onTopRightTap = virtualAction {
+                GamepadVisualState.buttonCHeld = true
+                handleNavigateButton(NavigationButton.BUTTON_C)
+            },
+            onTopRightRelease = virtualAction { GamepadVisualState.buttonCHeld = false },
             // R2 left of R1, matching the 8BitDo Micro's own physical shoulder layout -- see
             // handleVirtualR1Tap/handleVirtualR2Tap's doc for why *which twist* each performs is
             // resolved dynamically instead of hardcoded here.
@@ -2017,6 +2040,14 @@ class MainActivity : AppCompatActivity() {
         // Not `const` -- needs to interpolate BuildConfig.VERSION_NAME (see the CREDITS section
         // below), which isn't a compile-time constant Kotlin's `const val` will accept.
         private val HELP_HTML = """
+<b>QUICK INTRO</b><br>
+This is a 4D twisty puzzle with 8 "cells" (the 4D equivalent of a 3D cube's 6 faces). Hold the
+left stick or d-pad toward one to select it, then press Y / A / X / B or R1 / R2 to twist that
+cell around its X, Y, or Z axis. Left stick click (L3) or Button C rotates the selected cell into
+the middle of the view, so every cell can be reached without ever losing sight of the puzzle.
+Those controls alone are enough to solve it efficiently &#8212; everything below digs into
+additional modes and button combos that can make you even more efficient.<br>
+<br>
 <b>TOUCH CONTROLS</b><br>
 &#8226; Drag the puzzle to rotate the view<br>
 &#8226; Pinch to zoom<br>
@@ -2026,14 +2057,19 @@ Two selectable input modes &#8212; a single "Mode" tile in the Start Menu toggle
 its own label showing whichever one is currently active (see below).<br>
 <br>
 <b>Mode 1 &#8212; Stick Select (default)</b><br>
-&#8226; Left stick: select a cell (deflect toward it, release to keep the selection)<br>
+&#8226; Left stick: select a cell (deflect toward it) &#8212; releasing back to center forgets the
+selection entirely, it doesn't stay picked for the next twist<br>
 &#8226; D-pad: also selects a cell, same as the left stick &#8212; hold two adjacent directions at
 once for a diagonal, for controllers with no left stick<br>
 &#8226; Right stick: orbit the view<br>
-&#8226; Y / A / X / B: twist the selected cell (Up / Down / Left / Right)<br>
-&#8226; R1 / R2 (bumper / trigger): twist the selected cell around its third axis<br>
-&#8226; Left stick click (L3) or Button C: rotate the puzzle so the selected cell moves to I
-&#8212; Button C exists for controllers with no stick click (e.g. the 8BitDo Micro)<br>
+&#8226; Y / A / X / B: twist the selected cell (Up / Down / Left / Right) &#8212; with nothing
+selected, Up/Down defaults to R, Left/Right to U (or L/D if the modifier below is held)<br>
+&#8226; R1 / R2 (bumper / trigger): twist the selected cell around its third axis &#8212; with
+nothing selected, defaults to F (or B if the modifier below is held)<br>
+&#8226; Left stick click (L3) or Button C: with a cell selected, rotates the puzzle so it moves to
+I &#8212; Button C exists for controllers with no stick click (e.g. the 8BitDo Micro). With
+nothing selected, holding either instead flips every twist button's default cell to the opposite
+side of its axis (L/D/B instead of R/U/F) for as long as it's held<br>
 <br>
 <b>Mode 2 &#8212; RKT</b><br>
 For the final phase of a solve, where every twist is either an I-cell rotation or R itself &#8212;
@@ -2059,8 +2095,10 @@ Release Select to go back to normal twisting/navigation.<br>
 <br>
 <b>TOP-LEFT STATUS</b><br>
 &#8226; Turns: twists made since the last scramble (or reset)<br>
-&#8226; Selected X: showing Y -- the room slot that will actually twist right now, and which native
-cell currently occupies it<br>
+&#8226; Selected X: showing Y -- the room slot actively selected by the stick/d-pad right now, and
+which native cell currently occupies it; reads "Selected: none" once released -- the next twist
+still lands on a definite cell (see Stick Select above), there just isn't one *actively held*
+to report<br>
 &#8226; Filter: which piece-type filters (if any) are currently hiding pieces<br>
 &#8226; Mode: Stick or RKT -- the active input mode (see the Start Menu's Mode tile)<br>
 &#8226; Battery: N% -- the connected gamepad's battery level, if it reports one (many wired
