@@ -1,15 +1,15 @@
 # twisted4d
 
 A native Android app that simulates 3D and 4D Rubik's-cube-style twisty puzzles — a standard
-3x3x3 cube, and a 3⁴ hypercube (tesseract) rendered as an unfolded room of six outer cells around
-a floating center cell. The UI/app layer is Kotlin; the 4D puzzle math and twist logic live in a
-native Rust core.
+3x3x3 cube, and a 3⁴ hypercube (tesseract) rendered with a true 4D→3D perspective projection
+(tapered, MC4D-style cells, not a flat unfolded net). The UI/app layer is Kotlin; the 4D puzzle
+math and twist logic live in a native Rust core.
 
-twisted4d is built gamepad-first, and a gamepad is currently required for actual play — twisting
-and cell selection in 4D mode (the app's core feature) only work from a controller right now.
-Touch covers camera orbit/zoom and utility actions (scramble, reset, exporting a twist log, some
-settings), but not twisting itself. Full touch-only play, with no gamepad needed at all, is a
-future goal, not current behavior.
+twisted4d is built gamepad-first — cell selection and twisting feel most precise with a physical
+controller, and the in-app Help screen documents a full gamepad control scheme for both 3D and 4D
+modes. A full on-screen touch controller is also built in for 4D mode (portrait and landscape), so
+no gamepad is required to play — it mirrors the physical control scheme directly, mode for mode
+and button for button.
 
 The project was inspired by [Hyperspeedcube](https://github.com/HactarCE/Hyperspeedcube) and its
 predecessor, [MagicCube4D](https://superliminal.com/cube/); see the in-app Help screen for full
@@ -23,16 +23,17 @@ twisted4d is actively being tested on:
 - **8BitDo Micro** — a compact Bluetooth gamepad
 - **Sony DualSense** (PS5 controller) — connected over Bluetooth
 - **Joso BSP-D3** — a clip-on Bluetooth controller that clamps around the phone
+- **Google Pixel** (phone) — touch-only, using the built-in virtual controller
 
 These are examples, not requirements — any Android gamepad recognized by Android's standard
-`InputDevice`/`KeyEvent` APIs should work. A gamepad is currently required for actual play (see
-above); the app itself runs on any Android device running API 26+ (Android 8.0 or later), but
-you'll need a controller attached to use it.
+`InputDevice`/`KeyEvent` APIs should work, and any touchscreen device works with no gamepad at
+all. The app runs on any Android device running API 26+ (Android 8.0 or later).
 
 ## Controls
 
-See the in-app Help screen (tap the Help button) for the full control scheme, covering touch,
-3D-mode gamepad controls, and 4D mode's Stick/RKT input schemes.
+See the in-app Help screen (tap the Help tile in the Start Menu, or the virtual controller's About
+button for a short introduction) for the full control scheme, covering the on-screen virtual
+controller, 3D-mode gamepad controls, and 4D mode's Stick/RKT gamepad input schemes.
 
 ## Credits and originality
 
