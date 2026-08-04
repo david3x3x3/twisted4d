@@ -73,10 +73,13 @@ android {
         // without a physical gamepad, closing the biggest known gap before a Play Store listing
         // would make sense. 0.7.1 (2026-08-01): patch fix found minutes after 0.7.0 shipped --
         // connecting a real gamepad didn't hide the virtual controller or restore the old HUD.
-        // Still not 1.0: whether Fire TV is even a 1.0 target remains undecided, and Settings is
-        // still missing its D-pad-assignment rows.
-        versionCode = 7
-        versionName = "0.7.1"
+        // 0.7.2 (2026-08-04): first Play Console open-testing upload -- bundles everything merged
+        // since the 0.7.1 GitHub release (Stick Select forget-on-release + opposite-cell modifier,
+        // API 36 target, privacy policy, Play listing draft, various Help/label fixes) that never
+        // got its own tagged release. Still not 1.0: whether Fire TV is even a 1.0 target remains
+        // undecided, and Settings is still missing its D-pad-assignment rows.
+        versionCode = 8
+        versionName = "0.7.2"
         buildConfigField("String", "GIT_VERSION", "\"$gitVersion\"")
     }
 
