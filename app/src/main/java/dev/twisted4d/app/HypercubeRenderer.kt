@@ -12,7 +12,9 @@ import javax.microedition.khronos.opengles.GL10
 import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.cos
+import kotlin.math.exp
 import kotlin.math.hypot
+import kotlin.math.max
 import kotlin.math.roundToInt
 import kotlin.math.sin
 import kotlin.math.sqrt
@@ -633,6 +635,27 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
     private var animAfter: FloatArray? = null
     private var animAffected: BooleanArray? = null
 
+    /** A [requestTwist] call's fully-resolved parameters -- captured at the moment the button
+     * was pressed (see [requestTwist]'s doc), not re-derived when this eventually leaves
+     * [twistQueue], since live selection/stick/orientation state may have moved on by then. */
+    private data class QueuedTwist(
+        val cell: Cell4,
+        val fixAxis2: Axis4,
+        val prime: Boolean,
+        val roomCell: Cell4,
+        val roomFixAxis2: Int,
+        val displayApostrophe: Boolean,
+    )
+
+    // Twists requested while a twist/room-rotation was already animating -- queued instead of
+    // dropped (see requestTwist's doc), drained one at a time as each animation finishes
+    // (drainTwistQueueIfIdle). twistQueueMax is a high-water mark of how deep the queue got during
+    // the current unbroken burst -- not the live size -- reset to 0 once the queue fully drains;
+    // ANIM_DURATION_NANOS's dynamic speed-up in onDrawFrame reads it so a big backlog blows
+    // through fast instead of playing out one full-speed animation per queued twist.
+    private val twistQueue = ArrayDeque<QueuedTwist>()
+    private var twistQueueMax = 0
+
     private val vertexShaderSrc = """
         #version 300 es
         layout(location = 0) in vec3 aPosition;
@@ -963,13 +986,18 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         // Compensate cubeOrientation4 by the same symmetry S the camera would otherwise have
         // shown, so the net appearance is unchanged once revealed -- see the math note above.
         // Mutated synchronously, right now -- selectedCell4/twist resolution must never wait on
-        // the hop above; only its visual reveal is deferred (see onDrawFrame). Skipped while a
-        // twist or room rotation is already in flight: both of those call
-        // resolvePendingSnapHopImmediately before starting, so this only matters if a snap somehow
-        // lands mid animation some other way -- the camera still re-centers on its own regardless,
-        // and the next call (once nothing else is animating) brings the compensation back in sync.
-        if (animating || roomAnimating) return
-
+        // the hop above; only its visual reveal is deferred (see onDrawFrame). Deliberately NOT
+        // skipped while a twist or room rotation is animating (unlike before 2026-08-04): a button
+        // press mid-animation now queues its already-resolved twist (see requestTwist/twistQueue)
+        // instead of being dropped, so this compensation must stay in sync on every single press,
+        // not just the ones lucky enough to land while nothing else was animating -- a skipped
+        // call here would let effectiveCell4/resolveRotationButtonFixAxis2 resolve the *next*
+        // queued twist against a stale cubeOrientation4. Safe to run unconditionally: when
+        // viewOrientation3 hasn't moved since it last settled (the common case, no camera drag
+        // between presses), bestSymmetry always resolves to the identity and this is a no-op: see
+        // resolvePendingSnapHopImmediately's doc for why a twist/room-rotation about to start
+        // always collapses viewOrientation3 back to true default first.
+        //
         // bestSymmetry is column-major (GL layout, matching CARDINAL_ROTATIONS/viewOrientation3);
         // cubeOrientation4 is row-major (matching the rest of this class's pure-4D-math
         // matrices), so convert before combining them.
@@ -1085,8 +1113,20 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
 
     /**
      * Applies [cell]/[fixAxis2]/[prime] to native puzzle state immediately, then animates the
-     * affected cell's pieces from their pre-twist transforms to the new ones. Ignored if
-     * another twist is still animating, or if [fixAxis2] equals [cell]'s own axis (invalid).
+     * affected cell's pieces from their pre-twist transforms to the new ones -- or, if another
+     * twist/room-rotation is still animating, queues these exact already-resolved parameters
+     * instead of dropping them (see [twistQueue]/[drainTwistQueueIfIdle]): [onDrawFrame] applies
+     * it the moment the current animation finishes, running progressively faster the deeper the
+     * queue got (see [twistQueueMax]'s use in [onDrawFrame]) so a burst of rapid input drains
+     * quickly instead of playing out one full-speed animation per press.
+     *
+     * Every argument must be resolved by the caller *before* calling this -- e.g. [MainActivity]'s
+     * on4DRotationButton resolves `cell`/`fixAxis2`/`roomCell` from live stick-selection and
+     * room-orientation state -- never lazily re-derived once this leaves the queue, since that
+     * live state (which cell is selected, which way the room's been rotated) can have moved on by
+     * the time a queued entry's turn comes up; queuing must capture a decision, not a recipe for
+     * re-deriving one later. [fixAxis2] equal to [cell]'s own axis is invalid and silently no-ops,
+     * whether applied immediately or dequeued later.
      *
      * [roomCell]/[roomFixAxis2]/[displayApostrophe] are purely passed through to [onTwistApplied],
      * not used by the twist itself -- so callers that already resolved a room context (and the
@@ -1103,8 +1143,35 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         roomFixAxis2: Int,
         displayApostrophe: Boolean,
     ) {
+        if (animating || roomAnimating) {
+            twistQueue.addLast(QueuedTwist(cell, fixAxis2, prime, roomCell, roomFixAxis2, displayApostrophe))
+            twistQueueMax = max(twistQueueMax, twistQueue.size)
+            return
+        }
         if (!applyTwistInternal(cell, fixAxis2, prime)) return
         onTwistApplied?.invoke(cell, fixAxis2, prime, roomCell, roomFixAxis2, displayApostrophe)
+    }
+
+    /** Called from [onDrawFrame] the instant [animating] or [roomAnimating] clears -- applies the
+     * next [twistQueue] entry, if any, exactly as [requestTwist] would have applied it immediately
+     * (including notifying [onTwistApplied] for history). Loops past any entry [applyTwistInternal]
+     * rejects (only the `fixAxis2 == cell.axis` invalid case in practice, since animating/
+     * roomAnimating are already known clear here) rather than getting stuck on it. Resets
+     * [twistQueueMax] back to 0 once the queue is empty, matching Hyperspeedcube's own dynamic-
+     * speed queue (see the conversation that produced this): a fresh burst should start at normal
+     * speed, not inherit a previous burst's high-water mark. */
+    private fun drainTwistQueueIfIdle() {
+        if (animating || roomAnimating) return
+        while (twistQueue.isNotEmpty()) {
+            val next = twistQueue.removeFirst()
+            if (applyTwistInternal(next.cell, next.fixAxis2, next.prime)) {
+                onTwistApplied?.invoke(
+                    next.cell, next.fixAxis2, next.prime, next.roomCell, next.roomFixAxis2, next.displayApostrophe,
+                )
+                return
+            }
+        }
+        twistQueueMax = 0
     }
 
     /** Re-applies [cell]/[fixAxis2] with [prime] inverted, without notifying [onTwistApplied] --
@@ -1160,6 +1227,11 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
      * matching real MagicCube4D's own "m|" convention. */
     fun requestScramble(moveCount: Int): List<Triple<Cell4, Axis4, Boolean>> {
         if (animating) return emptyList()
+        // Any twist still queued (e.g. from a room-rotation in flight -- this check, like
+        // requestReset's below, only guards animating, not roomAnimating) was resolved against
+        // the pre-scramble puzzle/orientation and would be nonsense applied afterward.
+        twistQueue.clear()
+        twistQueueMax = 0
         val raw = NativeLib.cube4Scramble(moveCount)
         currentTransforms = NativeLib.cube4GetTransforms()
         onStateChanged?.invoke(NativeLib.cube4IsSolved())
@@ -1175,6 +1247,9 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
     /** Instantly resets to solved (no animation) and refreshes solved state. */
     fun requestReset() {
         if (animating) return
+        // See requestScramble's identical clear above for why.
+        twistQueue.clear()
+        twistQueueMax = 0
         NativeLib.cube4Reset()
         currentTransforms = NativeLib.cube4GetTransforms()
         onStateChanged?.invoke(NativeLib.cube4IsSolved())
@@ -1215,6 +1290,7 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
             if (roomAnimT >= 1f) {
                 System.arraycopy(cubeOrientation4, 0, effectiveCubeOrientation4, 0, 16)
                 roomAnimating = false
+                drainTwistQueueIfIdle()
             } else {
                 setPlaneRotation4(roomAnimDeltaRot4, roomAnimPlaneA, roomAnimPlaneB, roomAnimAngleDeg * roomAnimT)
                 mat4MatMul(effectiveCubeOrientation4, roomAnimDeltaRot4, roomAnimBefore)
@@ -1250,7 +1326,16 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         var animT = 0f
         var animDone = false
         if (animating) {
-            animT = ((System.nanoTime() - animStartNanos).toFloat() / ANIM_DURATION_NANOS).coerceIn(0f, 1f)
+            // Dynamic twist speed (added 2026-08-04, same formula Hyperspeedcube uses for its own
+            // twist queue): twistQueueMax is how deep the backlog got during this unbroken burst
+            // of queued twists, not the live queue size, so speed doesn't dip back down as entries
+            // drain -- a burst blows through at a consistently fast, compounding rate instead of
+            // slowing down again after the first couple catch up. 0 (no backlog ever) keeps
+            // speedMod at exactly 1x -- a solo twist always plays at the normal, tuned
+            // ANIM_DURATION_NANOS pace. coerceIn below already handles an overshooting speedMod by
+            // just completing the twist instantly this frame, same as a huge delta would.
+            val speedMod = if (twistQueueMax > 0) exp(twistQueueMax * EXP_TWIST_SPEED_FACTOR) else 1f
+            animT = (((System.nanoTime() - animStartNanos).toFloat() / ANIM_DURATION_NANOS) * speedMod).coerceIn(0f, 1f)
             animDone = animT >= 1f
         }
 
@@ -1594,6 +1679,7 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
             animBefore = null
             animAfter = null
             animAffected = null
+            drainTwistQueueIfIdle()
         }
     }
 
@@ -1653,6 +1739,14 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         // turns out to feel too fast rather than "double" being exactly right.
         private const val STICK_DEG_PER_FRAME = 2.4f
         private const val ANIM_DURATION_NANOS = 220_000_000L // 220ms
+
+        /** Higher = faster exponential speed-up per extra twist queued during a burst -- see
+         * onDrawFrame's speedMod. Same value and formula Hyperspeedcube's own dynamic twist queue
+         * uses (crates/hyperpuzzle_view/src/animations/twist.rs, EXP_TWIST_FACTOR), confirmed by
+         * reading its source rather than guessing (2026-08-04): each extra queued twist multiplies
+         * speed by e^0.5 (~1.65x), compounding, so a deep backlog drains fast rather than playing
+         * out one full-speed animation per queued twist. */
+        private const val EXP_TWIST_SPEED_FACTOR = 0.5f
 
         /** Duration of the eased view-realignment in [snapViewToNearestCardinalOrientation] --
          * quick enough to not feel laggy, but long enough (a handful of frames at 60fps) to
