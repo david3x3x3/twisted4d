@@ -76,10 +76,14 @@ android {
         // 0.7.2 (2026-08-04): first Play Console open-testing upload -- bundles everything merged
         // since the 0.7.1 GitHub release (Stick Select forget-on-release + opposite-cell modifier,
         // API 36 target, privacy policy, Play listing draft, various Help/label fixes) that never
-        // got its own tagged release. Still not 1.0: whether Fire TV is even a 1.0 target remains
-        // undecided, and Settings is still missing its D-pad-assignment rows.
-        versionCode = 8
-        versionName = "0.7.2"
+        // got its own tagged release. 0.7.3 (2026-08-04): rapid twist input no longer gets dropped
+        // mid-animation -- it's queued and played back at a dynamically increasing speed (same
+        // formula Hyperspeedcube's own twist queue uses) instead of silently discarded, fixing the
+        // sluggish-feeling rapid-twisting reported right after 0.7.2 shipped. Still not 1.0:
+        // whether Fire TV is even a 1.0 target remains undecided, and Settings is still missing
+        // its D-pad-assignment rows.
+        versionCode = 9
+        versionName = "0.7.3"
         buildConfigField("String", "GIT_VERSION", "\"$gitVersion\"")
     }
 
