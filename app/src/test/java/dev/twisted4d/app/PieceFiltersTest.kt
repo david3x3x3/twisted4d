@@ -34,27 +34,27 @@ class PieceFiltersTest {
     fun `3block filter set has the expected filters, in order`() {
         val threeBlock = PieceFilters.BUILTIN_FILTER_SETS.first { it.name == "3block" }
         assertEquals(
-            listOf("block1", "block2", "block3", "ll-cross", "ll-oe", "ll-oc", "ll-pe"),
+            listOf("mid", "left cross", "left", "right", "ll-cross", "ll-oe", "ll-oc", "ll-pe", "plc cross"),
             threeBlock.filters.map { it.name },
         )
     }
 
     @Test
-    fun `3block's block1 first step reveals every center plus the 4 ridges in O's non-LR ring`() {
-        // The standalone "cross" filter this used to be was dropped as redundant -- block1's own
-        // first subfilter was already identical text, so nothing is lost by removing it.
-        val block1 = PieceFilters.BUILTIN_FILTER_SETS.first { it.name == "3block" }.filters.first { it.name == "block1" }
-        // Every center, regardless of cell.
-        assertTrue(block1.isPieceVisible(0, Vec4i(1, 0, 0, 0))) // R center
-        assertTrue(block1.isPieceVisible(0, Vec4i(0, 0, 0, 1))) // O center
-        // The 4 O-ring ridges named in the token (O+U/B/D/F).
-        assertTrue(block1.isPieceVisible(0, Vec4i(0, 1, 0, 1))) // O-U ridge
-        assertTrue(block1.isPieceVisible(0, Vec4i(0, 0, -1, 1))) // O-B ridge
+    fun `3block's mid filter accumulates every center, then the 4 ridges in O's non-LR ring`() {
+        val mid = PieceFilters.BUILTIN_FILTER_SETS.first { it.name == "3block" }.filters.first { it.name == "mid" }
+        // Every center, regardless of cell -- subfilter 0 alone.
+        assertTrue(mid.isPieceVisible(0, Vec4i(1, 0, 0, 0))) // R center
+        assertTrue(mid.isPieceVisible(0, Vec4i(0, 0, 0, 1))) // O center
+        // The O-ring ridges only arrive at subfilter 1 (cumulative with subfilter 0's centers).
+        assertFalse(mid.isPieceVisible(0, Vec4i(0, 1, 0, 1))) // O-U ridge, not yet at step 0
+        assertTrue(mid.isPieceVisible(1, Vec4i(0, 1, 0, 1))) // O-U ridge
+        assertTrue(mid.isPieceVisible(1, Vec4i(0, 0, -1, 1))) // O-B ridge
+        assertTrue(mid.isPieceVisible(1, Vec4i(1, 0, 0, 0))) // R center still visible (cumulative)
         // The O-L and O-R ridges are deliberately left out (4-Cross leaves L/R unsolved).
-        assertFalse(block1.isPieceVisible(0, Vec4i(-1, 0, 0, 1))) // O-L ridge
-        assertFalse(block1.isPieceVisible(0, Vec4i(1, 0, 0, 1))) // O-R ridge
+        assertFalse(mid.isPieceVisible(1, Vec4i(-1, 0, 0, 1))) // O-L ridge
+        assertFalse(mid.isPieceVisible(1, Vec4i(1, 0, 0, 1))) // O-R ridge
         // A non-O ridge shouldn't be swept in just for touching a named cell (e.g. U-F).
-        assertFalse(block1.isPieceVisible(0, Vec4i(0, 1, 1, 0)))
+        assertFalse(mid.isPieceVisible(1, Vec4i(0, 1, 1, 0)))
     }
 
     @Test

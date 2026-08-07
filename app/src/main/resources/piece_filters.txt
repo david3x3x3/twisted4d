@@ -56,17 +56,22 @@ cfop:
     - "Oe"
     - "Oc"
 3block:
-  block1:
-    - "m,OUr,OBr,ODr,OFr"
-    - "mre-LR"
-  block2:
-    - "L-DFI"
+  mid:
+    - "m"
+    - "OUr,OBr,ODr,OFr"
+    - "mre-LRI"
+  left cross:
+    - "mre-LRI,Lm,LOr"
+  left:
+    - "L-BFI,LBr,LBOe"
     - "L-FI"
+    - "L-FI,LFr,LFOe"
     - "L-I"
-  block3:
-    - "R-BFI"
+    - "Rm,ROr"
+  right:
+    - "R-BFI,RBr,RBOe"
     - "R-FI"
-    - "RFOe,RFr"
+    - "R-FI,RFr,RFOe"
     - "R-I"
   ll-cross:
     - "Im,Ir"
@@ -76,6 +81,8 @@ cfop:
     - "Ic"
   ll-pe:
     - "m,Ir"
-    - "IUe"
+  plc cross:
+    - "Ir,Im,IUe"
     - "IUc,Ie-D"
     - "I"
+    - "mrec"
