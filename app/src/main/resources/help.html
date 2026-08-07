@@ -1,0 +1,115 @@
+<b>QUICK INTRO</b><br>
+This is a 4D twisty puzzle with 8 "cells" (the 4D equivalent of a 3D cube's 6 faces). Hold the
+left stick or d-pad toward one to select it, then press Y / A / X / B or R1 / R2 to twist that
+cell around its X, Y, or Z axis. Left stick click (L3) or Button C rotates the selected cell into
+the middle of the view, so every cell can be reached without ever losing sight of the puzzle.
+Those controls alone are enough to solve it efficiently &#8212; everything below digs into
+additional modes and button combos that can make you even more efficient.<br>
+<br>
+<b>TOUCH CONTROLS</b><br>
+&#8226; Drag the puzzle to rotate the view<br>
+&#8226; Pinch to zoom<br>
+<br>
+<b>GAMEPAD CONTROLS</b><br>
+Two selectable input modes &#8212; a single "Mode" tile in the Start Menu toggles between them,
+its own label showing whichever one is currently active (see below).<br>
+<br>
+<b>Mode 1 &#8212; Stick Select (default)</b><br>
+&#8226; Left stick: select a cell (deflect toward it) &#8212; releasing back to center forgets the
+selection entirely, it doesn't stay picked for the next twist<br>
+&#8226; D-pad: also selects a cell, same as the left stick &#8212; hold two adjacent directions at
+once for a diagonal, for controllers with no left stick<br>
+&#8226; Right stick: orbit the view<br>
+&#8226; Y / A / X / B: twist the selected cell (Up / Down / Left / Right) &#8212; with nothing
+selected, Up/Down defaults to R, Left/Right to U (or L/D if the modifier below is held)<br>
+&#8226; R1 / R2 (bumper / trigger): twist the selected cell around its third axis &#8212; with
+nothing selected, defaults to F (or B if the modifier below is held)<br>
+&#8226; Left stick click (L3) or Button C: with a cell selected, rotates the puzzle so it moves to
+I &#8212; Button C exists for controllers with no stick click (e.g. the 8BitDo Micro). With
+nothing selected, holding either instead flips every twist button's default cell to the opposite
+side of its axis (L/D/B instead of R/U/F) for as long as it's held<br>
+<br>
+<b>Mode 2 &#8212; RKT</b><br>
+For the final phase of a solve, where every twist is either an I-cell rotation or R itself &#8212;
+no cell selection needed, so nothing is highlighted.<br>
+&#8226; Left stick: push most of the way left/right or up/down, then let it return to center, to
+twist I as IU/IU'/IR/IR' &#8212; same twists as the D-pad below, just an alternate way to reach
+them; push again (after returning to center) for another twist<br>
+&#8226; Right stick: orbit the view, same as mode 1<br>
+&#8226; Y / A / X / B, R1 / R2: twist R, same as if it were selected in mode 1<br>
+&#8226; D-pad left / right: twist I as IU / IU'<br>
+&#8226; D-pad up / down: twist I as IR / IR'<br>
+&#8226; L1 / L2 (bumper / trigger): twist I as IF / IF'<br>
+&#8226; Button C: unused (Select still does whole-room snap rotation/undo/redo, see below)<br>
+<br>
+<b>Select (hold): a second layer of controls</b> &#8212; works the same in every mode.<br>
+&#8226; Y / A / X / B / R1 / R2: instead of twisting the selected/highlighted cell, snap-rotates
+the *entire puzzle* 90&#176; using the same button-to-axis feel an individual twist already has,
+just applied to everything at once (the 4D-room equivalent of a whole-cube rotation, as opposed
+to a face turn) &#8212; I never moves under any of these.<br>
+&#8226; L1 (bumper): Undo.<br>
+&#8226; L2 (trigger): Redo.<br>
+Release Select to go back to normal twisting/navigation.<br>
+<br>
+<b>TOP-LEFT STATUS</b><br>
+&#8226; Turns: twists made since the last scramble (or reset)<br>
+&#8226; Time: solve timer, M:SS -- starts on Scramble, stops once solved (resumes if you undo back
+off a solve), resets to 0:00 on Scramble or Reset<br>
+&#8226; Selected X: showing Y -- the room slot actively selected by the stick/d-pad right now, and
+which native cell currently occupies it; reads "Selected: none" once released -- the next twist
+still lands on a definite cell (see Stick Select above), there just isn't one *actively held*
+to report<br>
+&#8226; Filter: the active piece filter (if any) and how far you've stepped through it, e.g.
+"Filter: CFOP (3/24)"<br>
+&#8226; Mode: Stick or RKT -- the active input mode (see the Start Menu's Mode tile)<br>
+&#8226; Battery: N% -- the connected gamepad's battery level, if it reports one (many wired
+controllers, and Android versions before 12, never do -- blank when unavailable)<br>
+<br>
+<b>START MENU</b><br>
+Press Start (real gamepad) or tap the virtual controller's Start pill (touch) to open it. Move
+the highlight with the left stick, the D-pad, or the virtual controller's own stick -- it shows a
+stick here even in RKT mode, since RKT's D-pad has no way to navigate a menu. Confirm/Back are
+whichever face buttons sit physically bottom/right on a gamepad, or the virtual controller's
+matching A/B buttons. Press Start again (or tap it again) to close from anywhere, or Back to step
+out one level at a time (submenu &#8594; menu &#8594; resume puzzle).<br>
+&#8226; Filters: opens a submenu of piece filter sets (built-in Pieces and CFOP, plus any you've
+imported) &#8212; drawn as a small see-through panel so the puzzle stays visible and draggable
+while you adjust them. Selecting one shows just its first step, hiding everything else; select
+the same one again to turn filtering off. Hold Select and tap L2/L1 (STICK mode only) to step
+forward/back, revealing one more piece-pair at a time. Some filter sets (like a multi-stage
+solving method) are broken into several named stages -- stepping past a stage's last piece-pair
+moves into the next stage, and that stage starts fresh: pieces the previous stage revealed can
+disappear unless the new stage's own first step brings them back. Import/Export copy a filter
+definition to/from the clipboard as plain text (Import replaces the whole set, built-ins
+included); Reset to Defaults restores just Pieces and CFOP<br>
+&#8226; Scramble / Reset<br>
+&#8226; Mode: toggles between Stick and RKT input (see above)<br>
+&#8226; Settings: Nintendo ABXY, Z Dir Left/Right, Export Format (MC4D or hypercubing.xyz-style
+Log), and Confirm Scramble/Reset -- see below<br>
+&#8226; Export: runs whichever format Settings' Export Format row specifies<br>
+&#8226; Help: this screen<br>
+<br>
+<b>4D SETTINGS</b><br>
+&#8226; Controller: shows which controller these three rows apply to -- whichever one most
+recently sent input, saved per-controller so different pads can have different settings
+(press a button on the one you want to change before adjusting it)<br>
+&#8226; Nintendo ABXY: swaps A&#8596;B and X&#8596;Y, for controllers/modes reporting face buttons
+in Nintendo's layout instead of Xbox's<br>
+&#8226; Z Dir Left / Z Dir Right: independently swaps L1&#8596;L2 or R1&#8596;R2, for controllers
+whose bumper/trigger arrangement makes one or both sides feel backwards<br>
+&#8226; Export Format: MC4D (a real MagicCube4D .log file) or Log (hypercubing.xyz-style community
+notation) -- whichever the Start Menu's Export tile runs; app-wide, not per-controller<br>
+&#8226; Confirm Scramble/Reset: ask before actually scrambling or resetting; also app-wide<br>
+<br>
+<b>GAMEPAD OVERLAY</b><br>
+The small controller diagram in the bottom-left corner lights up buttons and sticks live as they're used &#8212; handy for confirming exactly which input produced a twist, e.g. when reviewing a screen recording.<br>
+<br>
+<b>CREDITS</b><br>
+Version {{VERSION_NAME}}<br>
+twisted4d was developed by David Barr. It was inspired by:<br>
+&#8226; Hyperspeedcube, a 3D/4D twisty puzzle simulator by Andrew Farkas (HactarCE)<br>
+&#8226; MagicCube4D, Hyperspeedcube's predecessor, by Don Hatch, Melinda Green, Jay Berkenbilt, and
+Roice Nelson<br>
+&#8226; MagicCube4D's Android port, also by Melinda Green<br>
+&#8226; MagicCube4D (Raynefork), Raymond Zhao's fork of that Android port adding features and
+modern-Android compatibility<br>

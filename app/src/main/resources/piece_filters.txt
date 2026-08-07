@@ -1,0 +1,88 @@
+# Piece filter definitions.
+#
+# Three levels: a filter-set (this file's top-level, unindented keys) contains one or more
+# filters (indented keys), and each filter contains one or more subfilters (indented "- "..."
+# lines). Selecting a filter-set from the Filters menu starts at its first filter's first
+# subfilter; stepping forward reveals subfilters[0..N] within the current filter, and once
+# you're past its last subfilter, stepping forward again moves into the *next* filter in the
+# set, starting fresh at ITS subfilter 0 -- a filter's own accumulated pieces do not carry over
+# into the next filter, so pieces can disappear once you've moved past the filter that revealed
+# them, unless that next filter's own subfilters re-include them.
+#
+# Cell letters: U D L R F B I O -- a piece matching a cell letter touches that cell.
+# Type letters: m r e c -- Centers(1 sticker) / Ridges(2) / Edges(3) / Corners(4).
+# Comma-separating tokens within one subfilter string is a union.
+# Within one token, a "-" splits off pieces to remove, e.g. "mre-LR" = every center/ridge/edge
+# piece, except any touching L or R -- chainable ("mre-L-R" removes the same thing).
+# On either side of a "-": cell letters concatenated together are an intersection (piece must
+# touch all of them), optionally narrowed to one type by a single trailing type letter (e.g.
+# "IUFe" = the one piece touching I, U, and F that's also an edge). A BARE run of only cell
+# letters (no type letter), or only type letters, is a union instead (e.g. "LR" = touches L or
+# R; "mre" = a center, ridge, or edge) -- intersecting same-category letters would always be
+# empty (no piece touches two opposite cells, or is more than one type at once), so that
+# combination means "any of these" instead.
+
+pieces:
+  pieces:
+    - "m"
+    - "r"
+    - "e"
+    - "c"
+
+cfop:
+  cfop:
+    - "m,Ir"
+    - "IUFe,UFr"
+    - "IURe,URr"
+    - "IUBe,UBr"
+    - "IULe,ULr"
+    - "IFRe,FRr"
+    - "IRBe,RBr"
+    - "IBLe,BLr"
+    - "ILFe,LFr"
+    - "IDFe,DFr"
+    - "IDLe,DLr"
+    - "IDBe,DBr"
+    - "IDRe,DRr"
+    - "IUFRc,URFe"
+    - "IURBc,URBe"
+    - "IUBLc,UBLe"
+    - "IULFc,ULFe"
+    - "IDLFc,DLFe"
+    - "IDBLc,DBLe"
+    - "IDBRc,DBRe"
+    - "IDFRc,DFRe"
+    - "Or"
+    - "Oe"
+    - "Oc"
+3block:
+  mid:
+    - "m"
+    - "OUr,OBr,ODr,OFr"
+    - "mre-LRI"
+  left cross:
+    - "mre-LRI,Lm,LOr"
+  left:
+    - "L-BFI,LBr,LBOe"
+    - "L-FI"
+    - "L-FI,LFr,LFOe"
+    - "L-I"
+    - "Rm,ROr"
+  right:
+    - "R-BFI,RBr,RBOe"
+    - "R-FI"
+    - "R-FI,RFr,RFOe"
+    - "R-I"
+  ll-cross:
+    - "Im,Ir"
+  ll-oe:
+    - "Ie"
+  ll-oc:
+    - "Ic"
+  ll-pe:
+    - "m,Ir"
+  plc cross:
+    - "Ir,Im,IUe"
+    - "IUc,Ie-D"
+    - "I"
+    - "mrec"

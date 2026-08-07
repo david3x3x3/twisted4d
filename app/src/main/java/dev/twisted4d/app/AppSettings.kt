@@ -9,4 +9,10 @@ package dev.twisted4d.app
 object AppSettings {
     @Volatile var exportFormatIsMC4D = true
     @Volatile var confirmBeforeScrambleReset = false
+
+    /** Raw text of the currently-active piece-filter set (see [PieceFilters]' class doc for the
+     * format) -- the canonical source of truth MainActivity's Filters submenu parses into
+     * [PieceFilter]s, so clipboard export is always byte-for-byte what was last imported/edited
+     * rather than a reformatted round-trip. */
+    @Volatile var pieceFiltersText: String = PieceFilters.BUILTIN_FILTERS_TEXT
 }

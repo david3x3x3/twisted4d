@@ -26,6 +26,7 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
@@ -79,6 +80,16 @@ class MainActivity : AppCompatActivity() {
     private lateinit var startMenuView: StartMenuView
     private lateinit var filtersMenuView: StartMenuView
     private lateinit var settingsMenuView: StartMenuView
+
+    // The active set of filter-sets (built-ins plus whatever's been imported) -- parsed from
+    // AppSettings.pieceFiltersText (the persisted source of truth, see loadAppSettings) and kept
+    // in sync with it by every writer (importFiltersFromClipboard/resetFiltersToDefaults in
+    // build4DScreen). Cached here rather than re-parsed on every Filters-menu rebuild purely
+    // because rebuildFiltersMenuTiles' MenuTile closures capture specific PieceFilterSet instances
+    // (for the isActive/onSelect equality check against renderer.activeFilterSet) and re-parsing
+    // would hand out fresh, structurally-equal-but-different instances each time -- harmless for
+    // equals() but wasteful.
+    private var currentFilterSets: List<PieceFilterSet> = PieceFilters.BUILTIN_FILTER_SETS
 
     // Persistent on-screen entry point into the Start Menu for controller-less users (see the
     // design doc's accessibility section) -- hidden while any menu is already open (per feedback:
@@ -148,6 +159,62 @@ class MainActivity : AppCompatActivity() {
     // user toggles 3D/4D repeatedly).
     private val batteryPollHandler = Handler(Looper.getMainLooper())
     private var batteryPollRunnable: Runnable? = null
+
+    // Drives the 4D screen's "Time: M:SS" solve-timer label -- same teardown reasoning as
+    // batteryPollRunnable just above (nulled/cancelled at the top of rebuildUi so a stale tick
+    // loop from a torn-down screen doesn't keep running or stack up across mode switches). 3D
+    // mode has no turn counter either (see turnCountText's doc), so this doesn't apply there.
+    private val timerTickHandler = Handler(Looper.getMainLooper())
+    private var timerTickRunnable: Runnable? = null
+
+    // Solve-timer state -- class-level (like moveHistory4D/historyIndex4D above) so it survives
+    // a 3D<->4D mode toggle mid-solve rather than resetting on every rebuildUi, and persisted in
+    // [saveState]/[loadState] so it survives the app being backgrounded-and-killed or force-
+    // stopped entirely, per David: "switching to another app and coming back shouldn't restart
+    // the timer." Wall-clock-based (System.currentTimeMillis(), not SystemClock.elapsedRealtime())
+    // specifically *because* it needs to persist and keep counting through a real process death --
+    // elapsedRealtime() is time-since-boot, meaningless once restored into a different process (or
+    // after a device reboot); wall-clock survives that, at the ordinary cost of being sensitive to
+    // the user manually changing the system clock mid-solve, an acceptable tradeoff for a casual
+    // timer. Standard start/stop stopwatch pattern: timerAccumulatedMillis holds whatever was
+    // banked the last time the clock stopped, and currentTimerMillis() below adds the live delta
+    // since timerRunStartMillis while timerRunning. timerArmed distinguishes "a scramble started a
+    // solve attempt that's still in progress" from "freshly reset/launched, nothing to time" --
+    // see doScramble/doReset/renderer.onStateChanged in build4DScreen for how each of these three
+    // flip it.
+    @Volatile private var timerArmed = false
+    @Volatile private var timerRunning = false
+    @Volatile private var timerAccumulatedMillis = 0L
+    @Volatile private var timerRunStartMillis = 0L
+
+    private fun currentTimerMillis(): Long =
+        timerAccumulatedMillis + if (timerRunning) System.currentTimeMillis() - timerRunStartMillis else 0L
+
+    private fun startSolveTimer() {
+        if (timerRunning) return
+        timerRunning = true
+        timerRunStartMillis = System.currentTimeMillis()
+    }
+
+    private fun stopSolveTimer() {
+        if (!timerRunning) return
+        timerAccumulatedMillis += System.currentTimeMillis() - timerRunStartMillis
+        timerRunning = false
+    }
+
+    /** Called by doScramble (arms + restarts) and doReset (just un-arms/clears) -- a fresh
+     * scramble always starts a new attempt from 0:00, even if the previous one was left running
+     * (solve abandoned mid-attempt) or already stopped (solved, then scrambled again). */
+    private fun resetSolveTimer() {
+        timerRunning = false
+        timerAccumulatedMillis = 0L
+        timerArmed = false
+    }
+
+    private fun formatTimerText(): String {
+        val totalSeconds = currentTimerMillis() / 1000
+        return "Time: ${totalSeconds / 60}:${(totalSeconds % 60).toString().padStart(2, '0')}"
+    }
 
     // Twist history for the currently-built screen's mode -- written from the GL thread
     // (onTwistApplied) and read/cleared from the UI thread (undo/scramble/reset/log buttons),
@@ -341,6 +408,8 @@ class MainActivity : AppCompatActivity() {
     private fun rebuildUi() {
         batteryPollRunnable?.let { batteryPollHandler.removeCallbacks(it) }
         batteryPollRunnable = null
+        timerTickRunnable?.let { timerTickHandler.removeCallbacks(it) }
+        timerTickRunnable = null
         rootLayout.removeAllViews()
         if (::gamepadInput.isInitialized) {
             inputManager.unregisterInputDeviceListener(gamepadInput)
@@ -535,6 +604,29 @@ class MainActivity : AppCompatActivity() {
             turnCountText.text = "Turns: ${(historyIndex4D - scrambleMoveCount4D).coerceAtLeast(0)}"
         }
         updateTurnCount()
+
+        // "Time: M:SS" solve timer -- see the timerArmed/timerRunning field group's doc above for
+        // the state machine (doScramble arms+starts it, renderer.onStateChanged stops/resumes it,
+        // doReset clears it). Always visible (never GONE), same convention as turnCountText just
+        // above -- both are per-attempt stats meant to be glanceable at all times, unlike the
+        // GONE-when-empty fields further down (selectedCellText etc.).
+        val timerText = TextView(this).apply {
+            textSize = 14f
+            alpha = 0.6f
+            setPadding(24, 8, 24, 0)
+        }
+        fun updateTimerText() {
+            timerText.text = formatTimerText()
+        }
+        updateTimerText()
+        val tickTimer = object : Runnable {
+            override fun run() {
+                updateTimerText()
+                timerTickHandler.postDelayed(this, TIMER_TICK_INTERVAL_MS)
+            }
+        }
+        timerTickRunnable = tickTimer
+        timerTickHandler.postDelayed(tickTimer, TIMER_TICK_INTERVAL_MS)
 
         /** Steps [historyIndex4D] back one and reverses that move -- see [historyIndex4D]'s doc.
          * A no-op once back at [scrambleMoveCount4D] -- the scramble itself was never meant to be
@@ -759,10 +851,36 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        /** [NavigationButton] dispatch (Start, Select-held undo/redo, move-to-I, RKT twists) --
-         * extracted (2026-08-01), same reasoning as [handleLeftStickInput]: shared verbatim by
-         * the real gamepad's on4DNavigate wiring below and the portrait virtual controller's
-         * Start/C/L1/L2 taps (see virtualClusterLeft/virtualClusterRight further down). */
+        // Added once Hide 4c/Hide 3c became reachable from the Start Menu (see StartMenuView's
+        // tiles below), not just the always-visible filterColumn buttons -- without this, a
+        // filter left on has no on-screen reminder once its toggle isn't permanently visible.
+        // GONE (see batteryText's doc for why) when neither filter is active. Declared here
+        // (ahead of where it's added to rootLayout further down) rather than down where the rest
+        // of the on-screen status labels are built, since handleNavigateButton just below needs
+        // to call updateFilterStatusText after Select+L1/L2 steps a filter -- Kotlin local
+        // functions, unlike class members, can't forward-reference each other.
+        val filterStatusText = TextView(this).apply {
+            textSize = 14f
+            alpha = 0.6f
+            setPadding(24, 0, 24, 8)
+            visibility = View.GONE
+        }
+        fun updateFilterStatusText() {
+            // Shows the *filter's* name (e.g. "left cross"), not the filter-set's (e.g.
+            // "3block") -- per David: as stepping crosses from one filter into the next within a
+            // set, the specific stage name is the useful thing to see change, not a static
+            // filter-set label that wouldn't move at all.
+            val filter = renderer.activeFilterSet?.filters?.getOrNull(renderer.activeFilterIndex)
+            filterStatusText.text = if (filter == null) "" else
+                "Filter: ${filter.name} (${renderer.activeFilterStep + 1}/${filter.subfilters.size})"
+            filterStatusText.visibility = if (filter == null) View.GONE else View.VISIBLE
+        }
+
+        /** [NavigationButton] dispatch (Start, Select-held undo/redo or filter-series stepping,
+         * move-to-I, RKT twists) -- extracted (2026-08-01), same reasoning as
+         * [handleLeftStickInput]: shared verbatim by the real gamepad's on4DNavigate wiring below
+         * and the portrait virtual controller's Start/C/L1/L2 taps (see
+         * virtualClusterLeft/virtualClusterRight further down). */
         fun handleNavigateButton(button: NavigationButton) {
             // Start always toggles the *whole* menu system open/closed, regardless of how
             // deep a submenu is open -- takes priority over everything else below, including
@@ -780,12 +898,65 @@ class MainActivity : AppCompatActivity() {
             // and the same reason: checking a live GamepadVisualState flag from inside a
             // deferred GL-thread block risks a fast press-release window missing the modifier.
             val selectHeldAtPress = GamepadVisualState.selectHeld
-            if (selectHeldAtPress && (button == NavigationButton.BUMPER_L || button == NavigationButton.TRIGGER_L)) {
+            val filterSetToStep = renderer.activeFilterSet
+            if (selectHeldAtPress && inputMode == GamepadInputMode.STICK && filterSetToStep != null &&
+                (button == NavigationButton.BUMPER_L || button == NavigationButton.TRIGGER_L)
+            ) {
+                // Select-held modifier, filter-series stepping -- takes over from Select+L1/L2's
+                // usual undo/redo (below) once a filter-set is actually selected in STICK mode.
+                // RKT mode never gets subfilter stepping (no cell selection exists there either,
+                // same reasoning as THUMB_L/BUTTON_C's move-to-I below being STICK-only), and
+                // with no filter-set active there's nothing to step through, so Select+L1/L2
+                // keeps meaning undo/redo in both of those cases -- see the plain
+                // `selectHeldAtPress` branch. L2=next/L1=previous (not L1=next), per David:
+                // matches L1=undo(back)/L2=redo (forward) below, the same anticlockwise/clockwise
+                // -coded pairing these two buttons carry in other contexts.
+                //
+                // Stepping past a filter's last subfilter rolls into the *next* filter within the
+                // set, landing on ITS subfilter 0 -- not unioned with whatever the previous filter
+                // had accumulated (see PieceFilterSet's class doc for why that's deliberate: it's
+                // what lets a filter-set's pieces disappear once you've moved past the filter that
+                // revealed them). Stepping back out of a filter's subfilter 0 symmetrically lands
+                // on the *previous* filter's own last subfilter, exactly where you'd have been
+                // right before crossing forward into the current one.
+                val filters = filterSetToStep.filters
+                val currentFilter = filters[renderer.activeFilterIndex]
+                if (button == NavigationButton.TRIGGER_L) {
+                    val lastStepInFilter = currentFilter.subfilters.size - 1
+                    if (renderer.activeFilterStep < lastStepInFilter) {
+                        renderer.activeFilterStep++
+                    } else if (renderer.activeFilterIndex < filters.size - 1) {
+                        renderer.activeFilterIndex++
+                        renderer.activeFilterStep = 0
+                    }
+                } else {
+                    if (renderer.activeFilterStep > 0) {
+                        renderer.activeFilterStep--
+                    } else if (renderer.activeFilterIndex > 0) {
+                        renderer.activeFilterIndex--
+                        renderer.activeFilterStep = filters[renderer.activeFilterIndex].subfilters.size - 1
+                    }
+                }
+                surfaceView.requestRender()
+                updateFilterStatusText()
+            } else if (selectHeldAtPress && (button == NavigationButton.BUMPER_L || button == NavigationButton.TRIGGER_L)) {
                 // Select-held modifier, undo/redo (added 2026-07-26) -- which trigger is which
                 // doesn't matter functionally, L1=undo/L2=redo was an arbitrary pick. Applies
-                // in every input mode, same as the Select+twist-button snap-rotation modifier
-                // above (this check isn't gated on inputMode either), so it overrides
-                // BUMPER_L/TRIGGER_L's normal RKT-mode IF/IF' twist while held.
+                // in every input mode (except STICK-mode-with-a-filter-active, handled above),
+                // same as the Select+twist-button snap-rotation modifier above (this check isn't
+                // gated on inputMode either), so it overrides BUMPER_L/TRIGGER_L's normal
+                // RKT-mode IF/IF' twist while held.
+                if (button == NavigationButton.BUMPER_L) performUndo() else performRedo()
+            } else if (inputMode == GamepadInputMode.STICK &&
+                (button == NavigationButton.BUMPER_L || button == NavigationButton.TRIGGER_L)
+            ) {
+                // Plain (Select-not-held) L1/L2 default to undo/redo in STICK mode on a *real*
+                // gamepad too now (previously only the virtual touch controller had this
+                // shortcut, via its own onShoulderLeftTap/onShoulderRightTap hardcoding this same
+                // call -- since removed in favor of routing through handleNavigateButton like
+                // every other button, now that this branch exists here). These two buttons have
+                // no other role in STICK mode (compare RKT mode's real Z/Z' twist below), so this
+                // is still "pure upside" the same way the virtual-only version originally was.
                 if (button == NavigationButton.BUMPER_L) performUndo() else performRedo()
             } else {
                 surfaceView.queueEvent {
@@ -887,7 +1058,17 @@ class MainActivity : AppCompatActivity() {
         val statusText = statusTextView(initiallySolved)
         statusTextLabel = statusText
         renderer.onStateChanged = { solved ->
-            runOnUiThread { statusText.text = if (solved) SOLVED_LABEL else "" }
+            // Plain field writes (not View state), safe to call straight from whatever thread
+            // this fires on -- see the timerArmed/timerRunning field group's doc. Only resumes
+            // (rather than unconditionally starting) on unsolved, so e.g. a manual twist away
+            // from a *never-scrambled* solved puzzle doesn't start a timer on its own -- only an
+            // actual Scramble (doScramble, below) arms it; once armed, undoing back off a solve
+            // correctly resumes the clock rather than leaving it stopped at the solve time.
+            if (solved) stopSolveTimer() else if (timerArmed) startSolveTimer()
+            runOnUiThread {
+                statusText.text = if (solved) SOLVED_LABEL else ""
+                updateTimerText()
+            }
         }
 
         // Troubleshooting aid: which room the app has actively selected right now, if any, and
@@ -911,27 +1092,6 @@ class MainActivity : AppCompatActivity() {
                     "Selected: none"
                 }
             }
-        }
-
-        // Added once Hide 4c/Hide 3c became reachable from the Start Menu (see StartMenuView's
-        // tiles below), not just the always-visible filterColumn buttons -- without this, a
-        // filter left on has no on-screen reminder once its toggle isn't permanently visible.
-        // GONE (see batteryText's doc for why) when neither filter is active.
-        val filterStatusText = TextView(this).apply {
-            textSize = 14f
-            alpha = 0.6f
-            setPadding(24, 0, 24, 8)
-            visibility = View.GONE
-        }
-        fun updateFilterStatusText() {
-            val active = listOfNotNull(
-                "Centers".takeIf { renderer.hideCenters },
-                "Ridges".takeIf { renderer.hideRidges },
-                "3c Edges".takeIf { renderer.hideEdges },
-                "4c Corners".takeIf { renderer.hideCorners },
-            )
-            filterStatusText.text = if (active.isEmpty()) "" else "Filter: ${active.joinToString(", ")}"
-            filterStatusText.visibility = if (active.isEmpty()) View.GONE else View.VISIBLE
         }
 
         // Added once the Start Menu's Stick Mode/RKT Mode tiles stopped showing an active-state
@@ -972,6 +1132,7 @@ class MainActivity : AppCompatActivity() {
         val lastMoveColumnView = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             addView(turnCountText)
+            addView(timerText)
             addView(selectedCellText)
             addView(filterStatusText)
             addView(inputModeText)
@@ -1000,6 +1161,16 @@ class MainActivity : AppCompatActivity() {
         }
 
         fun doScramble() {
+            // A fresh scramble always starts a brand new solve attempt -- reset then arm+start,
+            // even if the previous attempt was left running (abandoned mid-solve) or already
+            // solved. Done here on the UI thread, immediately, rather than waiting on the queued
+            // GL-thread scramble below or the later onStateChanged(solved=false) callback -- the
+            // clock should read 0:00 and start ticking the instant Scramble is pressed, not once
+            // the native scramble happens to finish.
+            resetSolveTimer()
+            timerArmed = true
+            startSolveTimer()
+            updateTimerText()
             surfaceView.queueEvent {
                 // Scrambles have no button/room context of their own -- treat room as native
                 // (a reasonable fallback since a scramble always starts from a fresh, default
@@ -1023,6 +1194,8 @@ class MainActivity : AppCompatActivity() {
             scrambleMoveCount4D = 0
             historyIndex4D = 0
             updateTurnCount()
+            resetSolveTimer()
+            updateTimerText()
         }
 
         // Settings submenu -- same cross-shaped 3x3 reachability layout as filtersMenuView (see
@@ -1236,41 +1409,101 @@ class MainActivity : AppCompatActivity() {
 
         // Filters submenu -- compact style (see StartMenuView's doc) so the puzzle stays visible
         // *and* draggable while adjusting these, per feedback that the old fullscreen-style
-        // submenu hid it entirely. One toggle per piece type, by sticker count (see
-        // HypercubeRenderer.hideCorners's doc): Centers(1)/Ridges(2)/3c Edges(3)/4c Corners(4).
-        // Cross-shaped: the 4 real toggles sit at the 4 cardinal positions (each reachable by
-        // holding a single D-pad direction, no diagonal needed), center and all 4 corners
-        // reserved/empty. See filtersMenuView's construction doc for why this needs to be a 3x3
-        // at all rather than a simpler 1x4 list.
-        filtersMenuView.setTiles(
-            listOf(
-                null,
-                MenuTile("Centers", isActive = { renderer.hideCenters }, onSelect = {
-                    renderer.hideCenters = !renderer.hideCenters
+        // submenu hid it entirely. Single-select list of filter *sets* (see PieceFilterSet's
+        // class doc): selecting one starts its first filter at subfilter 0 and clears any other
+        // selection; selecting the already-active one turns filtering off. Select+L1/L2 (STICK
+        // mode only, wired in handleNavigateButton below) then steps through the selected
+        // filter-set's filters/subfilters.
+        //
+        // Reachability-priority slot order: center first (StartMenuView's default-highlighted
+        // slot), then the 4 cardinal positions -- each reachable by holding a single D-pad
+        // direction, matching this panel's original cross-shaped Centers/Ridges/3c Edges/4c
+        // Corners layout -- corners last, since a D-pad-as-stick controller's diagonal is a
+        // simultaneous two-axis press (see dpad_as_stick_controllers memory on why that's not
+        // always reliable). 2 built-in filter sets + Import/Export/Reset is exactly 5 items
+        // today, so corners go unused; once imported filter sets push the count past 5 they land
+        // in corners (diagonal-reach only) rather than being dropped -- StartMenuView has no
+        // scrolling, so a filter-set list large enough to fill all 9 slots would need real
+        // scrolling support to go further, not attempted here.
+        val filtersMenuSlotPriority = listOf(4, 1, 3, 5, 7, 0, 2, 6, 8)
+        // Import/Export/Reset are nested inside rebuildFiltersMenuTiles (rather than declared as
+        // siblings before/after it) purely so they can call it back after changing the active
+        // filter set -- Kotlin local functions can't forward-reference each other the way class
+        // members can, but a function calling *itself* (direct or, as here, via a nested closure)
+        // is ordinary recursion and always fine; see rebuildSettingsTiles/controllerToggleTile
+        // just above for the same trick already in use.
+        fun rebuildFiltersMenuTiles() {
+            /** Parses [text] and, only on success, replaces the active filter sets with it (both
+             * in memory and persisted -- see [AppSettings.pieceFiltersText]'s doc), clearing any
+             * current selection since the previously-active filter-set object may no longer exist
+             * in the new one. Throws [IllegalArgumentException] on malformed [text] without
+             * changing any state -- callers passing untrusted text (clipboard import) should
+             * catch that. */
+            fun applyFilterText(text: String) {
+                currentFilterSets = PieceFilters.parseFilterText(text)
+                AppSettings.pieceFiltersText = text
+                saveAppSettings()
+                renderer.activeFilterSet = null
+                renderer.activeFilterIndex = 0
+                renderer.activeFilterStep = 0
+                surfaceView.requestRender()
+                updateFilterStatusText()
+                rebuildFiltersMenuTiles()
+            }
+
+            /** Reads clipboard text and, if it parses, replaces the *entire* active set of filter
+             * sets with it (built-ins included) -- a wholesale replace, not a merge, matching
+             * what Export hands back for hand-editing. Malformed clipboard content leaves the
+             * existing set untouched. */
+            fun importFiltersFromClipboard() {
+                val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                val text = clipboard.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.text?.toString()
+                if (text.isNullOrBlank()) {
+                    Toast.makeText(this, "Clipboard is empty", Toast.LENGTH_SHORT).show()
+                    return
+                }
+                try {
+                    applyFilterText(text)
+                } catch (e: IllegalArgumentException) {
+                    Toast.makeText(this, "Couldn't parse clipboard as piece filters: ${e.message}", Toast.LENGTH_LONG).show()
+                    return
+                }
+                Toast.makeText(this, "Imported ${currentFilterSets.size} filter set(s)", Toast.LENGTH_SHORT).show()
+            }
+
+            /** Copies the active filter sets' exact raw text to clipboard -- see
+             * [AppSettings.pieceFiltersText]'s doc for why this is always byte-for-byte the
+             * last-imported/edited text rather than a re-serialization. */
+            fun exportFiltersToClipboard() {
+                val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                clipboard.setPrimaryClip(ClipData.newPlainText("twisted4d piece filters", AppSettings.pieceFiltersText))
+                Toast.makeText(this, "Piece filters copied to clipboard", Toast.LENGTH_SHORT).show()
+            }
+
+            /** Restores the two built-in filter sets (Pieces/CFOP), discarding any imported ones. */
+            fun resetFiltersToDefaults() {
+                applyFilterText(PieceFilters.BUILTIN_FILTERS_TEXT)
+                Toast.makeText(this, "Filters reset to defaults", Toast.LENGTH_SHORT).show()
+            }
+
+            val items = currentFilterSets.map { filterSet ->
+                MenuTile(filterSet.name, isActive = { renderer.activeFilterSet == filterSet }, onSelect = {
+                    renderer.activeFilterSet = if (renderer.activeFilterSet == filterSet) null else filterSet
+                    renderer.activeFilterIndex = 0
+                    renderer.activeFilterStep = 0
                     surfaceView.requestRender()
                     updateFilterStatusText()
-                }),
-                null,
-                MenuTile("Ridges", isActive = { renderer.hideRidges }, onSelect = {
-                    renderer.hideRidges = !renderer.hideRidges
-                    surfaceView.requestRender()
-                    updateFilterStatusText()
-                }),
-                null,
-                MenuTile("3c Edges", isActive = { renderer.hideEdges }, onSelect = {
-                    renderer.hideEdges = !renderer.hideEdges
-                    surfaceView.requestRender()
-                    updateFilterStatusText()
-                }),
-                null,
-                MenuTile("4c Corners", isActive = { renderer.hideCorners }, onSelect = {
-                    renderer.hideCorners = !renderer.hideCorners
-                    surfaceView.requestRender()
-                    updateFilterStatusText()
-                }),
-                null,
-            ),
-        )
+                })
+            } + listOf(
+                MenuTile("Import", onSelect = { importFiltersFromClipboard() }),
+                MenuTile("Export", onSelect = { exportFiltersToClipboard() }),
+                MenuTile("Reset to\nDefaults", onSelect = { resetFiltersToDefaults() }),
+            )
+            val slots = arrayOfNulls<MenuTile>(9)
+            items.take(9).forEachIndexed { i, tile -> slots[filtersMenuSlotPriority[i]] = tile }
+            filtersMenuView.setTiles(slots.toList())
+        }
+        rebuildFiltersMenuTiles()
 
         rootLayout.addView(surfaceView)
         rootLayout.addView(statusText, topCenterParams())
@@ -1331,19 +1564,14 @@ class MainActivity : AppCompatActivity() {
             // L1 left of L2, matching the 8BitDo Micro's own physical shoulder layout.
             shoulderLeftLabel = "L1",
             shoulderRightLabel = "L2",
-            // Mode-aware, per David's live-testing feedback (2026-08-01): unmodified L1/L2 have
-            // no role at all in STICK mode (see handleNavigateButton's doc), so defaulting them
-            // to undo/redo there is pure upside -- but in RKT mode they're real, load-bearing
-            // controls (the Z/Z' twist), so hardcoding them to undo/redo *always* silently took
-            // away touch access to that twist entirely. Routing through handleNavigateButton in
-            // RKT mode restores it, Select-held-modifier and all (Select+L1/L2 still means undo/
-            // redo even in RKT, exactly like the physical controller -- see its doc).
-            onShoulderLeftTap = virtualAction {
-                if (inputMode == GamepadInputMode.RKT) handleNavigateButton(NavigationButton.BUMPER_L) else performUndo()
-            },
-            onShoulderRightTap = virtualAction {
-                if (inputMode == GamepadInputMode.RKT) handleNavigateButton(NavigationButton.TRIGGER_L) else performRedo()
-            },
+            // Routes straight through handleNavigateButton, same as the physical gamepad's
+            // on4DNavigate wiring above -- that function now handles every case itself (plain
+            // STICK-mode undo/redo, RKT mode's real Z/Z' twist, Select-held undo/redo or
+            // filter-series stepping), so this no longer needs its own copy of that branch's
+            // mode/Select logic (removed 2026-08-06 once handleNavigateButton grew the plain-
+            // STICK-mode-undo/redo case this used to hardcode -- see its doc).
+            onShoulderLeftTap = virtualAction { handleNavigateButton(NavigationButton.BUMPER_L) },
+            onShoulderRightTap = virtualAction { handleNavigateButton(NavigationButton.TRIGGER_L) },
             mainControl = VirtualClusterView.MainControl.Stick(onChanged = virtualStickAction { x, y -> handleLeftStickInput(x, y) }),
         )
         virtualClusterRight = VirtualClusterView(
@@ -1920,12 +2148,29 @@ class MainActivity : AppCompatActivity() {
         val prefs = getSharedPreferences(APP_SETTINGS_PREFS_NAME, MODE_PRIVATE)
         AppSettings.exportFormatIsMC4D = prefs.getBoolean(PREF_EXPORT_FORMAT_MC4D, true)
         AppSettings.confirmBeforeScrambleReset = prefs.getBoolean(PREF_CONFIRM_SCRAMBLE_RESET, false)
+        // Falls back to the built-in text (not just on missing text, but on anything that fails
+        // to parse) rather than propagating -- a persisted string here predates this file's
+        // format changing at least once already (the flat single-level filter format that
+        // preceded the filter-set/filter/subfilter hierarchy), so an old install's SharedPreferences
+        // can easily hold text the *current* parser rejects. Without this fallback that's a
+        // guaranteed crash-on-every-launch for anyone upgrading, not just a hypothetical.
+        val persistedFiltersText = prefs.getString(PREF_PIECE_FILTERS_TEXT, null)
+        val (filtersText, filterSets) = try {
+            val text = persistedFiltersText ?: PieceFilters.BUILTIN_FILTERS_TEXT
+            text to PieceFilters.parseFilterText(text)
+        } catch (e: IllegalArgumentException) {
+            Log.w(TAG, "Persisted piece filters failed to parse, resetting to defaults", e)
+            PieceFilters.BUILTIN_FILTERS_TEXT to PieceFilters.BUILTIN_FILTER_SETS
+        }
+        AppSettings.pieceFiltersText = filtersText
+        currentFilterSets = filterSets
     }
 
     private fun saveAppSettings() {
         getSharedPreferences(APP_SETTINGS_PREFS_NAME, MODE_PRIVATE).edit()
             .putBoolean(PREF_EXPORT_FORMAT_MC4D, AppSettings.exportFormatIsMC4D)
             .putBoolean(PREF_CONFIRM_SCRAMBLE_RESET, AppSettings.confirmBeforeScrambleReset)
+            .putString(PREF_PIECE_FILTERS_TEXT, AppSettings.pieceFiltersText)
             .apply()
     }
 
@@ -1964,6 +2209,12 @@ class MainActivity : AppCompatActivity() {
                 .put("history", historyJson)
                 .put("solved", solved)
                 .put("scrambleCount4D", scrambleMoveCount4D)
+                // Solve timer (4D only, but harmless/unused if is4DMode is false) -- see the
+                // timerArmed field group's doc for why this is wall-clock, not elapsedRealtime.
+                .put("timerArmed", timerArmed)
+                .put("timerRunning", timerRunning)
+                .put("timerAccumulatedMillis", timerAccumulatedMillis)
+                .put("timerRunStartMillis", timerRunStartMillis)
             File(filesDir, SAVE_FILE_NAME).writeText(root.toString())
         } catch (e: Exception) {
             Log.w(TAG, "Failed to save puzzle state", e)
@@ -1984,6 +2235,15 @@ class MainActivity : AppCompatActivity() {
             val state = IntArray(stateJson.length()) { stateJson.getInt(it) }
             val historyJson = root.getJSONArray("history")
             val solved = root.optBoolean("solved", true)
+            // Restored as-is, not re-armed/re-started -- timerRunStartMillis (if timerRunning)
+            // already holds the real wall-clock start of the still-in-progress run, so
+            // currentTimerMillis() keeps counting straight through the time the app was closed,
+            // no explicit resume step needed. Defaults (all false/0) match a fresh, never-
+            // scrambled puzzle when there's no save file, same as every other field here.
+            timerArmed = root.optBoolean("timerArmed", false)
+            timerRunning = root.optBoolean("timerRunning", false)
+            timerAccumulatedMillis = root.optLong("timerAccumulatedMillis", 0L)
+            timerRunStartMillis = root.optLong("timerRunStartMillis", 0L)
             if (is4DMode) {
                 pendingRestoreState4D = state
                 pendingRestoreSolved4D = solved
@@ -2032,119 +2292,29 @@ class MainActivity : AppCompatActivity() {
         private const val SOLVED_LABEL = "SOLVED"
         private const val SAVE_FILE_NAME = "puzzle_state.json"
         private const val BATTERY_POLL_INTERVAL_MS = 30_000L
+        private const val TIMER_TICK_INTERVAL_MS = 1_000L
 
         private const val APP_SETTINGS_PREFS_NAME = "app_settings"
         private const val PREF_EXPORT_FORMAT_MC4D = "exportFormatIsMC4D"
         private const val PREF_CONFIRM_SCRAMBLE_RESET = "confirmBeforeScrambleReset"
+        private const val PREF_PIECE_FILTERS_TEXT = "pieceFiltersText"
 
-        // Not `const` -- needs to interpolate BuildConfig.VERSION_NAME (see the CREDITS section
-        // below), which isn't a compile-time constant Kotlin's `const val` will accept.
-        private val HELP_HTML = """
-<b>QUICK INTRO</b><br>
-This is a 4D twisty puzzle with 8 "cells" (the 4D equivalent of a 3D cube's 6 faces). Hold the
-left stick or d-pad toward one to select it, then press Y / A / X / B or R1 / R2 to twist that
-cell around its X, Y, or Z axis. Left stick click (L3) or Button C rotates the selected cell into
-the middle of the view, so every cell can be reached without ever losing sight of the puzzle.
-Those controls alone are enough to solve it efficiently &#8212; everything below digs into
-additional modes and button combos that can make you even more efficient.<br>
-<br>
-<b>TOUCH CONTROLS</b><br>
-&#8226; Drag the puzzle to rotate the view<br>
-&#8226; Pinch to zoom<br>
-<br>
-<b>GAMEPAD CONTROLS</b><br>
-Two selectable input modes &#8212; a single "Mode" tile in the Start Menu toggles between them,
-its own label showing whichever one is currently active (see below).<br>
-<br>
-<b>Mode 1 &#8212; Stick Select (default)</b><br>
-&#8226; Left stick: select a cell (deflect toward it) &#8212; releasing back to center forgets the
-selection entirely, it doesn't stay picked for the next twist<br>
-&#8226; D-pad: also selects a cell, same as the left stick &#8212; hold two adjacent directions at
-once for a diagonal, for controllers with no left stick<br>
-&#8226; Right stick: orbit the view<br>
-&#8226; Y / A / X / B: twist the selected cell (Up / Down / Left / Right) &#8212; with nothing
-selected, Up/Down defaults to R, Left/Right to U (or L/D if the modifier below is held)<br>
-&#8226; R1 / R2 (bumper / trigger): twist the selected cell around its third axis &#8212; with
-nothing selected, defaults to F (or B if the modifier below is held)<br>
-&#8226; Left stick click (L3) or Button C: with a cell selected, rotates the puzzle so it moves to
-I &#8212; Button C exists for controllers with no stick click (e.g. the 8BitDo Micro). With
-nothing selected, holding either instead flips every twist button's default cell to the opposite
-side of its axis (L/D/B instead of R/U/F) for as long as it's held<br>
-<br>
-<b>Mode 2 &#8212; RKT</b><br>
-For the final phase of a solve, where every twist is either an I-cell rotation or R itself &#8212;
-no cell selection needed, so nothing is highlighted.<br>
-&#8226; Left stick: push most of the way left/right or up/down, then let it return to center, to
-twist I as IU/IU'/IR/IR' &#8212; same twists as the D-pad below, just an alternate way to reach
-them; push again (after returning to center) for another twist<br>
-&#8226; Right stick: orbit the view, same as mode 1<br>
-&#8226; Y / A / X / B, R1 / R2: twist R, same as if it were selected in mode 1<br>
-&#8226; D-pad left / right: twist I as IU / IU'<br>
-&#8226; D-pad up / down: twist I as IR / IR'<br>
-&#8226; L1 / L2 (bumper / trigger): twist I as IF / IF'<br>
-&#8226; Button C: unused (Select still does whole-room snap rotation/undo/redo, see below)<br>
-<br>
-<b>Select (hold): a second layer of controls</b> &#8212; works the same in every mode.<br>
-&#8226; Y / A / X / B / R1 / R2: instead of twisting the selected/highlighted cell, snap-rotates
-the *entire puzzle* 90&#176; using the same button-to-axis feel an individual twist already has,
-just applied to everything at once (the 4D-room equivalent of a whole-cube rotation, as opposed
-to a face turn) &#8212; I never moves under any of these.<br>
-&#8226; L1 (bumper): Undo.<br>
-&#8226; L2 (trigger): Redo.<br>
-Release Select to go back to normal twisting/navigation.<br>
-<br>
-<b>TOP-LEFT STATUS</b><br>
-&#8226; Turns: twists made since the last scramble (or reset)<br>
-&#8226; Selected X: showing Y -- the room slot actively selected by the stick/d-pad right now, and
-which native cell currently occupies it; reads "Selected: none" once released -- the next twist
-still lands on a definite cell (see Stick Select above), there just isn't one *actively held*
-to report<br>
-&#8226; Filter: which piece-type filters (if any) are currently hiding pieces<br>
-&#8226; Mode: Stick or RKT -- the active input mode (see the Start Menu's Mode tile)<br>
-&#8226; Battery: N% -- the connected gamepad's battery level, if it reports one (many wired
-controllers, and Android versions before 12, never do -- blank when unavailable)<br>
-<br>
-<b>START MENU</b><br>
-Press Start (real gamepad) or tap the virtual controller's Start pill (touch) to open it. Move
-the highlight with the left stick, the D-pad, or the virtual controller's own stick -- it shows a
-stick here even in RKT mode, since RKT's D-pad has no way to navigate a menu. Confirm/Back are
-whichever face buttons sit physically bottom/right on a gamepad, or the virtual controller's
-matching A/B buttons. Press Start again (or tap it again) to close from anywhere, or Back to step
-out one level at a time (submenu &#8594; menu &#8594; resume puzzle).<br>
-&#8226; Filters: opens a submenu of piece-type toggles (Centers / Ridges / 3c Edges / 4c Corners,
-by how many colors a piece shows) &#8212; drawn as a small see-through panel so the puzzle stays
-visible and draggable while you adjust them<br>
-&#8226; Scramble / Reset<br>
-&#8226; Mode: toggles between Stick and RKT input (see above)<br>
-&#8226; Settings: Nintendo ABXY, Z Dir Left/Right, Export Format (MC4D or hypercubing.xyz-style
-Log), and Confirm Scramble/Reset -- see below<br>
-&#8226; Export: runs whichever format Settings' Export Format row specifies<br>
-&#8226; Help: this screen<br>
-<br>
-<b>4D SETTINGS</b><br>
-&#8226; Controller: shows which controller these three rows apply to -- whichever one most
-recently sent input, saved per-controller so different pads can have different settings
-(press a button on the one you want to change before adjusting it)<br>
-&#8226; Nintendo ABXY: swaps A&#8596;B and X&#8596;Y, for controllers/modes reporting face buttons
-in Nintendo's layout instead of Xbox's<br>
-&#8226; Z Dir Left / Z Dir Right: independently swaps L1&#8596;L2 or R1&#8596;R2, for controllers
-whose bumper/trigger arrangement makes one or both sides feel backwards<br>
-&#8226; Export Format: MC4D (a real MagicCube4D .log file) or Log (hypercubing.xyz-style community
-notation) -- whichever the Start Menu's Export tile runs; app-wide, not per-controller<br>
-&#8226; Confirm Scramble/Reset: ask before actually scrambling or resetting; also app-wide<br>
-<br>
-<b>GAMEPAD OVERLAY</b><br>
-The small controller diagram in the bottom-left corner lights up buttons and sticks live as they're used &#8212; handy for confirming exactly which input produced a twist, e.g. when reviewing a screen recording.<br>
-<br>
-<b>CREDITS</b><br>
-Version ${BuildConfig.VERSION_NAME}<br>
-twisted4d was developed by David Barr. It was inspired by:<br>
-&#8226; Hyperspeedcube, a 3D/4D twisty puzzle simulator by Andrew Farkas (HactarCE)<br>
-&#8226; MagicCube4D, Hyperspeedcube's predecessor, by Don Hatch, Melinda Green, Jay Berkenbilt, and
-Roice Nelson<br>
-&#8226; MagicCube4D's Android port, also by Melinda Green<br>
-&#8226; MagicCube4D (Raynefork), Raymond Zhao's fork of that Android port adding features and
-modern-Android compatibility<br>
-"""
+        // Lives in app/src/main/resources/help.html, a plain HTML-ish text file David can open
+        // and edit directly, rather than an inline Kotlin string -- same JVM-classpath-resource
+        // technique (Class.getResourceAsStream, not Android res/raw or assets/) as
+        // PieceFilters.BUILTIN_FILTERS_TEXT, and for the same reason: no Context needed to read
+        // it. The one dynamic bit (the CREDITS section's version number) is a {{VERSION_NAME}}
+        // placeholder in the file, substituted here rather than left as a Kotlin string-template
+        // expression -- a plain resource file can't contain live Kotlin interpolation, and
+        // BuildConfig.VERSION_NAME is exactly the kind of build-time (not edit-time) value that
+        // has to stay a code-side substitution regardless. `by lazy` so the file is only read
+        // once, the first time Help is actually opened.
+        private val HELP_HTML: String by lazy {
+            val template = MainActivity::class.java.getResourceAsStream("/help.html")
+                ?.bufferedReader()
+                ?.use { it.readText() }
+                ?: error("help.html is missing from the classpath -- expected at app/src/main/resources/help.html")
+            template.replace("{{VERSION_NAME}}", BuildConfig.VERSION_NAME)
+        }
     }
 }

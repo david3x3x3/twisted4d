@@ -131,16 +131,19 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
     // Intent covering the activity, which should leave the puzzle state alone).
     private var hasCreatedSurfaceBefore = false
 
-    // Piece-type filtering: hides whole pieces (all their stickers) by how many of the piece's
-    // HOME_POSITIONS coordinates are nonzero -- community terminology (matches hypercubing.xyz
-    // piece-type names for an N^4 puzzle): 1 = center, 2 = ridge, 3 = edge, 4 = corner -- a solve
-    // aid for early stages. Sticker count is a permanent piece-type identity (see onDrawFrame), so
-    // this is a safe, cheap per-piece check against each piece's *home* position, not its current
-    // one.
-    @Volatile var hideCorners: Boolean = false
-    @Volatile var hideEdges: Boolean = false
-    @Volatile var hideRidges: Boolean = false
-    @Volatile var hideCenters: Boolean = false
+    // Piece filtering: dims whole pieces (all their stickers) that the active filter-set's
+    // current filter hasn't revealed yet -- see PieceFilterSet's class doc. activeFilterSet null
+    // means no filter-set is active (nothing dimmed); otherwise a piece is dimmed unless
+    // PieceFilter.isPieceVisible(activeFilterStep, home) is true for the piece's own *home*
+    // position (its permanent identity, not its current one -- see onDrawFrame), checked against
+    // activeFilterSet!!.filters[activeFilterIndex] specifically -- crossing into a different
+    // filter within the set does NOT fall back to unioning with an earlier filter's pieces, by
+    // design (see PieceFilterSet's doc). MainActivity's Filters submenu sets activeFilterSet
+    // (always starting both indices at 0), and Select+L1/L2 in STICK mode steps activeFilterStep,
+    // rolling over into activeFilterIndex++/-- at a filter's start/end.
+    @Volatile var activeFilterSet: PieceFilterSet? = null
+    @Volatile var activeFilterIndex: Int = 0
+    @Volatile var activeFilterStep: Int = 0
 
     // Persistent left-stick selection state: which room *slot* (axis+sign), not which resolved
     // cell, is selected -- see selectedCell4's doc for why. GL-thread-only (updateCell4Selection
@@ -1348,15 +1351,11 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         val after = animAfter
         for (i in HypercubeGeometry.HOME_POSITIONS.indices) {
             val home = HypercubeGeometry.HOME_POSITIONS[i]
-            val stickerCount = (if (home.x != 0) 1 else 0) + (if (home.y != 0) 1 else 0) +
-                (if (home.z != 0) 1 else 0) + (if (home.w != 0) 1 else 0)
-            // Filtered piece-types are no longer skipped outright -- they're dimmed the same way
+            // Filtered-out pieces are no longer skipped outright -- they're dimmed the same way
             // an unselected piece is (see frameEmphasizedCell below), so a filter still lets you
             // see roughly where hidden pieces are instead of punching a hole in the puzzle.
-            val filterDimmed = (hideCorners && stickerCount == 4) ||
-                (hideEdges && stickerCount == 3) ||
-                (hideRidges && stickerCount == 2) ||
-                (hideCenters && stickerCount == 1)
+            val filterDimmed = activeFilterSet?.filters?.getOrNull(activeFilterIndex)
+                ?.let { !it.isPieceVisible(activeFilterStep, home) } ?: false
 
             val base = i * 20
             val src = when {
@@ -1798,10 +1797,10 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
          * meant to be tuned visually together with [FILTER_DIM_ALPHA]. */
         private const val SELECTION_DIM_ALPHA = 0.10f
 
-        /** Opacity for a piece hidden by a Filters toggle (hide corners/edges/ridges/centers) --
-         * a separate constant from [SELECTION_DIM_ALPHA] since David explicitly wants to tune the
-         * two "cases" (selection-fade vs. filter-fade) independently, even though they start at
-         * the same value. */
+        /** Opacity for a piece a filter series hasn't revealed yet (see [activeFilterSet]/
+         * [activeFilterIndex]/[activeFilterStep]) -- a separate constant from [SELECTION_DIM_ALPHA] since David
+         * explicitly wants to tune the two "cases" (selection-fade vs. filter-fade) independently,
+         * even though they start at the same value. */
         private const val FILTER_DIM_ALPHA = 0.10f
 
         private const val MIN_DISTANCE = 3f
