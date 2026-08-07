@@ -79,11 +79,14 @@ android {
         // got its own tagged release. 0.7.3 (2026-08-04): rapid twist input no longer gets dropped
         // mid-animation -- it's queued and played back at a dynamically increasing speed (same
         // formula Hyperspeedcube's own twist queue uses) instead of silently discarded, fixing the
-        // sluggish-feeling rapid-twisting reported right after 0.7.2 shipped. Still not 1.0:
-        // whether Fire TV is even a 1.0 target remains undecided, and Settings is still missing
-        // its D-pad-assignment rows.
-        versionCode = 9
-        versionName = "0.7.3"
+        // sluggish-feeling rapid-twisting reported right after 0.7.2 shipped. 0.7.4 (2026-08-06):
+        // piece filters rebuilt as a filter-set/filter/subfilter hierarchy (built-in Pieces/CFOP/
+        // David's own hand-authored 3block filter set, a new cell-or-type-letter union + "-"
+        // subtraction token grammar, clipboard import/export/reset) plus a persistent "Time: M:SS"
+        // solve timer. Still not 1.0: whether Fire TV is even a 1.0 target remains undecided, and
+        // Settings is still missing its D-pad-assignment rows.
+        versionCode = 10
+        versionName = "0.7.4"
         buildConfigField("String", "GIT_VERSION", "\"$gitVersion\"")
     }
 
