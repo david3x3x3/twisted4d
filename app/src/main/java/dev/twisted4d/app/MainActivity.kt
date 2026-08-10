@@ -237,23 +237,26 @@ class MainActivity : AppCompatActivity() {
     // moves this back without deleting anything (so redo can move it forward again); a genuinely
     // new move made while this isn't already at moveHistory4D.size truncates the list back to it
     // first, discarding whatever redo branch was pending -- standard undo/redo-stack semantics.
-    // Always equal to moveHistory4D.size except mid-undo/redo. Same GL-thread-write
-    // (onTwistApplied)/UI-thread-write (performUndo/performRedo/onScramble/onReset) split as
-    // scrambleMoveCount4D, so @Volatile for the same reason.
+    // Always equal to moveHistory4D.size except mid-undo/redo. Written from the GL thread
+    // (onTwistApplied, for a genuinely new twist) and from the UI thread (performUndo/
+    // performRedo/onScramble/onReset), so @Volatile for the same reason as scrambleMoveCount4D.
+    //
+    // performUndo/performRedo update this immediately/optimistically on the UI thread, at click
+    // time, *before* the GL thread has actually replayed the move -- a real repro (2026-07-30)
+    // shows why that used to be unsafe: 5 rapid undo presses (faster than the ~220ms twist
+    // animation) left historyIndex4D claiming "fully undone" while the puzzle was still visibly
+    // scrambled, because HypercubeRenderer.requestUndo/requestRedo used to apply-immediately-or-
+    // silently-drop (via applyTwistInternal's animating guard), so some of those undos never
+    // actually happened. That's fixed now (2026-08-09) by giving requestUndo/requestRedo a real
+    // queue, the same dynamic-speed one requestTwist already had (see HypercubeRenderer.
+    // QueuedAction's doc) -- a queued undo/redo is now guaranteed to eventually apply rather than
+    // silently drop, which is what makes updating historyIndex4D immediately here safe (and lets
+    // the turn counter/animation speed-up both react the instant the button is pressed, not one
+    // GL-thread round-trip later). The only thing that can still supersede a queued-but-not-yet-
+    // applied undo/redo is a scramble/reset (their own twistQueue.clear()) -- but those already
+    // overwrite historyIndex4D unconditionally themselves (see doScramble/doReset), so there's no
+    // window where a dropped queue entry leaves this field stale.
     @Volatile private var historyIndex4D = 0
-
-    // Guards performUndo/performRedo against overlapping GL-thread requests -- set true right
-    // before queueing an undo/redo, cleared once that queued work actually runs (whether it
-    // succeeded or was rejected because a previous twist/room-rotation was still animating).
-    // Without this, historyIndex4D used to be advanced immediately/optimistically on the UI
-    // thread for every press, regardless of whether the queued GL-thread call would actually
-    // succeed -- a real repro (2026-07-30) sent 5 rapid undo presses (faster than the ~220ms
-    // twist animation) and left historyIndex4D claiming "fully undone" while the puzzle was
-    // still visibly scrambled, because some of those undos were silently dropped by
-    // HypercubeRenderer.applyTwistInternal's own animating guard. Read/written from both threads
-    // (UI thread checks/sets it before queueing; the GL thread clears it once the queued work
-    // runs), so @Volatile for the same reason as historyIndex4D/scrambleMoveCount4D.
-    @Volatile private var undoRedoInFlight = false
 
     // Set by loadState() (called once, before the first rebuildUi()) when a saved puzzle state
     // exists for that mode; consumed (and nulled) by build3DScreen/build4DScreen the first time
@@ -628,52 +631,50 @@ class MainActivity : AppCompatActivity() {
         timerTickRunnable = tickTimer
         timerTickHandler.postDelayed(tickTimer, TIMER_TICK_INTERVAL_MS)
 
-        /** Steps [historyIndex4D] back one and reverses that move -- see [historyIndex4D]'s doc.
+        /** Steps [historyIndex4D] back one and queues its reversal -- see [historyIndex4D]'s doc
+         * for why updating it immediately here (rather than waiting for the GL thread to confirm
+         * the replay) is safe now that [HypercubeRenderer.requestUndo] queues instead of dropping.
          * A no-op once back at [scrambleMoveCount4D] -- the scramble itself was never meant to be
          * a real, undoable move sequence (it's a single instantaneous shuffle, not something the
          * player did one twist at a time), so undo stops at "freshly scrambled," not "solved."
          * Confirmed as a real bug via a repro (2026-07-30): undoing was able to walk all the way
          * back past the scramble to the original solved state, which shouldn't be reachable via
-         * undo at all. Also a no-op while [undoRedoInFlight] -- see that field's doc: historyIndex4D
-         * only advances once the queued GL-thread undo reports back that it actually applied. */
+         * undo at all. No longer guarded against overlapping presses (that guard, undoRedoInFlight,
+         * used to just drop any undo press that arrived mid-animation instead of queuing it -- the
+         * bug reported 2026-08-09: rapid undo clicks never sped the animation up the way rapid
+         * twists do, because they were never reaching a queue at all) -- each press now updates
+         * historyIndex4D and queues its own replay immediately, so a burst of rapid presses queues
+         * up and drains with the same dynamic speed-up [HypercubeRenderer.requestTwist] already
+         * has. */
         fun performUndo() {
-            if (undoRedoInFlight) return
             val targetIndex: Int
             val record: TwistRecord
             synchronized(moveHistory4D) {
                 if (historyIndex4D <= scrambleMoveCount4D) return
                 targetIndex = historyIndex4D - 1
                 record = moveHistory4D[targetIndex]
+                historyIndex4D = targetIndex
             }
-            undoRedoInFlight = true
-            surfaceView.queueEvent {
-                val applied = renderer.undoTwist(record.cell, record.fixAxis2, record.prime)
-                if (applied) historyIndex4D = targetIndex
-                undoRedoInFlight = false
-                runOnUiThread { updateTurnCount() }
-            }
+            updateTurnCount()
+            surfaceView.queueEvent { renderer.requestUndo(record.cell, record.fixAxis2, record.prime) }
         }
 
         /** Re-applies whatever move undo last stepped back over and advances [historyIndex4D]
-         * again -- see [historyIndex4D]'s doc. A no-op once caught back up to the end of history
+         * again -- see [performUndo]'s doc for the same immediate-update-then-queue reasoning,
+         * just in the opposite direction. A no-op once caught back up to the end of history
          * (nothing to redo, either because nothing was undone or a new move already overwrote the
-         * abandoned branch), or while [undoRedoInFlight] -- same reasoning as [performUndo]. */
+         * abandoned branch). */
         fun performRedo() {
-            if (undoRedoInFlight) return
             val targetIndex: Int
             val record: TwistRecord
             synchronized(moveHistory4D) {
                 if (historyIndex4D >= moveHistory4D.size) return
                 record = moveHistory4D[historyIndex4D]
                 targetIndex = historyIndex4D + 1
+                historyIndex4D = targetIndex
             }
-            undoRedoInFlight = true
-            surfaceView.queueEvent {
-                val applied = renderer.redoTwist(record.cell, record.fixAxis2, record.prime)
-                if (applied) historyIndex4D = targetIndex
-                undoRedoInFlight = false
-                runOnUiThread { updateTurnCount() }
-            }
+            updateTurnCount()
+            surfaceView.queueEvent { renderer.requestRedo(record.cell, record.fixAxis2, record.prime) }
         }
 
         // STICK (default): left stick (and/or d-pad, see GamepadInputHandler.onDpadStick)
@@ -684,6 +685,17 @@ class MainActivity : AppCompatActivity() {
         // it redundant.) UI-thread-local so the toggle button's label updates immediately;
         // renderer.inputMode is the GL-thread source of truth these closures defer to once queued.
         var inputMode = GamepadInputMode.STICK
+
+        // Bridges handleNavigateButton (defined below, at 884ish) to toggleInputMode (defined much
+        // further down, once updateInputModeText/applyInputModeToVirtualController/
+        // rebuildStartMenuTiles all exist) -- Kotlin local functions can't forward-reference each
+        // other the way class members can (see updateFilterStatusText's doc for the same
+        // constraint), so this is assigned its real implementation later and invoked through here
+        // in the meantime, same trick onMenuStateChangedForVirtualController already uses to bridge
+        // class-member-to-local instead of local-to-local. Null until that assignment runs (never
+        // actually null by the time a real button press can reach it, since gamepadInput itself
+        // isn't constructed until further down still).
+        var toggleInputModeAction: (() -> Unit)? = null
 
         // RKT mode's stick-driven I-twist (added 2026-07-28, alternative to the D-pad below) needs
         // its own edge/arm-detection, same hysteresis pattern GamepadInputHandler's own hat-axis
@@ -947,6 +959,15 @@ class MainActivity : AppCompatActivity() {
                 // gated on inputMode either), so it overrides BUMPER_L/TRIGGER_L's normal
                 // RKT-mode IF/IF' twist while held.
                 if (button == NavigationButton.BUMPER_L) performUndo() else performRedo()
+            } else if (selectHeldAtPress && (button == NavigationButton.THUMB_L || button == NavigationButton.BUTTON_C)) {
+                // Select-held modifier, STICK<->RKT toggle (added 2026-08-09) -- same doubling-up
+                // trick as Select+L1/L2 above, on THUMB_L/BUTTON_C's own plain-tap "move to I"
+                // button instead (see NavigationButton's doc for why those two are the same
+                // physical control across controllers, and toggleInputModeAction's doc for why
+                // this goes through a bridge var instead of calling toggleInputMode directly).
+                // Applies in every input mode, same reasoning as Select+L1/L2 not being gated on
+                // inputMode either -- toggling out of RKT needs to work from RKT too.
+                toggleInputModeAction?.invoke()
             } else if (inputMode == GamepadInputMode.STICK &&
                 (button == NavigationButton.BUMPER_L || button == NavigationButton.TRIGGER_L)
             ) {
@@ -1374,11 +1395,7 @@ class MainActivity : AppCompatActivity() {
                     null,
                     MenuTile("SETTINGS", onSelect = { rebuildSettingsTiles(); openSettingsMenu() }),
                     MenuTile("Mode:\n${if (inputMode == GamepadInputMode.STICK) "Stick" else "RKT"}", onSelect = {
-                        inputMode = if (inputMode == GamepadInputMode.STICK) GamepadInputMode.RKT else GamepadInputMode.STICK
-                        surfaceView.queueEvent { renderer.setInputMode(inputMode) }
-                        updateInputModeText()
-                        applyInputModeToVirtualController()
-                        rebuildStartMenuTiles()
+                        toggleInputModeAction?.invoke()
                         closeAllMenus()
                     }),
                     MenuTile("Export", onSelect = {
@@ -1405,6 +1422,24 @@ class MainActivity : AppCompatActivity() {
                 ),
             )
         }
+
+        /** Flips [inputMode] and refreshes everything that displays/depends on it. Shared
+         * (added 2026-08-09) by the Start Menu's own Mode tile above (via the
+         * [toggleInputModeAction] bridge var, declared up near [inputMode]) and the
+         * Select+THUMB_L/BUTTON_C gamepad shortcut in handleNavigateButton -- both used to only
+         * exist as the tile's onSelect body, so the shortcut would have meant duplicating it.
+         * Assigned to [toggleInputModeAction] just below rather than referenced directly from
+         * handleNavigateButton (which is declared earlier in this function) purely to route around
+         * Kotlin's no-forward-reference rule for local functions -- see that var's own doc. */
+        fun toggleInputMode() {
+            inputMode = if (inputMode == GamepadInputMode.STICK) GamepadInputMode.RKT else GamepadInputMode.STICK
+            surfaceView.queueEvent { renderer.setInputMode(inputMode) }
+            updateInputModeText()
+            applyInputModeToVirtualController()
+            rebuildStartMenuTiles()
+        }
+        toggleInputModeAction = ::toggleInputMode
+
         rebuildStartMenuTiles()
 
         // Filters submenu -- compact style (see StartMenuView's doc) so the puzzle stays visible

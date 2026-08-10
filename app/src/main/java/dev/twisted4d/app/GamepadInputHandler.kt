@@ -46,10 +46,12 @@ enum class RotationButton(val literalAxis: Axis4, val primaryPrime: Boolean) {
  * [SELECT] itself has no tap action -- it's a pure hold-modifier (changed 2026-07-26):
  * [MainActivity]'s `on4DRotationButton` wiring checks [GamepadVisualState.selectHeld] to turn the
  * 6 [RotationButton]s from "twist the selected cell" into "snap-rotate the whole room" while it's
- * held, and `on4DNavigate` checks it to turn [BUMPER_L]/[TRIGGER_L] into undo/redo -- roughly
- * doubling the button vocabulary twice over without adding new physical buttons. This is why
- * [GamepadVisualState.selectHeld] (originally added just for the on-screen debug overlay) is now
- * load-bearing for real gameplay, not just a HUD indicator.
+ * held, and `on4DNavigate` checks it to turn [BUMPER_L]/[TRIGGER_L] into undo/redo, and
+ * [THUMB_L]/[BUTTON_C] into a STICK<->RKT [GamepadInputMode] toggle (added 2026-08-09) -- roughly
+ * doubling the button vocabulary twice over (three times over for THUMB_L/BUTTON_C, see below)
+ * without adding new physical buttons. This is why [GamepadVisualState.selectHeld] (originally
+ * added just for the on-screen debug overlay) is now load-bearing for real gameplay, not just a
+ * HUD indicator.
  *
  * [BUTTON_C] (2026-07-26) is now the "move the selected cell to I" fallback for controllers with
  * no left-stick click -- the 8BitDo Micro has no THUMB_L but does have a Button C. [START] used
@@ -64,7 +66,13 @@ enum class RotationButton(val literalAxis: Axis4, val primaryPrime: Boolean) {
  * [GamepadVisualState.buttonCHeld]/`thumbLHeld` and [MainActivity]'s `moveModifierHeldAtPress`.
  * A no-op alongside the original move-to-I tap once something's actually selected, same as the
  * move-to-I tap is now itself a no-op with nothing selected (see
- * `HypercubeRenderer.requestMoveSelectedCellToI`'s doc). */
+ * `HypercubeRenderer.requestMoveSelectedCellToI`'s doc).
+ *
+ * [THUMB_L]/[BUTTON_C] gained a third role (2026-08-09): tapped while [SELECT] is held, either
+ * toggles [MainActivity]'s `inputMode` between STICK and RKT -- the same Select-held-modifier
+ * trick [BUMPER_L]/[TRIGGER_L] uses for undo/redo just above, on the same physical button the
+ * plain (Select-not-held) tap already uses for move-to-I. Works from either mode (unlike the
+ * move-to-I tap, which is STICK-only) since toggling out of RKT has to be reachable from RKT. */
 enum class NavigationButton { LEFT, RIGHT, UP, DOWN, BUMPER_L, TRIGGER_L, SELECT, THUMB_L, START, BUTTON_C }
 
 /**
