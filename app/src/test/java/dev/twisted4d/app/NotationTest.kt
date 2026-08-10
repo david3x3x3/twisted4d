@@ -60,7 +60,7 @@ class NotationTest {
         // so the raw native prime that produces it is false, not true. See the
         // mc4d_log_compatibility memory. No room reorientation involved, so room fields equal the
         // native ones, and displayApostrophe is just correctedPrime unreoriented.
-        val record = TwistRecord(
+        val record = TwistRecord.Ridge(
             Cell4.I, Axis4.Z, prime = false, roomCell = Cell4.I, roomFixAxis2 = Axis4.Z.nativeIndex,
             displayApostrophe = Notation.correctedPrime(Cell4.I, Axis4.Z, false),
         )
@@ -73,7 +73,7 @@ class NotationTest {
         // The user selected O, twisted on each of its 3 axes including this one, exported, and
         // re-imported into real MC4D -- its rendering matched twisted4d's. No reorientation, so
         // room fields equal native.
-        val record = TwistRecord(
+        val record = TwistRecord.Ridge(
             Cell4.B, Axis4.W, prime = true, roomCell = Cell4.B, roomFixAxis2 = Axis4.W.nativeIndex,
             displayApostrophe = Notation.correctedPrime(Cell4.B, Axis4.W, true),
         )
@@ -98,7 +98,7 @@ class NotationTest {
         // checks: communityNotation must reflect whatever displayApostrophe says, independent of
         // what `prime` (the physics-correct native value, now reorientation-aware -- see
         // HypercubeRenderer.correctedNativePrimeForRoomTwist) happens to be.
-        val record = TwistRecord(
+        val record = TwistRecord.Ridge(
             cell = Cell4.I, fixAxis2 = Axis4.X, prime = true,
             roomCell = Cell4.L, roomFixAxis2 = Axis4.Y.nativeIndex,
             displayApostrophe = false,

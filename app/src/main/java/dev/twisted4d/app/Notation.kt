@@ -1,33 +1,65 @@
 package dev.twisted4d.app
 
-/** One recorded 4D twist: [cell]/[fixAxis2]/[prime] are native identifiers -- what [Cube4.twist],
- * undo, and the MC4D file export all need, since MC4D's own grip encoding is piece-identity-based
- * and camera-independent (see the mc4d_log_compatibility memory). [roomCell]/[roomFixAxis2] are
- * the *room-relative* cell/axis in effect when this twist was made -- what a human reads off the
- * screen and what community notation (and this app's own on-screen label / clipboard notation)
- * should be built from instead, since those two can disagree once the room's been reoriented away
- * from default (see HypercubeRenderer.selectedRoomCell's doc). [roomFixAxis2] is a raw room axis
- * index (HypercubeRenderer.AXIS_X et al.), not yet converted to a representative letter, so it can
- * be combined with [Notation.communityNotation] at read time.
- *
- * [displayApostrophe] is the room-level, orientation-independent community-notation apostrophe
- * intent -- computed *once*, at twist-resolution time (via [Notation.correctedPrimeForDisplay],
- * from the button's raw per-cell-corrected prime, before [HypercubeRenderer.
- * correctedNativePrimeForRoomTwist] adjusts [prime] itself for the current reorientation) -- and
- * stored directly rather than re-derived from [prime] later, because that re-derivation is exactly
- * what the reoriented-CCW-labeled-CW bug turned out to be: [prime] is now the *true* native prime
- * actually applied (needed by [Cube4.twist] and, unchanged, by MC4D export), which depends on the
- * current orientation -- reusing a room-only table on it, after the fact, silently assumes an
- * orientation-independence that isn't true. See [correctedPrimeForDisplay]'s doc for the fuller
- * history and [[mc4d_log_compatibility]] memory for why the two primes must stay separate. */
-data class TwistRecord(
-    val cell: Cell4,
-    val fixAxis2: Axis4,
-    val prime: Boolean,
-    val roomCell: Cell4,
-    val roomFixAxis2: Int,
-    val displayApostrophe: Boolean,
-)
+/** One recorded 4D twist -- [Ridge] (the original/only kind until 2026-08-10) or [Edge] (new: a
+ * genuine single 180-degree twist around the diagonal axis through 2 of a cell's spatial axes,
+ * what MagicCube4D itself does when you click an edge sticker -- 2 nonzero local axes -- instead
+ * of a ridge sticker's ordinary 1-axis 90-degree twist; see HypercubeRenderer.
+ * requestI180TwistUFDB's doc for the full "why a sealed class" reasoning and how [Edge]'s exact
+ * rotation was derived/verified). A plain flat data class with "meaningful only for ridge twists"
+ * fields (the alternative) is exactly the kind of implicit invariant this codebase avoids
+ * elsewhere -- a sealed class instead forces every consumer (undo, export, save/load) to
+ * explicitly decide what an [Edge] means to it, via an exhaustive `when`, rather than silently
+ * misreading a field that doesn't apply. [Edge] doesn't yet carry room-relative fields the way
+ * [Ridge] does (see [Ridge.roomCell]'s doc) -- David's Button-C+X/B shortcut that produces it
+ * always acts on native [Cell4.I] directly, not room-relative, a deliberate scope cut for now
+ * (see HypercubeRenderer.requestEdgeTwist's doc). */
+sealed class TwistRecord {
+    /** [cell]/[fixAxis2]/[prime] are native identifiers -- what [Cube4.twist], undo, and the
+     * MC4D file export all need, since MC4D's own grip encoding is piece-identity-based and
+     * camera-independent (see the mc4d_log_compatibility memory). [roomCell]/[roomFixAxis2] are
+     * the *room-relative* cell/axis in effect when this twist was made -- what a human reads off
+     * the screen and what community notation (and this app's own on-screen label / clipboard
+     * notation) should be built from instead, since those two can disagree once the room's been
+     * reoriented away from default (see HypercubeRenderer.selectedRoomCell's doc). [roomFixAxis2]
+     * is a raw room axis index (HypercubeRenderer.AXIS_X et al.), not yet converted to a
+     * representative letter, so it can be combined with [Notation.communityNotation] at read
+     * time.
+     *
+     * [displayApostrophe] is the room-level, orientation-independent community-notation
+     * apostrophe intent -- computed *once*, at twist-resolution time (via [Notation.
+     * correctedPrimeForDisplay], from the button's raw per-cell-corrected prime, before
+     * [HypercubeRenderer.correctedNativePrimeForRoomTwist] adjusts [prime] itself for the current
+     * reorientation) -- and stored directly rather than re-derived from [prime] later, because
+     * that re-derivation is exactly what the reoriented-CCW-labeled-CW bug turned out to be:
+     * [prime] is now the *true* native prime actually applied (needed by [Cube4.twist] and,
+     * unchanged, by MC4D export), which depends on the current orientation -- reusing a room-only
+     * table on it, after the fact, silently assumes an orientation-independence that isn't true.
+     * See [correctedPrimeForDisplay]'s doc for the fuller history and
+     * [[mc4d_log_compatibility]] memory for why the two primes must stay separate. */
+    data class Ridge(
+        val cell: Cell4,
+        val fixAxis2: Axis4,
+        val prime: Boolean,
+        val roomCell: Cell4,
+        val roomFixAxis2: Int,
+        val displayApostrophe: Boolean,
+    ) : TwistRecord()
+
+    /** [cell]/[axis1]/[sign1]/[axis2]/[sign2] identify the edge sticker grabbed -- e.g.
+     * `axis1=Y,sign1=+1,axis2=Z,sign2=+1` for the UF/DB diagonal (the U and F directions). No
+     * `prime`/apostrophe: a 180-degree edge twist is its own inverse (undo and redo both just
+     * replay it -- see MainActivity.performUndo/performRedo), unlike a ridge twist's two distinct
+     * directions. Native-only for now (no `roomCell`/`roomAxis1`/`roomAxis2` -- see this sealed
+     * class's own doc), so [Notation.communityNotation] and MC4D export both key off these native
+     * fields directly rather than a room-relative label. */
+    data class Edge(
+        val cell: Cell4,
+        val axis1: Axis4,
+        val sign1: Int,
+        val axis2: Axis4,
+        val sign2: Int,
+    ) : TwistRecord()
+}
 
 /** Pure, Android-independent 4D twist-notation logic (hypercubing.xyz community notation and
  * real MagicCube4D `.log` file compatibility) -- extracted from [MainActivity] so it can be unit
@@ -201,7 +233,7 @@ object Notation {
      * press already resolved to ([roomCell], [roomFixAxis2]) with raw per-cell-corrected [prime]
      * (i.e. `button.primaryPrime != rotationInvertedForCell(button, roomCell)`, computed *before*
      * any reorientation-awareness) -- called *once*, at twist-resolution time, to produce the
-     * value stored as [TwistRecord.displayApostrophe]. Same [PRIME_FLIP_TWISTS] table as
+     * value stored as [TwistRecord.Ridge.displayApostrophe]. Same [PRIME_FLIP_TWISTS] table as
      * [correctedPrime], but keyed by *room* cell/axis instead of native.
      *
      * The original on-screen survey that produced [PRIME_FLIP_TWISTS] was done entirely from
@@ -220,9 +252,10 @@ object Notation {
      *
      * This alone is NOT enough to make the *actual twist* render correctly once reoriented --
      * that's [HypercubeRenderer.correctedNativePrimeForRoomTwist]'s job, using this function's
-     * result as its target. Don't call this a second time on an already-applied [TwistRecord]'s
-     * [TwistRecord.prime] to re-derive the apostrophe -- see [TwistRecord.displayApostrophe]'s doc
-     * for why that reintroduces the exact bug this two-step split fixes. */
+     * result as its target. Don't call this a second time on an already-applied
+     * [TwistRecord.Ridge]'s `prime` to re-derive the apostrophe -- see
+     * [TwistRecord.Ridge.displayApostrophe]'s doc for why that reintroduces the exact bug this
+     * two-step split fixes. */
     fun correctedPrimeForDisplay(roomCell: Cell4, roomFixAxis2: Int, prime: Boolean): Boolean {
         val roomAxis = Axis4.entries.first { it.nativeIndex == roomFixAxis2 }
         return prime != ((roomCell to roomAxis) in PRIME_FLIP_TWISTS)
@@ -300,7 +333,14 @@ object Notation {
      * log (`f2l.log`) that had this shape already, and round-tripping our own scramble+twists
      * export back through real MC4D (`retroid.log`), where Edit > Go to Beginning and single-step
      * Redo both worked as expected. The header's second field is `2` whenever a mark is present
-     * (vs. `0` with none), also confirmed by both files. */
+     * (vs. `0` with none), also confirmed by both files.
+     *
+     * Throws [UnsupportedOperationException] if [history] contains any [TwistRecord.Edge] --
+     * MC4D's grip encoding for an edge-sticker twist hasn't been reverse-engineered yet (unlike
+     * [TwistRecord.Ridge]'s, see [mc4dGrip]'s doc), so there's no correct grip/dir to emit; failing
+     * loudly here beats silently writing a `.log` MC4D would misinterpret or reject. Callers
+     * (MainActivity's doExportMC4D) should catch this and tell the player, not let it crash the
+     * export flow. */
     fun mc4dLogFile(history: List<TwistRecord>, scrambleCount: Int): String {
         val solveCount = history.size - scrambleCount
         val header = "MagicCube4D 3 ${if (scrambleCount > 0) 2 else 0} $solveCount {4,3,3} 3"
@@ -311,25 +351,42 @@ object Notation {
             "0.0 0.0 0.0 1.0",
         )
         val tokens = history.map { record ->
-            val dir = if (correctedPrime(record.cell, record.fixAxis2, record.prime)) 1 else -1
-            "${mc4dGrip(record.cell, record.fixAxis2)},$dir,1"
+            when (record) {
+                is TwistRecord.Ridge -> {
+                    val dir = if (correctedPrime(record.cell, record.fixAxis2, record.prime)) 1 else -1
+                    "${mc4dGrip(record.cell, record.fixAxis2)},$dir,1"
+                }
+                is TwistRecord.Edge -> throw UnsupportedOperationException(
+                    "MC4D log export doesn't support edge twists (${record.cell.label} " +
+                        "${record.axis1}/${record.axis2}) yet",
+                )
+            }
         }.toMutableList()
         if (scrambleCount > 0) tokens.add(scrambleCount, "m|")
         return (listOf(header) + identityViewMatrix + listOf("*", "${tokens.joinToString(" ")}.")).joinToString("\n")
     }
 
-    /** e.g. "RU'" -- a single twist in hypercubing.xyz community notation: the twisted cell, then
-     * a representative cell for the fixed second axis, prime for counterclockwise. Letters come
-     * from [TwistRecord]'s *room-relative* fields (`roomCell`/`roomFixAxis2`) -- matching how
-     * physical cube notation works after a whole-puzzle reorientation (a WCA `x`/`y`/`z` cube
-     * rotation redefines what "R" means for every move that follows; this app's "move cell to I"
-     * reorientation is the 4D equivalent). The apostrophe comes directly from
-     * [TwistRecord.displayApostrophe] -- see that field's doc for why it's stored rather than
-     * re-derived from [TwistRecord.prime] here. Also drives the on-screen "last move" indicator
-     * (see MainActivity.build4DScreen). */
-    fun communityNotation(record: TwistRecord): String =
-        record.roomCell.label + roomAxisRepresentativeCell(record.roomFixAxis2).label +
-            (if (record.displayApostrophe) "'" else "")
+    /** e.g. "RU'" for a [TwistRecord.Ridge] -- the twisted cell, then a representative cell for
+     * the fixed second axis, prime for counterclockwise. Letters come from the record's
+     * *room-relative* fields (`roomCell`/`roomFixAxis2`) -- matching how physical cube notation
+     * works after a whole-puzzle reorientation (a WCA `x`/`y`/`z` cube rotation redefines what "R"
+     * means for every move that follows; this app's "move cell to I" reorientation is the 4D
+     * equivalent). The apostrophe comes directly from [TwistRecord.Ridge.displayApostrophe] -- see
+     * that field's doc for why it's stored rather than re-derived from `prime` here. Also drives
+     * the on-screen "last move" indicator (see MainActivity.build4DScreen).
+     *
+     * e.g. "IUF" for a [TwistRecord.Edge] -- the twisted cell, then a representative cell for each
+     * of the two edge axes. No apostrophe (edge twists have no direction -- see
+     * [TwistRecord.Edge]'s doc) and native rather than room-relative (see that same doc for why).
+     * A provisional notation, not an established hypercubing.xyz convention -- there isn't one
+     * documented for edge twists yet, unlike [TwistRecord.Ridge]'s. */
+    fun communityNotation(record: TwistRecord): String = when (record) {
+        is TwistRecord.Ridge ->
+            record.roomCell.label + roomAxisRepresentativeCell(record.roomFixAxis2).label +
+                (if (record.displayApostrophe) "'" else "")
+        is TwistRecord.Edge ->
+            record.cell.label + axisRepresentativeCell(record.axis1).label + axisRepresentativeCell(record.axis2).label
+    }
 
     /** e.g. "RU' RF RU2" -- a whole move sequence in [communityNotation], doubled moves collapsed
      * via [consolidateDoubles]. Our own notation for undo/clipboard/share purposes -- see

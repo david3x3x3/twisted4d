@@ -656,7 +656,17 @@ class MainActivity : AppCompatActivity() {
                 historyIndex4D = targetIndex
             }
             updateTurnCount()
-            surfaceView.queueEvent { renderer.requestUndo(record.cell, record.fixAxis2, record.prime) }
+            // Edge twists are self-inverse (see TwistRecord.Edge's doc) -- requestEdgeReplay just
+            // re-applies the same one, no separate "undo direction" the way a Ridge's requestUndo
+            // (invert prime) has.
+            when (record) {
+                is TwistRecord.Ridge ->
+                    surfaceView.queueEvent { renderer.requestUndo(record.cell, record.fixAxis2, record.prime) }
+                is TwistRecord.Edge ->
+                    surfaceView.queueEvent {
+                        renderer.requestEdgeReplay(record.cell, record.axis1, record.sign1, record.axis2, record.sign2)
+                    }
+            }
         }
 
         /** Re-applies whatever move undo last stepped back over and advances [historyIndex4D]
@@ -674,7 +684,14 @@ class MainActivity : AppCompatActivity() {
                 historyIndex4D = targetIndex
             }
             updateTurnCount()
-            surfaceView.queueEvent { renderer.requestRedo(record.cell, record.fixAxis2, record.prime) }
+            when (record) {
+                is TwistRecord.Ridge ->
+                    surfaceView.queueEvent { renderer.requestRedo(record.cell, record.fixAxis2, record.prime) }
+                is TwistRecord.Edge ->
+                    surfaceView.queueEvent {
+                        renderer.requestEdgeReplay(record.cell, record.axis1, record.sign1, record.axis2, record.sign2)
+                    }
+            }
         }
 
         // STICK (default): left stick (and/or d-pad, see GamepadInputHandler.onDpadStick)
@@ -802,6 +819,14 @@ class MainActivity : AppCompatActivity() {
             // HypercubeRenderer.effectiveRoomSign's doc; a no-op once something's actually
             // selected. Read now, same UI-thread-timing reason as selectHeldAtPress above.
             val moveModifierHeldAtPress = GamepadVisualState.thumbLHeld || GamepadVisualState.buttonCHeld
+            // Button-C-specific (not THUMB_L) STICK-mode shortcut (added 2026-08-10): X/B (left/
+            // right face buttons) become fixed 180-degree I-cell twists instead of their normal
+            // per-axis twist -- see HypercubeRenderer.requestI180TwistUFDB/URDL's doc. Read
+            // separately from moveModifierHeldAtPress (which stays THUMB_L-or-BUTTON_C, unchanged,
+            // for Y/A/R1/R2's existing opposite-cell modifier) since David wants this dedicated to
+            // Button C specifically -- he's planning to grow this into a configurable Button-C+
+            // ABXY/R1/R2 grid later, only X/B are wired up for now.
+            val buttonCHeldAtPress = GamepadVisualState.buttonCHeld
             surfaceView.queueEvent {
                 // Twisting without actively re-selecting via the stick (e.g. pressing a
                 // rotation button while it's centered, reusing the last selection) should
@@ -839,6 +864,17 @@ class MainActivity : AppCompatActivity() {
                         button.primaryPrime
                     }
                     renderer.requestCameraRotate90(axisA, axisB, reverse = reverse)
+                    return@queueEvent
+                }
+
+                // Button-C+X/B fixed 180-degree I-twist shortcut -- see buttonCHeldAtPress's doc
+                // above. Checked after the Select-held whole-room-rotation branch (Select still
+                // wins if somehow both are held) and unconditionally of selection state, same as
+                // Select+L1/L2 undo/redo -- this always acts on I, not whatever's selected.
+                if (buttonCHeldAtPress && inputMode == GamepadInputMode.STICK &&
+                    (button == RotationButton.LEFT || button == RotationButton.RIGHT)
+                ) {
+                    if (button == RotationButton.LEFT) renderer.requestI180TwistUFDB() else renderer.requestI180TwistURDL()
                     return@queueEvent
                 }
 
@@ -1131,8 +1167,7 @@ class MainActivity : AppCompatActivity() {
         }
         updateInputModeText()
 
-        renderer.onTwistApplied = { cell, fixAxis2, prime, roomCell, roomFixAxis2, displayApostrophe ->
-            val record = TwistRecord(cell, fixAxis2, prime, roomCell, roomFixAxis2, displayApostrophe)
+        renderer.onTwistApplied = { record ->
             synchronized(moveHistory4D) {
                 // A genuinely new move made while historyIndex4D isn't at the end (i.e. after one
                 // or more undos with no matching redo) abandons whatever redo branch was pending
@@ -1165,10 +1200,17 @@ class MainActivity : AppCompatActivity() {
          * the menu design doc: Export always runs whichever format Settings specifies, which for
          * now -- until the Settings screen and its Export-format picker actually exist -- is
          * unconditionally MC4D, matching the doc's stated new default). Same historyIndex4D-not-
-         * full-list reasoning as onShareLog. */
+         * full-list reasoning as onShareLog. Catches [UnsupportedOperationException] specifically
+         * -- see [Notation.mc4dLogFile]'s doc -- rather than letting an edge twist (Button-C+X/B,
+         * added 2026-08-10) anywhere in history crash the export; MC4D-log support for those isn't
+         * built yet, so this tells the player plainly instead. */
         fun doExportMC4D() {
             val snapshot = synchronized(moveHistory4D) { moveHistory4D.take(historyIndex4D) }
-            shareLogFile("twisted4d.log", Notation.mc4dLogFile(snapshot, scrambleMoveCount4D.coerceAtMost(snapshot.size)))
+            try {
+                shareLogFile("twisted4d.log", Notation.mc4dLogFile(snapshot, scrambleMoveCount4D.coerceAtMost(snapshot.size)))
+            } catch (e: UnsupportedOperationException) {
+                Toast.makeText(this, "Can't export to MC4D format: ${e.message}", Toast.LENGTH_LONG).show()
+            }
         }
 
         /** The Settings screen's "Export Format" row picks between this and [doExportMC4D] --
@@ -1197,7 +1239,7 @@ class MainActivity : AppCompatActivity() {
                 // (a reasonable fallback since a scramble always starts from a fresh, default
                 // orientation anyway; see the orientation-not-persisted memory note).
                 val scrambleMoves = renderer.requestScramble(SCRAMBLE_MOVE_COUNT_4D).map { (cell, fixAxis2, prime) ->
-                    TwistRecord(cell, fixAxis2, prime, cell, fixAxis2.nativeIndex, Notation.correctedPrime(cell, fixAxis2, prime))
+                    TwistRecord.Ridge(cell, fixAxis2, prime, cell, fixAxis2.nativeIndex, Notation.correctedPrime(cell, fixAxis2, prime))
                 }
                 synchronized(moveHistory4D) {
                     moveHistory4D.clear()
@@ -2225,8 +2267,21 @@ class MainActivity : AppCompatActivity() {
                 // itself isn't restored across launches either; see the orientation-not-persisted
                 // memory note), so restored history falls back to room==native, same as scrambles.
                 synchronized(moveHistory4D) {
+                    // Leading int is a type tag (0=Ridge, 1=Edge -- added 2026-08-10 alongside
+                    // TwistRecord.Edge), kept for a future reader's sake even though loadState
+                    // itself dispatches by array *length* instead (see its own doc for why: an
+                    // untagged pre-2026-08-10 save's 3-element Ridge entries would otherwise get
+                    // misread as tagged ones).
                     moveHistory4D.forEach { record ->
-                        historyJson.put(JSONArray().put(record.cell.ordinal).put(record.fixAxis2.ordinal).put(record.prime))
+                        historyJson.put(
+                            when (record) {
+                                is TwistRecord.Ridge ->
+                                    JSONArray().put(0).put(record.cell.ordinal).put(record.fixAxis2.ordinal).put(record.prime)
+                                is TwistRecord.Edge ->
+                                    JSONArray().put(1).put(record.cell.ordinal).put(record.axis1.ordinal).put(record.sign1)
+                                        .put(record.axis2.ordinal).put(record.sign2)
+                            },
+                        )
                     }
                 }
             } else {
@@ -2283,12 +2338,46 @@ class MainActivity : AppCompatActivity() {
                 pendingRestoreState4D = state
                 pendingRestoreSolved4D = solved
                 scrambleMoveCount4D = root.optInt("scrambleCount4D", 0)
+                // Dispatched by *array length*, not a leading type tag -- a save file written
+                // before TwistRecord.Edge existed (2026-08-10) has old, untagged 3-element Ridge
+                // entries (cellOrd, fixAxis2Ord, prime) with no tag at all. Trusting entry.getInt(0)
+                // as a tag on one of those reads cellOrd as the tag instead, and if that happened
+                // to be 0 or 1 it would misparse the rest of the entry and throw partway through
+                // the loop -- confirmed as a real bug via an actual pre-existing save file on the
+                // test device (JSONException: "Value false at 2 ... cannot be converted to int",
+                // aborting loadState entirely and silently losing/corrupting history, caught only
+                // by the outer try/catch). Old (3), new Ridge (4 = tag+3), and new Edge (6 =
+                // tag+5) lengths never collide, so this is unambiguous without needing a tag at
+                // all -- kept in new writes anyway (see saveState) purely for a future reader's
+                // sake, not because loadState needs it.
                 for (i in 0 until historyJson.length()) {
                     val entry = historyJson.getJSONArray(i)
-                    val cell = Cell4.entries[entry.getInt(0)]
-                    val fixAxis2 = Axis4.entries[entry.getInt(1)]
-                    val prime = entry.getBoolean(2)
-                    moveHistory4D.add(TwistRecord(cell, fixAxis2, prime, cell, fixAxis2.nativeIndex, Notation.correctedPrime(cell, fixAxis2, prime)))
+                    when (entry.length()) {
+                        3 -> {
+                            val cell = Cell4.entries[entry.getInt(0)]
+                            val fixAxis2 = Axis4.entries[entry.getInt(1)]
+                            val prime = entry.getBoolean(2)
+                            moveHistory4D.add(
+                                TwistRecord.Ridge(cell, fixAxis2, prime, cell, fixAxis2.nativeIndex, Notation.correctedPrime(cell, fixAxis2, prime)),
+                            )
+                        }
+                        4 -> {
+                            val cell = Cell4.entries[entry.getInt(1)]
+                            val fixAxis2 = Axis4.entries[entry.getInt(2)]
+                            val prime = entry.getBoolean(3)
+                            moveHistory4D.add(
+                                TwistRecord.Ridge(cell, fixAxis2, prime, cell, fixAxis2.nativeIndex, Notation.correctedPrime(cell, fixAxis2, prime)),
+                            )
+                        }
+                        6 -> {
+                            val cell = Cell4.entries[entry.getInt(1)]
+                            val axis1 = Axis4.entries[entry.getInt(2)]
+                            val sign1 = entry.getInt(3)
+                            val axis2 = Axis4.entries[entry.getInt(4)]
+                            val sign2 = entry.getInt(5)
+                            moveHistory4D.add(TwistRecord.Edge(cell, axis1, sign1, axis2, sign2))
+                        }
+                    }
                 }
             } else {
                 pendingRestoreState3D = state

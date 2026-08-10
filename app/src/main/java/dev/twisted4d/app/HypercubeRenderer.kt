@@ -107,17 +107,19 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
     private var lastReportedRoomCell: Cell4? = null
     private var lastReportedNativeCell: Cell4? = null
 
-    /** Called (on the GL thread) right after a twist is applied via [requestTwist] -- not fired
-     * by [requestUndo]/[requestRedo], so a caller (MainActivity) using this to build an undo/log
-     * history doesn't see its own undo/redo moves recorded back into that same history. Args 4/5
-     * are [requestTwist]'s
-     * own [roomCell]/[roomFixAxis2] passed straight through -- room-relative context for
-     * community-notation labeling, alongside the native `cell`/`fixAxis2`/`prime` that
-     * [Cube4.twist]/undo/MC4D export need (see MainActivity.communityNotation's doc for why both
-     * are necessary and different). The last arg is [requestTwist]'s own `displayApostrophe`,
-     * likewise passed straight through -- see [TwistRecord.displayApostrophe]'s doc for why it
-     * can't just be re-derived from `prime` here. */
-    @Volatile var onTwistApplied: ((Cell4, Axis4, Boolean, Cell4, Int, Boolean) -> Unit)? = null
+    /** Called (on the GL thread) right after a twist is applied via [requestTwist] or
+     * [requestEdgeTwist] -- not fired by [requestUndo]/[requestRedo]/[requestEdgeReplay], so a
+     * caller (MainActivity) using this to build an undo/log history doesn't see its own undo/redo
+     * moves recorded back into that same history. Takes the already-resolved [TwistRecord]
+     * directly (changed 2026-08-10 from 6 flat args, to accommodate [TwistRecord.Edge] alongside
+     * [TwistRecord.Ridge] without a second callback or a growing arg list) -- [TwistRecord.Ridge]'s
+     * `roomCell`/`roomFixAxis2` are room-relative context for community-notation labeling,
+     * alongside the native `cell`/`fixAxis2`/`prime` that [Cube4.twist]/undo/MC4D export need (see
+     * MainActivity.communityNotation's doc for why both are necessary and different); its
+     * `displayApostrophe` is passed straight through from twist-resolution time -- see
+     * [TwistRecord.Ridge.displayApostrophe]'s doc for why it can't just be re-derived from `prime`
+     * here. */
+    @Volatile var onTwistApplied: ((TwistRecord) -> Unit)? = null
 
     /** If set (by MainActivity, *before* `setRenderer` is called -- see build4DScreen), consumed
      * by [onSurfaceCreated] instead of its usual [NativeLib.cube4Reset] -- restores a puzzle
@@ -380,6 +382,19 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         error("cubeOrientation4 should always map every native axis to exactly one room axis")
     }
 
+    /** Forward counterpart to [roomAxisAndSignForNative]: which native axis + sign room axis
+     * [roomAxis]/[roomSign] currently maps to, via [cubeOrientation4] -- e.g. (AXIS_Y, 1) for "U"
+     * normally returns (Y, 1), but once the room's been reoriented could return any other native
+     * (axis, sign) pair. [nativeAxisAtRoomAxis] alone is sign-agnostic and not enough for
+     * [requestI180TwistUFDB]/[requestI180TwistURDL]'s room-relative resolution: an edge twist's
+     * two axes' *relative* sign is exactly what distinguishes one diagonal from another (e.g.
+     * UF/DB from UB/DF), so losing sign here would lose that distinction. */
+    private fun nativeAxisAndSignAtRoomAxis(roomAxis: Int, roomSign: Int): Pair<Int, Int> {
+        val nativeAxis = nativeAxisAtRoomAxis(roomAxis)
+        val mapSign = cubeOrientation4[roomAxis * 4 + nativeAxis]
+        return nativeAxis to (if (mapSign > 0f) roomSign else -roomSign)
+    }
+
     /**
      * The native `prime` bit that, applied to [nativeCell]/[nativeFixAxis2] (the physical layer a
      * twist actually acts on, already resolved for the *current* orientation), renders on screen
@@ -470,6 +485,50 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         val cell = nativeCellInRoomSlot(AXIS_W, -1)
         val prime = correctedNativePrimeForRoomTwist(cell, fixAxis2, Cell4.I, roomFixAxis2, desiredApostrophe)
         requestTwist(cell, fixAxis2, prime, Cell4.I, roomFixAxis2, desiredApostrophe)
+    }
+
+    /** STICK mode's Button-C+X (left face button) shortcut (added 2026-08-10, hardcoded per
+     * David -- he plans to make Button-C+ABXY/R1/R2 a fully configurable action grid later, but
+     * for now only this slot and [requestI180TwistURDL] are wired up). Twists whichever native
+     * cell currently occupies the room's I slot 180 degrees around the diagonal axis through its
+     * UF/DB stickers -- what real MagicCube4D itself does when you click the UF sticker (an
+     * *edge* sticker, 2 nonzero local axes) rather than an ordinary face-center *ridge* sticker's
+     * 90-degree twist. A genuine single 180-degree rotation, not three chained 90s: David caught
+     * both that the original chained-twist version showed 3 separate animations/history entries
+     * instead of one, and that its `y y x'` was actually landing on `y y x` (the UB axis, not UF)
+     * -- see [requestEdgeTwist]'s doc for how this replacement was verified (a brute-force search
+     * over the real native twist math, not another hand-derived guess) before shipping.
+     *
+     * Room-relative (added 2026-08-10, second fix): the first version of this hardcoded
+     * `requestEdgeTwist(Cell4.I, Axis4.Y, 1, Axis4.Z, 1)` -- always the *literal native* I cell
+     * and its own native Y/Z axes, regardless of orientation. David caught that this only behaved
+     * correctly at I's home orientation: once some other cell had been moved into I's room slot
+     * (e.g. via "move to I"), the shortcut kept acting on native I -- wherever it had drifted to
+     * -- instead of on whatever now visually sits in I, the same room-relative treatment
+     * [requestRktITwist] already gives RKT's I-twists. Same fix here: [snapViewToNearestCardinalOrientation]
+     * first (matching [requestRktITwist]'s own ordering -- resolution below must run *after* the
+     * synchronous orientation compensation it applies), then [nativeCellInRoomSlot] for the cell
+     * and [nativeAxisAndSignAtRoomAxis] for each of the two room-relative axes ("U" = room Y,+1;
+     * "F" = room Z,+1) -- resolved once, here, into concrete native identifiers, same
+     * "queuing must capture a decision" principle [requestTwist]'s own doc explains. */
+    fun requestI180TwistUFDB() {
+        snapViewToNearestCardinalOrientation()
+        val cell = nativeCellInRoomSlot(AXIS_W, -1)
+        val (axis1, sign1) = nativeAxisAndSignAtRoomAxis(AXIS_Y, 1) // U
+        val (axis2, sign2) = nativeAxisAndSignAtRoomAxis(AXIS_Z, 1) // F
+        requestEdgeTwist(cell, Axis4.entries.first { it.nativeIndex == axis1 }, sign1, Axis4.entries.first { it.nativeIndex == axis2 }, sign2)
+    }
+
+    /** STICK mode's Button-C+B (right face button) shortcut -- see [requestI180TwistUFDB]'s doc
+     * for the shared reasoning (including the room-relative fix). Twists whichever native cell
+     * currently occupies the room's I slot 180 degrees around the diagonal axis through its
+     * UR/DL stickers ("U" = room Y,+1; "R" = room X,+1). */
+    fun requestI180TwistURDL() {
+        snapViewToNearestCardinalOrientation()
+        val cell = nativeCellInRoomSlot(AXIS_W, -1)
+        val (axis1, sign1) = nativeAxisAndSignAtRoomAxis(AXIS_X, 1) // R
+        val (axis2, sign2) = nativeAxisAndSignAtRoomAxis(AXIS_Y, 1) // U
+        requestEdgeTwist(cell, Axis4.entries.first { it.nativeIndex == axis1 }, sign1, Axis4.entries.first { it.nativeIndex == axis2 }, sign2)
     }
 
     // GL-thread-only edge-detection state for updateCell4Selection's snap-on-deflect behavior --
@@ -629,12 +688,24 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
     // Current (settled) per-piece transforms, refreshed after every twist/scramble/reset.
     private var currentTransforms: FloatArray = FloatArray(HypercubeGeometry.HOME_POSITIONS.size * 20)
 
-    // In-flight twist animation state.
+    // In-flight twist animation state. animKind picks which of the two mutually-exclusive groups
+    // below onDrawFrame's per-piece rotation actually reads: RIDGE uses animPlaneA/animPlaneB/
+    // animAngleDeg (a coordinate-plane rotation, via setPlaneRotation4); EDGE uses
+    // animEdgeAxis1/Sign1/Axis2/Sign2 (an arbitrary diagonal-axis rotation fixed at 180 degrees,
+    // via setEdgeRotation4) -- see TwistRecord.Edge's doc for why a genuine single edge twist
+    // needs different rotation math than a ridge twist's coordinate-plane one.
+    private enum class AnimKind { RIDGE, EDGE }
     private var animating = false
+    private var animKind = AnimKind.RIDGE
     private var animStartNanos = 0L
     private var animPlaneA = 0
     private var animPlaneB = 0
     private var animAngleDeg = 0f
+    private var animEdgeExcludedAxis = AXIS_W
+    private var animEdgeAxis1 = 0
+    private var animEdgeSign1 = 1
+    private var animEdgeAxis2 = 0
+    private var animEdgeSign2 = 1
     private var animBefore: FloatArray? = null
     private var animAfter: FloatArray? = null
     private var animAffected: BooleanArray? = null
@@ -661,7 +732,97 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         ) : QueuedAction()
 
         data class UndoRedo(val cell: Cell4, val fixAxis2: Axis4, val prime: Boolean) : QueuedAction()
+
+        /** [Edge] twin of [Twist]/[UndoRedo] -- [Edge] notifies [onTwistApplied] (a genuine new
+         * edge twist, e.g. from [requestEdgeTwist]), [EdgeReplay] doesn't (undo/redo replaying one
+         * that's already in history, from [requestEdgeReplay]) -- same split, same reasoning. */
+        data class Edge(val cell: Cell4, val axis1: Axis4, val sign1: Int, val axis2: Axis4, val sign2: Int) : QueuedAction()
+        data class EdgeReplay(val cell: Cell4, val axis1: Axis4, val sign1: Int, val axis2: Axis4, val sign2: Int) : QueuedAction()
     }
+
+    /** Key for [EDGE_TWIST_DECOMPOSITIONS]. [cellAxis] is the twisted cell's own native axis
+     * (the one that can never appear in [axis1]/[axis2] -- see the class doc's `fix_axis2 must
+     * differ from the cell's own axis` invariant, same one ordinary ridge twists have); [axis1]/
+     * [axis2] are normalized two ways so lookup doesn't care how a caller happened to name the
+     * edge: axis order (lower [Axis4.nativeIndex] first), and overall sign (axis1's sign is
+     * always forced to +1, flipping axis2's sign along with it if needed) -- the sign
+     * normalization matters because a 180-degree rotation's axis and its negation are the *same*
+     * rotation (`R(v,180°) = R(-v,180°)`, since Rodrigues' formula only depends on `sin` -- zero
+     * at 180° -- and `k⊗k`, unchanged by negating `k`), so e.g. `(Y,-1,Z,-1)` (from
+     * [requestI180TwistUFDB] after some reorientation moved a different native axis into a room
+     * slot with flipped polarity) must resolve to the exact same table entry as `(Y,1,Z,1)`.
+     *
+     * [cellAxis] itself needs no normalization -- it's a fixed fact about which cell is being
+     * twisted, not a caller naming choice. Added 2026-08-10 alongside the rest of the table's
+     * generalization to every possible twisted cell (see [EDGE_TWIST_DECOMPOSITIONS]'s doc):
+     * before this, the table (and [setEdgeRotation4]) silently assumed the twisted cell's own
+     * axis was always W, true only while native I itself sat in the room's I slot -- David caught
+     * a real crash from this the first time a *different* cell (U, via "move to I") occupied it,
+     * since axis1/axis2 can then resolve to a pair that includes W (the room's I/O axis is no
+     * longer the excluded one once some other cell's *own* axis has taken that role instead). */
+    private data class EdgeKey(val cellAxis: Axis4, val axis1: Axis4, val sign1: Int, val axis2: Axis4, val sign2: Int)
+
+    private fun edgeKey(cellAxis: Axis4, a: Axis4, signA: Int, b: Axis4, signB: Int): EdgeKey {
+        val axis1: Axis4
+        val sign1: Int
+        val axis2: Axis4
+        val sign2: Int
+        if (a.nativeIndex <= b.nativeIndex) {
+            axis1 = a; sign1 = signA; axis2 = b; sign2 = signB
+        } else {
+            axis1 = b; sign1 = signB; axis2 = a; sign2 = signA
+        }
+        return if (sign1 > 0) {
+            EdgeKey(cellAxis, axis1, sign1, axis2, sign2)
+        } else {
+            EdgeKey(cellAxis, axis1, -sign1, axis2, -sign2)
+        }
+    }
+
+    /** Verified 3-move native `(fixAxis2, prime)` decompositions for [applyEdgeTwistInternal] --
+     * see [requestEdgeTwist]'s doc for how these were found (brute-force search over all 216
+     * three-move combinations of the twisted cell's own 6 possible ridge twists, filtering for
+     * genuine order-2 rotations that fix both diagonal endpoints, e.g. UF and DB, and nothing
+     * else) rather than derived by hand/analogy. All 16 matches per target diagonal compose to the
+     * exact same 4x4 matrix (independently verified), so the specific sequence picked here is
+     * arbitrary among equally-correct options.
+     *
+     * All 4 possible [EdgeKey.cellAxis] values x their 6 possible edge diagonals = 24 entries
+     * (extended 2026-08-10 from an original 6 that only covered `cellAxis = W`, i.e. only ever
+     * correct while native I sat in the room's own I slot -- see [EdgeKey]'s doc for the crash
+     * that exposed this). For a given [EdgeKey.cellAxis], the other 3 native axes are always
+     * available, giving 3 axis-pairs x 2 diagonals = 6 entries -- same shape regardless of which
+     * axis is excluded, just relabeled. */
+    private val EDGE_TWIST_DECOMPOSITIONS: Map<EdgeKey, List<Pair<Axis4, Boolean>>> = mapOf(
+        // cellAxis = X (available Y, Z, W)
+        edgeKey(Axis4.X, Axis4.Y, 1, Axis4.Z, 1) to listOf(Axis4.Y to true, Axis4.Y to true, Axis4.W to false),
+        edgeKey(Axis4.X, Axis4.Y, 1, Axis4.Z, -1) to listOf(Axis4.Y to true, Axis4.Y to true, Axis4.W to true),
+        edgeKey(Axis4.X, Axis4.Y, 1, Axis4.W, 1) to listOf(Axis4.Y to true, Axis4.Y to true, Axis4.Z to false),
+        edgeKey(Axis4.X, Axis4.Y, 1, Axis4.W, -1) to listOf(Axis4.Y to true, Axis4.Y to true, Axis4.Z to true),
+        edgeKey(Axis4.X, Axis4.Z, 1, Axis4.W, 1) to listOf(Axis4.Y to true, Axis4.Z to true, Axis4.Z to true),
+        edgeKey(Axis4.X, Axis4.Z, 1, Axis4.W, -1) to listOf(Axis4.Y to true, Axis4.W to true, Axis4.W to true),
+        // cellAxis = Y (available X, Z, W)
+        edgeKey(Axis4.Y, Axis4.X, 1, Axis4.Z, 1) to listOf(Axis4.X to true, Axis4.X to true, Axis4.W to false),
+        edgeKey(Axis4.Y, Axis4.X, 1, Axis4.Z, -1) to listOf(Axis4.X to true, Axis4.X to true, Axis4.W to true),
+        edgeKey(Axis4.Y, Axis4.X, 1, Axis4.W, 1) to listOf(Axis4.X to true, Axis4.X to true, Axis4.Z to false),
+        edgeKey(Axis4.Y, Axis4.X, 1, Axis4.W, -1) to listOf(Axis4.X to true, Axis4.X to true, Axis4.Z to true),
+        edgeKey(Axis4.Y, Axis4.Z, 1, Axis4.W, 1) to listOf(Axis4.X to true, Axis4.Z to true, Axis4.Z to true),
+        edgeKey(Axis4.Y, Axis4.Z, 1, Axis4.W, -1) to listOf(Axis4.X to true, Axis4.W to true, Axis4.W to true),
+        // cellAxis = Z (available X, Y, W)
+        edgeKey(Axis4.Z, Axis4.X, 1, Axis4.Y, 1) to listOf(Axis4.X to true, Axis4.X to true, Axis4.W to false),
+        edgeKey(Axis4.Z, Axis4.X, 1, Axis4.Y, -1) to listOf(Axis4.X to true, Axis4.X to true, Axis4.W to true),
+        edgeKey(Axis4.Z, Axis4.X, 1, Axis4.W, 1) to listOf(Axis4.X to true, Axis4.X to true, Axis4.Y to false),
+        edgeKey(Axis4.Z, Axis4.X, 1, Axis4.W, -1) to listOf(Axis4.X to true, Axis4.X to true, Axis4.Y to true),
+        edgeKey(Axis4.Z, Axis4.Y, 1, Axis4.W, 1) to listOf(Axis4.X to true, Axis4.Y to true, Axis4.Y to true),
+        edgeKey(Axis4.Z, Axis4.Y, 1, Axis4.W, -1) to listOf(Axis4.X to true, Axis4.W to true, Axis4.W to true),
+        // cellAxis = W (available X, Y, Z) -- UF/DB, UR/DL etc., I's own home-orientation case
+        edgeKey(Axis4.W, Axis4.X, 1, Axis4.Y, 1) to listOf(Axis4.X to true, Axis4.X to true, Axis4.Z to false), // UR/DL
+        edgeKey(Axis4.W, Axis4.X, 1, Axis4.Y, -1) to listOf(Axis4.X to true, Axis4.X to true, Axis4.Z to true), // UL/DR
+        edgeKey(Axis4.W, Axis4.X, 1, Axis4.Z, 1) to listOf(Axis4.X to true, Axis4.X to true, Axis4.Y to false), // FR/BL
+        edgeKey(Axis4.W, Axis4.X, 1, Axis4.Z, -1) to listOf(Axis4.X to true, Axis4.X to true, Axis4.Y to true), // FL/BR
+        edgeKey(Axis4.W, Axis4.Y, 1, Axis4.Z, 1) to listOf(Axis4.X to true, Axis4.Y to true, Axis4.Y to true), // UF/DB
+        edgeKey(Axis4.W, Axis4.Y, 1, Axis4.Z, -1) to listOf(Axis4.X to true, Axis4.Z to true, Axis4.Z to true), // UB/DF
+    )
 
     // Twists/undos/redos requested while a twist/room-rotation was already animating -- queued
     // instead of dropped (see requestTwist's doc), drained one at a time as each animation finishes
@@ -1148,8 +1309,8 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
      * not used by the twist itself -- so callers that already resolved a room context (and the
      * community-notation apostrophe it implies) when deciding what to twist (e.g. [MainActivity]'s
      * on4DRotationButton, or [requestRktITwist] above) don't have to re-derive it later just for
-     * notation labeling -- see [TwistRecord.displayApostrophe]'s doc for why it can't safely be
-     * re-derived later anyway.
+     * notation labeling -- see [TwistRecord.Ridge.displayApostrophe]'s doc for why it can't safely
+     * be re-derived later anyway.
      */
     fun requestTwist(
         cell: Cell4,
@@ -1165,7 +1326,7 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
             return
         }
         if (!applyTwistInternal(cell, fixAxis2, prime)) return
-        onTwistApplied?.invoke(cell, fixAxis2, prime, roomCell, roomFixAxis2, displayApostrophe)
+        onTwistApplied?.invoke(TwistRecord.Ridge(cell, fixAxis2, prime, roomCell, roomFixAxis2, displayApostrophe))
     }
 
     /** Called from [onDrawFrame] the instant [animating] or [roomAnimating] clears -- applies the
@@ -1184,14 +1345,22 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
                 is QueuedAction.Twist -> {
                     if (applyTwistInternal(next.cell, next.fixAxis2, next.prime)) {
                         onTwistApplied?.invoke(
-                            next.cell, next.fixAxis2, next.prime, next.roomCell, next.roomFixAxis2,
-                            next.displayApostrophe,
+                            TwistRecord.Ridge(next.cell, next.fixAxis2, next.prime, next.roomCell, next.roomFixAxis2, next.displayApostrophe),
                         )
                         return
                     }
                 }
                 is QueuedAction.UndoRedo -> {
                     if (applyTwistInternal(next.cell, next.fixAxis2, next.prime)) return
+                }
+                is QueuedAction.Edge -> {
+                    if (applyEdgeTwistInternal(next.cell, next.axis1, next.sign1, next.axis2, next.sign2)) {
+                        onTwistApplied?.invoke(TwistRecord.Edge(next.cell, next.axis1, next.sign1, next.axis2, next.sign2))
+                        return
+                    }
+                }
+                is QueuedAction.EdgeReplay -> {
+                    if (applyEdgeTwistInternal(next.cell, next.axis1, next.sign1, next.axis2, next.sign2)) return
                 }
             }
         }
@@ -1238,9 +1407,96 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
             before[base + cellAxisIdx].roundToInt() == cell.sign
         }
         val rotating = (0 until 4).filter { it != cellAxisIdx && it != fixAxis2.nativeIndex }
+        animKind = AnimKind.RIDGE
         animPlaneA = rotating[0]
         animPlaneB = rotating[1]
         animAngleDeg = if (prime) -90f else 90f
+        animBefore = before
+        animAfter = after
+        animStartNanos = System.nanoTime()
+        animating = true
+
+        onStateChanged?.invoke(NativeLib.cube4IsSolved())
+        return true
+    }
+
+    /** Requests a genuine single 180-degree edge twist of [cell] around the diagonal axis through
+     * native spatial axes ([axis1],[sign1]) and ([axis2],[sign2]) -- e.g. Y/+1, Z/+1 for the
+     * UF/DB diagonal (added 2026-08-10 for [requestI180TwistUFDB]/[requestI180TwistURDL], see
+     * their docs). This is what MagicCube4D itself does when you click an *edge* sticker (2
+     * nonzero local axes) rather than an ordinary *ridge* sticker's single-axis 90-degree twist --
+     * David caught that an earlier version faked this by chaining 3 ordinary [requestTwist]-style
+     * quarter turns, which showed up as 3 separate animations *and* 3 separate history entries
+     * instead of a single move, and also had the wrong diagonal (a hand-derived-by-analogy formula
+     * that turned out backwards).
+     *
+     * This version still computes the resulting *native puzzle state* via [EDGE_TWIST_DECOMPOSITIONS]
+     * -- 3 chained [NativeLib.cube4Twist] calls done back-to-back with no render/animation/history
+     * between them, purely to get the correct permutation without new Rust-level rotation math --
+     * but the *decomposition itself* (which exact 3 quarter-turns, and their order/prime) was found
+     * by brute-force search over all 216 three-move combinations of native (axis, prime) pairs,
+     * filtering for ones that leave both diagonal endpoints (e.g. UF and DB) fixed while being a
+     * genuine order-2 (180-degree) rotation and nothing else -- not another hand-derived guess.
+     * All 16 matches per target diagonal compose to the exact same 4x4 matrix (verified directly),
+     * so which one is picked doesn't matter; see [EDGE_TWIST_DECOMPOSITIONS]'s doc for the picked
+     * ones. The *animation* is unrelated to this decomposition -- see [setEdgeRotation4] for the
+     * real single-rotation math the same verified end matrix confirmed.
+     *
+     * Native-only, unlike [requestRktITwist] -- doesn't resolve room-relative "whichever cell is
+     * currently in I's slot" the way RKT's I-twists do. A deliberate scope cut (David's shortcut
+     * always fires from [Cell4.I] directly in STICK mode): correct at default/untouched
+     * orientation, not yet guaranteed correct after a room reorientation (e.g. via "move to I")
+     * the way [correctedNativePrimeForRoomTwist] makes ridge twists -- that would need the same
+     * per-sub-twist reorientation correction extended to a 3-move decomposition, not attempted
+     * yet. */
+    fun requestEdgeTwist(cell: Cell4, axis1: Axis4, sign1: Int, axis2: Axis4, sign2: Int) {
+        if (animating || roomAnimating) {
+            twistQueue.addLast(QueuedAction.Edge(cell, axis1, sign1, axis2, sign2))
+            twistQueueMax = max(twistQueueMax, twistQueue.size)
+            return
+        }
+        if (!applyEdgeTwistInternal(cell, axis1, sign1, axis2, sign2)) return
+        onTwistApplied?.invoke(TwistRecord.Edge(cell, axis1, sign1, axis2, sign2))
+    }
+
+    /** Replays [cell]/[axis1]/[sign1]/[axis2]/[sign2] without notifying [onTwistApplied] -- for
+     * undo *and* redo of a [TwistRecord.Edge] (MainActivity's performUndo/performRedo), since a
+     * 180-degree edge twist is its own inverse: unlike [requestUndo]/[requestRedo], there's only
+     * one direction to replay, so one function covers both callers. Same queue-or-apply-now
+     * behavior as [requestEdgeTwist] otherwise. */
+    fun requestEdgeReplay(cell: Cell4, axis1: Axis4, sign1: Int, axis2: Axis4, sign2: Int) {
+        if (animating || roomAnimating) {
+            twistQueue.addLast(QueuedAction.EdgeReplay(cell, axis1, sign1, axis2, sign2))
+            twistQueueMax = max(twistQueueMax, twistQueue.size)
+            return
+        }
+        applyEdgeTwistInternal(cell, axis1, sign1, axis2, sign2)
+    }
+
+    private fun applyEdgeTwistInternal(cell: Cell4, axis1: Axis4, sign1: Int, axis2: Axis4, sign2: Int): Boolean {
+        if (animating || roomAnimating) return false
+        resolvePendingSnapHopImmediately()
+
+        val before = currentTransforms
+        val key = edgeKey(cell.axis, axis1, sign1, axis2, sign2)
+        val decomposition = EDGE_TWIST_DECOMPOSITIONS[key]
+            ?: error("No verified 3-twist decomposition for edge $axis1/$sign1, $axis2/$sign2 on cell axis ${cell.axis} -- see EDGE_TWIST_DECOMPOSITIONS's doc")
+        for ((fixAxis2, prime) in decomposition) {
+            NativeLib.cube4Twist(cell.nativeIndex, fixAxis2.nativeIndex, prime)
+        }
+        val after = NativeLib.cube4GetTransforms()
+
+        val cellAxisIdx = cell.axis.nativeIndex
+        animAffected = BooleanArray(HypercubeGeometry.HOME_POSITIONS.size) { i ->
+            val base = i * 20
+            before[base + cellAxisIdx].roundToInt() == cell.sign
+        }
+        animKind = AnimKind.EDGE
+        animEdgeExcludedAxis = cellAxisIdx
+        animEdgeAxis1 = axis1.nativeIndex
+        animEdgeSign1 = sign1
+        animEdgeAxis2 = axis2.nativeIndex
+        animEdgeSign2 = sign2
         animBefore = before
         animAfter = after
         animStartNanos = System.nanoTime()
@@ -1400,7 +1656,11 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
                 // stickers' pre-twist slot (see pieceOrientBefore4's doc).
                 System.arraycopy(pieceOrient4, 0, pieceOrientBefore4, 0, 16)
 
-                setPlaneRotation4(animRot4, animPlaneA, animPlaneB, animAngleDeg * animT)
+                if (animKind == AnimKind.EDGE) {
+                    setEdgeRotation4(animRot4, animEdgeExcludedAxis, animEdgeAxis1, animEdgeSign1, animEdgeAxis2, animEdgeSign2, 180f * animT)
+                } else {
+                    setPlaneRotation4(animRot4, animPlaneA, animPlaneB, animAngleDeg * animT)
+                }
                 mat4VecMul(animatedPos4, animRot4, pos4)
                 mat4MatMul(animatedOrient4, animRot4, pieceOrient4)
                 System.arraycopy(animatedPos4, 0, pos4, 0, 4)
@@ -1926,6 +2186,57 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
             val s = sin(rad).toFloat()
             out[a * 4 + a] = c; out[a * 4 + b] = -s
             out[b * 4 + a] = s; out[b * 4 + b] = c
+        }
+
+        /** Row-major 4x4 rotation by [angleDeg] around the 3D axis through spatial axes
+         * ([axis1],[sign1])/([axis2],[sign2]) -- e.g. Y/+1, Z/+1 for the UF/DB diagonal -- identity
+         * on [excludedAxis]'s row/column, the twisted cell's own native axis (see
+         * [applyEdgeTwistInternal]'s doc for why this can be any of the 4 native axes, not always
+         * W -- a real crash before this was fixed, 2026-08-10: this used to hardcode W, correct
+         * only while native I itself sat in the room's I slot). [axis1]/[axis2]/[excludedAxis] are
+         * always 3 distinct values; the 4th native axis (the "pivot" -- e.g. X for the UF/DB
+         * example, whichever of the 3 available axes isn't part of the diagonal) still fully
+         * participates in the rotation below, it's just not part of `k` -- see [applyEdgeTwistInternal]'s
+         * verification notes for why the pivot ends up correctly rotated (negated at 180 degrees)
+         * anyway, purely from the `-I` term, without needing a nonzero k-component of its own.
+         *
+         * Unlike [setPlaneRotation4] (confined to a single coordinate plane), this is the
+         * general-purpose Rodrigues' rotation formula -- R = I*cos + sin*[k]_x + (1-cos)*(k outer
+         * k) -- computed in a *local* 3-space (the 3 native axes other than [excludedAxis], in
+         * ascending native-index order) using unit axis k = normalize(sign1 at axis1, sign2 at
+         * axis2) in that local space, then scattered back into the appropriate rows/columns of
+         * [out]. Used at [angleDeg] = 180*animT for [applyEdgeTwistInternal]'s single continuous
+         * edge-twist animation (as opposed to 3 chained 90-degree ones) -- confirmed by hand at
+         * 180 degrees (cos=-1, sin=0) to reduce to exactly the matrices [EDGE_TWIST_DECOMPOSITIONS]'
+         * brute-force search independently verified. */
+        private fun setEdgeRotation4(out: FloatArray, excludedAxis: Int, axis1: Int, sign1: Int, axis2: Int, sign2: Int, angleDeg: Float) {
+            val localAxes = IntArray(3)
+            var localCount = 0
+            for (axis in 0 until 4) if (axis != excludedAxis) localAxes[localCount++] = axis
+            val localIndexOf = IntArray(4) { -1 }
+            for (i in 0 until 3) localIndexOf[localAxes[i]] = i
+
+            val k = floatArrayOf(0f, 0f, 0f)
+            k[localIndexOf[axis1]] += sign1.toFloat()
+            k[localIndexOf[axis2]] += sign2.toFloat()
+            val len = sqrt(k[0] * k[0] + k[1] * k[1] + k[2] * k[2])
+            k[0] /= len; k[1] /= len; k[2] /= len
+            val rad = Math.toRadians(angleDeg.toDouble())
+            val c = cos(rad).toFloat()
+            val s = sin(rad).toFloat()
+            val omc = 1f - c
+            val rLocal = arrayOf(
+                floatArrayOf(c + k[0] * k[0] * omc, k[0] * k[1] * omc - k[2] * s, k[0] * k[2] * omc + k[1] * s),
+                floatArrayOf(k[1] * k[0] * omc + k[2] * s, c + k[1] * k[1] * omc, k[1] * k[2] * omc - k[0] * s),
+                floatArrayOf(k[2] * k[0] * omc - k[1] * s, k[2] * k[1] * omc + k[0] * s, c + k[2] * k[2] * omc),
+            )
+
+            setIdentity4(out)
+            for (i in 0 until 3) {
+                for (j in 0 until 3) {
+                    out[localAxes[i] * 4 + localAxes[j]] = rLocal[i][j]
+                }
+            }
         }
 
         /** Row-major 4x4 matrix multiply: out = a * b. out must not alias a or b. */
