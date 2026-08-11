@@ -80,6 +80,62 @@ class NotationTest {
         assertEquals("BO'", Notation.communityNotation(record))
     }
 
+    // --- mc4dEdgeGrip: derived by compiling and running MagicCube4D's own source, not by hand ---
+
+    @Test
+    fun `mc4dEdgeGrip covers all 96 valid (cell, axis1, sign1, axis2, sign2) combinations with distinct grips`() {
+        // Every cell x every pair of its 3 non-own axes x both signs on each = 8 * 3 * 4 = 96,
+        // matching the 8 cells x 12 edges each the real MC4D source's own grip-generation loop
+        // produces (see mc4dEdgeGrip's doc). All 96 grips must be distinct, and each must fall in
+        // its cell's edge tier (offset 8..19 of that cell's 27-grip block).
+        val allGrips = mutableSetOf<Int>()
+        var count = 0
+        for (cell in Cell4.entries) {
+            val cellIndex = Notation.MC4D_CELL_ORDER.indexOf(cell)
+            val available = Axis4.entries.filter { it != cell.axis }
+            for (i in available.indices) {
+                for (j in available.indices) {
+                    if (i >= j) continue
+                    for (sign1 in listOf(-1, 1)) {
+                        for (sign2 in listOf(-1, 1)) {
+                            val grip = Notation.mc4dEdgeGrip(cell, available[i], sign1, available[j], sign2)
+                            assertTrue(
+                                grip in (cellIndex * 27 + 8)..(cellIndex * 27 + 19),
+                                "grip $grip for $cell/${available[i]}$sign1/${available[j]}$sign2 outside its cell's edge tier",
+                            )
+                            allGrips.add(grip)
+                            count++
+                        }
+                    }
+                }
+            }
+        }
+        assertEquals(96, count)
+        assertEquals(96, allGrips.size, "expected all 96 edge grips to be distinct")
+    }
+
+    @Test
+    fun `mc4dEdgeGrip is symmetric in argument order`() {
+        // Naming an edge's two axes in either order must resolve to the same grip -- e.g. Button-
+        // C+X/B's room-relative resolution isn't guaranteed to hand axis1/axis2 to requestEdgeTwist
+        // in native-ascending order (it depends on which room axis got queried first).
+        assertEquals(
+            Notation.mc4dEdgeGrip(Cell4.I, Axis4.Y, 1, Axis4.Z, 1),
+            Notation.mc4dEdgeGrip(Cell4.I, Axis4.Z, 1, Axis4.Y, 1),
+        )
+    }
+
+    @Test
+    fun `mc4dEdgeGrip does not collapse the two antipodal grips on the same axis`() {
+        // Unlike HypercubeRenderer's edgeKey (which deliberately normalizes away a uniform sign
+        // flip, since the *rotation* is identical either way), MC4D numbers the two antipodal
+        // edge stickers on the same diagonal as two distinct grips -- collapsing them here would
+        // export the wrong sticker even though the resulting twist looks the same.
+        val g1 = Notation.mc4dEdgeGrip(Cell4.I, Axis4.Y, 1, Axis4.Z, 1)
+        val g2 = Notation.mc4dEdgeGrip(Cell4.I, Axis4.Y, -1, Axis4.Z, -1)
+        assertTrue(g1 != g2, "expected the UF and DB grips to be distinct MC4D grip numbers")
+    }
+
     @Test
     fun `room-relative letters use native identity, and displayApostrophe is stored, not re-derived`() {
         // First bug this repro exposed: reorienting moved native I into room slot L; pressing a

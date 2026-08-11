@@ -1200,17 +1200,11 @@ class MainActivity : AppCompatActivity() {
          * the menu design doc: Export always runs whichever format Settings specifies, which for
          * now -- until the Settings screen and its Export-format picker actually exist -- is
          * unconditionally MC4D, matching the doc's stated new default). Same historyIndex4D-not-
-         * full-list reasoning as onShareLog. Catches [UnsupportedOperationException] specifically
-         * -- see [Notation.mc4dLogFile]'s doc -- rather than letting an edge twist (Button-C+X/B,
-         * added 2026-08-10) anywhere in history crash the export; MC4D-log support for those isn't
-         * built yet, so this tells the player plainly instead. */
+         * full-list reasoning as onShareLog. Edge twists (Button-C+X/B) export fine now too -- see
+         * [Notation.mc4dEdgeGrip]'s doc -- no longer needs a try/catch for that. */
         fun doExportMC4D() {
             val snapshot = synchronized(moveHistory4D) { moveHistory4D.take(historyIndex4D) }
-            try {
-                shareLogFile("twisted4d.log", Notation.mc4dLogFile(snapshot, scrambleMoveCount4D.coerceAtMost(snapshot.size)))
-            } catch (e: UnsupportedOperationException) {
-                Toast.makeText(this, "Can't export to MC4D format: ${e.message}", Toast.LENGTH_LONG).show()
-            }
+            shareLogFile("twisted4d.log", Notation.mc4dLogFile(snapshot, scrambleMoveCount4D.coerceAtMost(snapshot.size)))
         }
 
         /** The Settings screen's "Export Format" row picks between this and [doExportMC4D] --

@@ -181,6 +181,140 @@ object Notation {
         return cellIndex * 27 + 20 + position
     }
 
+    /** Key for [MC4D_EDGE_POSITIONS], normalized only by axis *order* (lower [Axis4.nativeIndex]
+     * first, its own sign carried along with it) -- unlike [HypercubeRenderer]'s `edgeKey`, sign
+     * is NOT further normalized away here: that normalization was valid there because a 180-degree
+     * *rotation matrix* doesn't care about its axis's overall sign, but here each of the two
+     * antipodal-axis grips (e.g. `(Y,-1,Z,-1)` vs `(Y,1,Z,1)` for the same physical UF/DB axis on
+     * cell I) is a *different, real, individually-numbered* MC4D grip -- collapsing them would
+     * silently export the wrong sticker. [TwistRecord.Edge]'s stored `sign1`/`sign2` already
+     * unambiguously pick one specific grip (whichever one [HypercubeRenderer.
+     * nativeAxisAndSignAtRoomAxis] actually resolved), so the lookup must preserve that, not
+     * collapse it. */
+    private data class Mc4dEdgeKey(val cell: Cell4, val axis1: Axis4, val sign1: Int, val axis2: Axis4, val sign2: Int)
+
+    private fun mc4dEdgeKey(cell: Cell4, a: Axis4, signA: Int, b: Axis4, signB: Int): Mc4dEdgeKey =
+        if (a.nativeIndex <= b.nativeIndex) Mc4dEdgeKey(cell, a, signA, b, signB) else Mc4dEdgeKey(cell, b, signB, a, signA)
+
+    /** MC4D's within-tier position (0-11) for the "3c edge" grip at [cell]'s local diagonal through
+     * ([axis1],[sign1])/([axis2],[sign2]) -- e.g. Y,+1/Z,+1 for the UF corner-ish edge sticker.
+     * Unlike [mc4dGrip]'s ridge formula (a closed-form function of [MC4D_CELL_ORDER]), this tier's
+     * within-cell ordering isn't a formula at all -- confirmed by actually compiling and running
+     * MagicCube4D's own `PolytopePuzzleDescription`/CSG source (2026-08-10, `cutelyaware/
+     * magiccube4d` on GitHub) and reading the real grip coordinates back out, since the ordering
+     * comes from `CSG.Polytope.id`, a plain creation-order counter from the general n-dimensional
+     * polytope-construction algorithm (see the mc4d_log_compatibility memory) -- there's no pattern
+     * to extract, just 96 individually-confirmed values (8 cells x 12 edges each). Cross-validated
+     * against [mc4dGrip] itself while deriving this: for every one of the 8 cells, the *ridge* tier
+     * grip [mc4dGrip] predicts for each of that cell's 3 valid `fixAxis2` choices was checked
+     * against the real dumped coordinates and found to have exactly one nonzero "local" coordinate
+     * at the expected position -- i.e. this table and the already-shipped, MC4D-confirmed ridge
+     * formula agree on every cell, not just asserted independently. */
+    fun mc4dEdgeGrip(cell: Cell4, axis1: Axis4, sign1: Int, axis2: Axis4, sign2: Int): Int {
+        val cellIndex = MC4D_CELL_ORDER.indexOf(cell)
+        val position = MC4D_EDGE_POSITIONS.getValue(mc4dEdgeKey(cell, axis1, sign1, axis2, sign2))
+        return cellIndex * 27 + 8 + position
+    }
+
+    private val MC4D_EDGE_POSITIONS: Map<Mc4dEdgeKey, Int> = mapOf(
+        mc4dEdgeKey(Cell4.I, Axis4.Y, -1, Axis4.Z, -1) to 0,
+        mc4dEdgeKey(Cell4.I, Axis4.X, -1, Axis4.Y, -1) to 1,
+        mc4dEdgeKey(Cell4.I, Axis4.X, 1, Axis4.Y, -1) to 2,
+        mc4dEdgeKey(Cell4.I, Axis4.Y, -1, Axis4.Z, 1) to 3,
+        mc4dEdgeKey(Cell4.I, Axis4.X, -1, Axis4.Z, -1) to 4,
+        mc4dEdgeKey(Cell4.I, Axis4.X, 1, Axis4.Z, -1) to 5,
+        mc4dEdgeKey(Cell4.I, Axis4.X, -1, Axis4.Z, 1) to 6,
+        mc4dEdgeKey(Cell4.I, Axis4.X, 1, Axis4.Z, 1) to 7,
+        mc4dEdgeKey(Cell4.I, Axis4.Y, 1, Axis4.Z, -1) to 8,
+        mc4dEdgeKey(Cell4.I, Axis4.X, -1, Axis4.Y, 1) to 9,
+        mc4dEdgeKey(Cell4.I, Axis4.X, 1, Axis4.Y, 1) to 10,
+        mc4dEdgeKey(Cell4.I, Axis4.Y, 1, Axis4.Z, 1) to 11,
+        mc4dEdgeKey(Cell4.D, Axis4.Z, -1, Axis4.W, -1) to 0,
+        mc4dEdgeKey(Cell4.D, Axis4.X, -1, Axis4.W, -1) to 1,
+        mc4dEdgeKey(Cell4.D, Axis4.X, 1, Axis4.W, -1) to 2,
+        mc4dEdgeKey(Cell4.D, Axis4.Z, 1, Axis4.W, -1) to 3,
+        mc4dEdgeKey(Cell4.D, Axis4.X, -1, Axis4.Z, -1) to 4,
+        mc4dEdgeKey(Cell4.D, Axis4.X, 1, Axis4.Z, -1) to 5,
+        mc4dEdgeKey(Cell4.D, Axis4.X, -1, Axis4.Z, 1) to 6,
+        mc4dEdgeKey(Cell4.D, Axis4.X, 1, Axis4.Z, 1) to 7,
+        mc4dEdgeKey(Cell4.D, Axis4.Z, -1, Axis4.W, 1) to 8,
+        mc4dEdgeKey(Cell4.D, Axis4.X, -1, Axis4.W, 1) to 9,
+        mc4dEdgeKey(Cell4.D, Axis4.X, 1, Axis4.W, 1) to 10,
+        mc4dEdgeKey(Cell4.D, Axis4.Z, 1, Axis4.W, 1) to 11,
+        mc4dEdgeKey(Cell4.F, Axis4.Y, -1, Axis4.W, -1) to 0,
+        mc4dEdgeKey(Cell4.F, Axis4.X, -1, Axis4.W, -1) to 1,
+        mc4dEdgeKey(Cell4.F, Axis4.X, 1, Axis4.W, -1) to 2,
+        mc4dEdgeKey(Cell4.F, Axis4.Y, 1, Axis4.W, -1) to 3,
+        mc4dEdgeKey(Cell4.F, Axis4.X, -1, Axis4.Y, -1) to 4,
+        mc4dEdgeKey(Cell4.F, Axis4.X, 1, Axis4.Y, -1) to 5,
+        mc4dEdgeKey(Cell4.F, Axis4.X, -1, Axis4.Y, 1) to 6,
+        mc4dEdgeKey(Cell4.F, Axis4.X, 1, Axis4.Y, 1) to 7,
+        mc4dEdgeKey(Cell4.F, Axis4.Y, -1, Axis4.W, 1) to 8,
+        mc4dEdgeKey(Cell4.F, Axis4.X, -1, Axis4.W, 1) to 9,
+        mc4dEdgeKey(Cell4.F, Axis4.X, 1, Axis4.W, 1) to 10,
+        mc4dEdgeKey(Cell4.F, Axis4.Y, 1, Axis4.W, 1) to 11,
+        mc4dEdgeKey(Cell4.L, Axis4.Y, -1, Axis4.W, -1) to 0,
+        mc4dEdgeKey(Cell4.L, Axis4.Z, -1, Axis4.W, -1) to 1,
+        mc4dEdgeKey(Cell4.L, Axis4.Z, 1, Axis4.W, -1) to 2,
+        mc4dEdgeKey(Cell4.L, Axis4.Y, 1, Axis4.W, -1) to 3,
+        mc4dEdgeKey(Cell4.L, Axis4.Y, -1, Axis4.Z, -1) to 4,
+        mc4dEdgeKey(Cell4.L, Axis4.Y, -1, Axis4.Z, 1) to 5,
+        mc4dEdgeKey(Cell4.L, Axis4.Y, 1, Axis4.Z, -1) to 6,
+        mc4dEdgeKey(Cell4.L, Axis4.Y, 1, Axis4.Z, 1) to 7,
+        mc4dEdgeKey(Cell4.L, Axis4.Y, -1, Axis4.W, 1) to 8,
+        mc4dEdgeKey(Cell4.L, Axis4.Z, -1, Axis4.W, 1) to 9,
+        mc4dEdgeKey(Cell4.L, Axis4.Z, 1, Axis4.W, 1) to 10,
+        mc4dEdgeKey(Cell4.L, Axis4.Y, 1, Axis4.W, 1) to 11,
+        mc4dEdgeKey(Cell4.R, Axis4.Y, -1, Axis4.W, -1) to 0,
+        mc4dEdgeKey(Cell4.R, Axis4.Z, -1, Axis4.W, -1) to 1,
+        mc4dEdgeKey(Cell4.R, Axis4.Z, 1, Axis4.W, -1) to 2,
+        mc4dEdgeKey(Cell4.R, Axis4.Y, 1, Axis4.W, -1) to 3,
+        mc4dEdgeKey(Cell4.R, Axis4.Y, -1, Axis4.Z, -1) to 4,
+        mc4dEdgeKey(Cell4.R, Axis4.Y, -1, Axis4.Z, 1) to 5,
+        mc4dEdgeKey(Cell4.R, Axis4.Y, 1, Axis4.Z, -1) to 6,
+        mc4dEdgeKey(Cell4.R, Axis4.Y, 1, Axis4.Z, 1) to 7,
+        mc4dEdgeKey(Cell4.R, Axis4.Y, -1, Axis4.W, 1) to 8,
+        mc4dEdgeKey(Cell4.R, Axis4.Z, -1, Axis4.W, 1) to 9,
+        mc4dEdgeKey(Cell4.R, Axis4.Z, 1, Axis4.W, 1) to 10,
+        mc4dEdgeKey(Cell4.R, Axis4.Y, 1, Axis4.W, 1) to 11,
+        mc4dEdgeKey(Cell4.B, Axis4.Y, -1, Axis4.W, -1) to 0,
+        mc4dEdgeKey(Cell4.B, Axis4.X, -1, Axis4.W, -1) to 1,
+        mc4dEdgeKey(Cell4.B, Axis4.X, 1, Axis4.W, -1) to 2,
+        mc4dEdgeKey(Cell4.B, Axis4.Y, 1, Axis4.W, -1) to 3,
+        mc4dEdgeKey(Cell4.B, Axis4.X, -1, Axis4.Y, -1) to 4,
+        mc4dEdgeKey(Cell4.B, Axis4.X, 1, Axis4.Y, -1) to 5,
+        mc4dEdgeKey(Cell4.B, Axis4.X, -1, Axis4.Y, 1) to 6,
+        mc4dEdgeKey(Cell4.B, Axis4.X, 1, Axis4.Y, 1) to 7,
+        mc4dEdgeKey(Cell4.B, Axis4.Y, -1, Axis4.W, 1) to 8,
+        mc4dEdgeKey(Cell4.B, Axis4.X, -1, Axis4.W, 1) to 9,
+        mc4dEdgeKey(Cell4.B, Axis4.X, 1, Axis4.W, 1) to 10,
+        mc4dEdgeKey(Cell4.B, Axis4.Y, 1, Axis4.W, 1) to 11,
+        mc4dEdgeKey(Cell4.U, Axis4.Z, -1, Axis4.W, -1) to 0,
+        mc4dEdgeKey(Cell4.U, Axis4.X, -1, Axis4.W, -1) to 1,
+        mc4dEdgeKey(Cell4.U, Axis4.X, 1, Axis4.W, -1) to 2,
+        mc4dEdgeKey(Cell4.U, Axis4.Z, 1, Axis4.W, -1) to 3,
+        mc4dEdgeKey(Cell4.U, Axis4.X, -1, Axis4.Z, -1) to 4,
+        mc4dEdgeKey(Cell4.U, Axis4.X, 1, Axis4.Z, -1) to 5,
+        mc4dEdgeKey(Cell4.U, Axis4.X, -1, Axis4.Z, 1) to 6,
+        mc4dEdgeKey(Cell4.U, Axis4.X, 1, Axis4.Z, 1) to 7,
+        mc4dEdgeKey(Cell4.U, Axis4.Z, -1, Axis4.W, 1) to 8,
+        mc4dEdgeKey(Cell4.U, Axis4.X, -1, Axis4.W, 1) to 9,
+        mc4dEdgeKey(Cell4.U, Axis4.X, 1, Axis4.W, 1) to 10,
+        mc4dEdgeKey(Cell4.U, Axis4.Z, 1, Axis4.W, 1) to 11,
+        mc4dEdgeKey(Cell4.O, Axis4.Y, -1, Axis4.Z, -1) to 0,
+        mc4dEdgeKey(Cell4.O, Axis4.X, -1, Axis4.Y, -1) to 1,
+        mc4dEdgeKey(Cell4.O, Axis4.X, 1, Axis4.Y, -1) to 2,
+        mc4dEdgeKey(Cell4.O, Axis4.Y, -1, Axis4.Z, 1) to 3,
+        mc4dEdgeKey(Cell4.O, Axis4.X, -1, Axis4.Z, -1) to 4,
+        mc4dEdgeKey(Cell4.O, Axis4.X, 1, Axis4.Z, -1) to 5,
+        mc4dEdgeKey(Cell4.O, Axis4.X, -1, Axis4.Z, 1) to 6,
+        mc4dEdgeKey(Cell4.O, Axis4.X, 1, Axis4.Z, 1) to 7,
+        mc4dEdgeKey(Cell4.O, Axis4.Y, 1, Axis4.Z, -1) to 8,
+        mc4dEdgeKey(Cell4.O, Axis4.X, -1, Axis4.Y, 1) to 9,
+        mc4dEdgeKey(Cell4.O, Axis4.X, 1, Axis4.Y, 1) to 10,
+        mc4dEdgeKey(Cell4.O, Axis4.Y, 1, Axis4.Z, 1) to 11,
+    )
+
     /** `(cell, fixAxis2)` pairs where the raw native `prime` bit needs flipping before it means
      * what [communityNotation] and [mc4dLogFile] need it to mean -- `Cube4::twist`'s
      * rotating-axis-pair handedness is a mechanical function of native axis index order (see
@@ -335,12 +469,12 @@ object Notation {
      * Redo both worked as expected. The header's second field is `2` whenever a mark is present
      * (vs. `0` with none), also confirmed by both files.
      *
-     * Throws [UnsupportedOperationException] if [history] contains any [TwistRecord.Edge] --
-     * MC4D's grip encoding for an edge-sticker twist hasn't been reverse-engineered yet (unlike
-     * [TwistRecord.Ridge]'s, see [mc4dGrip]'s doc), so there's no correct grip/dir to emit; failing
-     * loudly here beats silently writing a `.log` MC4D would misinterpret or reject. Callers
-     * (MainActivity's doExportMC4D) should catch this and tell the player, not let it crash the
-     * export flow. */
+     * [TwistRecord.Edge] entries export via [mc4dEdgeGrip] with `dir` always `1` -- confirmed safe
+     * (2026-08-10, by reading MC4D's own `getTwistMat`: `angle = dir * (2*PI/order) * frac`, and an
+     * edge grip's rotation `order` is 2, so `dir=1` and `dir=-1` both give a `180°` twist, the only
+     * nontrivial one an order-2 grip has -- there's no direction to get wrong). See
+     * [mc4dEdgeGrip]'s doc for how its grip numbers were found (running MC4D's actual source, not
+     * another reverse-engineering-from-hand-written-log-files round). */
     fun mc4dLogFile(history: List<TwistRecord>, scrambleCount: Int): String {
         val solveCount = history.size - scrambleCount
         val header = "MagicCube4D 3 ${if (scrambleCount > 0) 2 else 0} $solveCount {4,3,3} 3"
@@ -356,10 +490,8 @@ object Notation {
                     val dir = if (correctedPrime(record.cell, record.fixAxis2, record.prime)) 1 else -1
                     "${mc4dGrip(record.cell, record.fixAxis2)},$dir,1"
                 }
-                is TwistRecord.Edge -> throw UnsupportedOperationException(
-                    "MC4D log export doesn't support edge twists (${record.cell.label} " +
-                        "${record.axis1}/${record.axis2}) yet",
-                )
+                is TwistRecord.Edge ->
+                    "${mc4dEdgeGrip(record.cell, record.axis1, record.sign1, record.axis2, record.sign2)},1,1"
             }
         }.toMutableList()
         if (scrambleCount > 0) tokens.add(scrambleCount, "m|")
