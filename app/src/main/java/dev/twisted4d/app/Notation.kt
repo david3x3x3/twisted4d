@@ -159,6 +159,16 @@ object Notation {
     fun roomAxisRepresentativeCell(roomAxis: Int): Cell4 =
         axisRepresentativeCell(Axis4.entries.first { it.nativeIndex == roomAxis })
 
+    /** The exact cell at ([axis], [sign]) -- e.g. (Y,-1) -> D, (Y,+1) -> U. Unlike
+     * [axisRepresentativeCell] (which deliberately ignores sign, since a ridge twist's `fixAxis2`
+     * has no inherent sign of its own -- the apostrophe carries direction instead), a
+     * [TwistRecord.Edge]'s two axis signs are exactly what distinguish one diagonal from another
+     * (e.g. UF/DB from UB/DF) -- reusing the sign-blind representative for edge notation would
+     * make different diagonals print identically (confirmed: "ROU" turned out to be ambiguous
+     * between two different real diagonals of cell R, which is what led to this function). */
+    fun signedAxisCell(axis: Axis4, sign: Int): Cell4 =
+        Cell4.entries.first { it.axis == axis && it.sign == sign }
+
     /** MC4D's own cell order, empirically reverse-engineered (not documented in MC4D's source --
      * it comes from an external geometry library's traversal order): both the "which 27-grip
      * block" index for a cell *and* the within-block ordering of ridge-piece grips (see
@@ -209,7 +219,21 @@ object Notation {
      * grip [mc4dGrip] predicts for each of that cell's 3 valid `fixAxis2` choices was checked
      * against the real dumped coordinates and found to have exactly one nonzero "local" coordinate
      * at the expected position -- i.e. this table and the already-shipped, MC4D-confirmed ridge
-     * formula agree on every cell, not just asserted independently. */
+     * formula agree on every cell, not just asserted independently.
+     *
+     * **Correction (2026-08-11):** the original 2026-08-10 table had every entry involving the Z
+     * axis sign-flipped (48 of 96 entries) -- a real bug, found via a scramble+solve+reimport
+     * round trip that came back unsolved in real MC4D (David's repro). The cross-validation above
+     * only ever checked *which* coordinate index was nonzero (axis identity), never its *sign* --
+     * so it silently passed even though the raw-coordinate-index-to-[Axis4] mapping used to build
+     * this table was wrong for one axis. The real mapping (confirmed by checking the sign of each
+     * cell's own constant coordinate against that cell's already-known [Cell4.sign] for all 8
+     * cells, which pins down all 4 axes unambiguously): raw index 0 = `+X`, raw index 1 = `-Z`,
+     * raw index 2 = `+Y`, raw index 3 = `+W` -- indices 1/2 are swapped from the naive `X,Y,Z,W`
+     * assumption *and* Z is sign-inverted. X, Y, and W were always correct, which is exactly why
+     * cells whose own axis is X or W (L/R/I/O) or whose edge axes never include Z (F/B) partly or
+     * fully checked out before, while D/U/L/R/I/O entries that *did* involve Z were wrong. See
+     * `tools/sim` methodology notes / mc4d_log_compatibility memory for the verification script. */
     fun mc4dEdgeGrip(cell: Cell4, axis1: Axis4, sign1: Int, axis2: Axis4, sign2: Int): Int {
         val cellIndex = MC4D_CELL_ORDER.indexOf(cell)
         val position = MC4D_EDGE_POSITIONS.getValue(mc4dEdgeKey(cell, axis1, sign1, axis2, sign2))
@@ -217,30 +241,30 @@ object Notation {
     }
 
     private val MC4D_EDGE_POSITIONS: Map<Mc4dEdgeKey, Int> = mapOf(
-        mc4dEdgeKey(Cell4.I, Axis4.Y, -1, Axis4.Z, -1) to 0,
+        mc4dEdgeKey(Cell4.I, Axis4.Y, -1, Axis4.Z, 1) to 0,
         mc4dEdgeKey(Cell4.I, Axis4.X, -1, Axis4.Y, -1) to 1,
         mc4dEdgeKey(Cell4.I, Axis4.X, 1, Axis4.Y, -1) to 2,
-        mc4dEdgeKey(Cell4.I, Axis4.Y, -1, Axis4.Z, 1) to 3,
-        mc4dEdgeKey(Cell4.I, Axis4.X, -1, Axis4.Z, -1) to 4,
-        mc4dEdgeKey(Cell4.I, Axis4.X, 1, Axis4.Z, -1) to 5,
-        mc4dEdgeKey(Cell4.I, Axis4.X, -1, Axis4.Z, 1) to 6,
-        mc4dEdgeKey(Cell4.I, Axis4.X, 1, Axis4.Z, 1) to 7,
-        mc4dEdgeKey(Cell4.I, Axis4.Y, 1, Axis4.Z, -1) to 8,
+        mc4dEdgeKey(Cell4.I, Axis4.Y, -1, Axis4.Z, -1) to 3,
+        mc4dEdgeKey(Cell4.I, Axis4.X, -1, Axis4.Z, 1) to 4,
+        mc4dEdgeKey(Cell4.I, Axis4.X, 1, Axis4.Z, 1) to 5,
+        mc4dEdgeKey(Cell4.I, Axis4.X, -1, Axis4.Z, -1) to 6,
+        mc4dEdgeKey(Cell4.I, Axis4.X, 1, Axis4.Z, -1) to 7,
+        mc4dEdgeKey(Cell4.I, Axis4.Y, 1, Axis4.Z, 1) to 8,
         mc4dEdgeKey(Cell4.I, Axis4.X, -1, Axis4.Y, 1) to 9,
         mc4dEdgeKey(Cell4.I, Axis4.X, 1, Axis4.Y, 1) to 10,
-        mc4dEdgeKey(Cell4.I, Axis4.Y, 1, Axis4.Z, 1) to 11,
-        mc4dEdgeKey(Cell4.D, Axis4.Z, -1, Axis4.W, -1) to 0,
+        mc4dEdgeKey(Cell4.I, Axis4.Y, 1, Axis4.Z, -1) to 11,
+        mc4dEdgeKey(Cell4.D, Axis4.Z, 1, Axis4.W, -1) to 0,
         mc4dEdgeKey(Cell4.D, Axis4.X, -1, Axis4.W, -1) to 1,
         mc4dEdgeKey(Cell4.D, Axis4.X, 1, Axis4.W, -1) to 2,
-        mc4dEdgeKey(Cell4.D, Axis4.Z, 1, Axis4.W, -1) to 3,
-        mc4dEdgeKey(Cell4.D, Axis4.X, -1, Axis4.Z, -1) to 4,
-        mc4dEdgeKey(Cell4.D, Axis4.X, 1, Axis4.Z, -1) to 5,
-        mc4dEdgeKey(Cell4.D, Axis4.X, -1, Axis4.Z, 1) to 6,
-        mc4dEdgeKey(Cell4.D, Axis4.X, 1, Axis4.Z, 1) to 7,
-        mc4dEdgeKey(Cell4.D, Axis4.Z, -1, Axis4.W, 1) to 8,
+        mc4dEdgeKey(Cell4.D, Axis4.Z, -1, Axis4.W, -1) to 3,
+        mc4dEdgeKey(Cell4.D, Axis4.X, -1, Axis4.Z, 1) to 4,
+        mc4dEdgeKey(Cell4.D, Axis4.X, 1, Axis4.Z, 1) to 5,
+        mc4dEdgeKey(Cell4.D, Axis4.X, -1, Axis4.Z, -1) to 6,
+        mc4dEdgeKey(Cell4.D, Axis4.X, 1, Axis4.Z, -1) to 7,
+        mc4dEdgeKey(Cell4.D, Axis4.Z, 1, Axis4.W, 1) to 8,
         mc4dEdgeKey(Cell4.D, Axis4.X, -1, Axis4.W, 1) to 9,
         mc4dEdgeKey(Cell4.D, Axis4.X, 1, Axis4.W, 1) to 10,
-        mc4dEdgeKey(Cell4.D, Axis4.Z, 1, Axis4.W, 1) to 11,
+        mc4dEdgeKey(Cell4.D, Axis4.Z, -1, Axis4.W, 1) to 11,
         mc4dEdgeKey(Cell4.F, Axis4.Y, -1, Axis4.W, -1) to 0,
         mc4dEdgeKey(Cell4.F, Axis4.X, -1, Axis4.W, -1) to 1,
         mc4dEdgeKey(Cell4.F, Axis4.X, 1, Axis4.W, -1) to 2,
@@ -254,28 +278,28 @@ object Notation {
         mc4dEdgeKey(Cell4.F, Axis4.X, 1, Axis4.W, 1) to 10,
         mc4dEdgeKey(Cell4.F, Axis4.Y, 1, Axis4.W, 1) to 11,
         mc4dEdgeKey(Cell4.L, Axis4.Y, -1, Axis4.W, -1) to 0,
-        mc4dEdgeKey(Cell4.L, Axis4.Z, -1, Axis4.W, -1) to 1,
-        mc4dEdgeKey(Cell4.L, Axis4.Z, 1, Axis4.W, -1) to 2,
+        mc4dEdgeKey(Cell4.L, Axis4.Z, 1, Axis4.W, -1) to 1,
+        mc4dEdgeKey(Cell4.L, Axis4.Z, -1, Axis4.W, -1) to 2,
         mc4dEdgeKey(Cell4.L, Axis4.Y, 1, Axis4.W, -1) to 3,
-        mc4dEdgeKey(Cell4.L, Axis4.Y, -1, Axis4.Z, -1) to 4,
-        mc4dEdgeKey(Cell4.L, Axis4.Y, -1, Axis4.Z, 1) to 5,
-        mc4dEdgeKey(Cell4.L, Axis4.Y, 1, Axis4.Z, -1) to 6,
-        mc4dEdgeKey(Cell4.L, Axis4.Y, 1, Axis4.Z, 1) to 7,
+        mc4dEdgeKey(Cell4.L, Axis4.Y, -1, Axis4.Z, 1) to 4,
+        mc4dEdgeKey(Cell4.L, Axis4.Y, -1, Axis4.Z, -1) to 5,
+        mc4dEdgeKey(Cell4.L, Axis4.Y, 1, Axis4.Z, 1) to 6,
+        mc4dEdgeKey(Cell4.L, Axis4.Y, 1, Axis4.Z, -1) to 7,
         mc4dEdgeKey(Cell4.L, Axis4.Y, -1, Axis4.W, 1) to 8,
-        mc4dEdgeKey(Cell4.L, Axis4.Z, -1, Axis4.W, 1) to 9,
-        mc4dEdgeKey(Cell4.L, Axis4.Z, 1, Axis4.W, 1) to 10,
+        mc4dEdgeKey(Cell4.L, Axis4.Z, 1, Axis4.W, 1) to 9,
+        mc4dEdgeKey(Cell4.L, Axis4.Z, -1, Axis4.W, 1) to 10,
         mc4dEdgeKey(Cell4.L, Axis4.Y, 1, Axis4.W, 1) to 11,
         mc4dEdgeKey(Cell4.R, Axis4.Y, -1, Axis4.W, -1) to 0,
-        mc4dEdgeKey(Cell4.R, Axis4.Z, -1, Axis4.W, -1) to 1,
-        mc4dEdgeKey(Cell4.R, Axis4.Z, 1, Axis4.W, -1) to 2,
+        mc4dEdgeKey(Cell4.R, Axis4.Z, 1, Axis4.W, -1) to 1,
+        mc4dEdgeKey(Cell4.R, Axis4.Z, -1, Axis4.W, -1) to 2,
         mc4dEdgeKey(Cell4.R, Axis4.Y, 1, Axis4.W, -1) to 3,
-        mc4dEdgeKey(Cell4.R, Axis4.Y, -1, Axis4.Z, -1) to 4,
-        mc4dEdgeKey(Cell4.R, Axis4.Y, -1, Axis4.Z, 1) to 5,
-        mc4dEdgeKey(Cell4.R, Axis4.Y, 1, Axis4.Z, -1) to 6,
-        mc4dEdgeKey(Cell4.R, Axis4.Y, 1, Axis4.Z, 1) to 7,
+        mc4dEdgeKey(Cell4.R, Axis4.Y, -1, Axis4.Z, 1) to 4,
+        mc4dEdgeKey(Cell4.R, Axis4.Y, -1, Axis4.Z, -1) to 5,
+        mc4dEdgeKey(Cell4.R, Axis4.Y, 1, Axis4.Z, 1) to 6,
+        mc4dEdgeKey(Cell4.R, Axis4.Y, 1, Axis4.Z, -1) to 7,
         mc4dEdgeKey(Cell4.R, Axis4.Y, -1, Axis4.W, 1) to 8,
-        mc4dEdgeKey(Cell4.R, Axis4.Z, -1, Axis4.W, 1) to 9,
-        mc4dEdgeKey(Cell4.R, Axis4.Z, 1, Axis4.W, 1) to 10,
+        mc4dEdgeKey(Cell4.R, Axis4.Z, 1, Axis4.W, 1) to 9,
+        mc4dEdgeKey(Cell4.R, Axis4.Z, -1, Axis4.W, 1) to 10,
         mc4dEdgeKey(Cell4.R, Axis4.Y, 1, Axis4.W, 1) to 11,
         mc4dEdgeKey(Cell4.B, Axis4.Y, -1, Axis4.W, -1) to 0,
         mc4dEdgeKey(Cell4.B, Axis4.X, -1, Axis4.W, -1) to 1,
@@ -289,30 +313,30 @@ object Notation {
         mc4dEdgeKey(Cell4.B, Axis4.X, -1, Axis4.W, 1) to 9,
         mc4dEdgeKey(Cell4.B, Axis4.X, 1, Axis4.W, 1) to 10,
         mc4dEdgeKey(Cell4.B, Axis4.Y, 1, Axis4.W, 1) to 11,
-        mc4dEdgeKey(Cell4.U, Axis4.Z, -1, Axis4.W, -1) to 0,
+        mc4dEdgeKey(Cell4.U, Axis4.Z, 1, Axis4.W, -1) to 0,
         mc4dEdgeKey(Cell4.U, Axis4.X, -1, Axis4.W, -1) to 1,
         mc4dEdgeKey(Cell4.U, Axis4.X, 1, Axis4.W, -1) to 2,
-        mc4dEdgeKey(Cell4.U, Axis4.Z, 1, Axis4.W, -1) to 3,
-        mc4dEdgeKey(Cell4.U, Axis4.X, -1, Axis4.Z, -1) to 4,
-        mc4dEdgeKey(Cell4.U, Axis4.X, 1, Axis4.Z, -1) to 5,
-        mc4dEdgeKey(Cell4.U, Axis4.X, -1, Axis4.Z, 1) to 6,
-        mc4dEdgeKey(Cell4.U, Axis4.X, 1, Axis4.Z, 1) to 7,
-        mc4dEdgeKey(Cell4.U, Axis4.Z, -1, Axis4.W, 1) to 8,
+        mc4dEdgeKey(Cell4.U, Axis4.Z, -1, Axis4.W, -1) to 3,
+        mc4dEdgeKey(Cell4.U, Axis4.X, -1, Axis4.Z, 1) to 4,
+        mc4dEdgeKey(Cell4.U, Axis4.X, 1, Axis4.Z, 1) to 5,
+        mc4dEdgeKey(Cell4.U, Axis4.X, -1, Axis4.Z, -1) to 6,
+        mc4dEdgeKey(Cell4.U, Axis4.X, 1, Axis4.Z, -1) to 7,
+        mc4dEdgeKey(Cell4.U, Axis4.Z, 1, Axis4.W, 1) to 8,
         mc4dEdgeKey(Cell4.U, Axis4.X, -1, Axis4.W, 1) to 9,
         mc4dEdgeKey(Cell4.U, Axis4.X, 1, Axis4.W, 1) to 10,
-        mc4dEdgeKey(Cell4.U, Axis4.Z, 1, Axis4.W, 1) to 11,
-        mc4dEdgeKey(Cell4.O, Axis4.Y, -1, Axis4.Z, -1) to 0,
+        mc4dEdgeKey(Cell4.U, Axis4.Z, -1, Axis4.W, 1) to 11,
+        mc4dEdgeKey(Cell4.O, Axis4.Y, -1, Axis4.Z, 1) to 0,
         mc4dEdgeKey(Cell4.O, Axis4.X, -1, Axis4.Y, -1) to 1,
         mc4dEdgeKey(Cell4.O, Axis4.X, 1, Axis4.Y, -1) to 2,
-        mc4dEdgeKey(Cell4.O, Axis4.Y, -1, Axis4.Z, 1) to 3,
-        mc4dEdgeKey(Cell4.O, Axis4.X, -1, Axis4.Z, -1) to 4,
-        mc4dEdgeKey(Cell4.O, Axis4.X, 1, Axis4.Z, -1) to 5,
-        mc4dEdgeKey(Cell4.O, Axis4.X, -1, Axis4.Z, 1) to 6,
-        mc4dEdgeKey(Cell4.O, Axis4.X, 1, Axis4.Z, 1) to 7,
-        mc4dEdgeKey(Cell4.O, Axis4.Y, 1, Axis4.Z, -1) to 8,
+        mc4dEdgeKey(Cell4.O, Axis4.Y, -1, Axis4.Z, -1) to 3,
+        mc4dEdgeKey(Cell4.O, Axis4.X, -1, Axis4.Z, 1) to 4,
+        mc4dEdgeKey(Cell4.O, Axis4.X, 1, Axis4.Z, 1) to 5,
+        mc4dEdgeKey(Cell4.O, Axis4.X, -1, Axis4.Z, -1) to 6,
+        mc4dEdgeKey(Cell4.O, Axis4.X, 1, Axis4.Z, -1) to 7,
+        mc4dEdgeKey(Cell4.O, Axis4.Y, 1, Axis4.Z, 1) to 8,
         mc4dEdgeKey(Cell4.O, Axis4.X, -1, Axis4.Y, 1) to 9,
         mc4dEdgeKey(Cell4.O, Axis4.X, 1, Axis4.Y, 1) to 10,
-        mc4dEdgeKey(Cell4.O, Axis4.Y, 1, Axis4.Z, 1) to 11,
+        mc4dEdgeKey(Cell4.O, Axis4.Y, 1, Axis4.Z, -1) to 11,
     )
 
     /** `(cell, fixAxis2)` pairs where the raw native `prime` bit needs flipping before it means
@@ -507,8 +531,13 @@ object Notation {
      * that field's doc for why it's stored rather than re-derived from `prime` here. Also drives
      * the on-screen "last move" indicator (see MainActivity.build4DScreen).
      *
-     * e.g. "IUF" for a [TwistRecord.Edge] -- the twisted cell, then a representative cell for each
-     * of the two edge axes. No apostrophe (edge twists have no direction -- see
+     * e.g. "IUF" for a [TwistRecord.Edge] -- the twisted cell, then the *exact* (sign-aware) cell
+     * for each of the two edge axes, via [signedAxisCell] rather than [axisRepresentativeCell] --
+     * unlike a ridge twist's `fixAxis2`, an edge twist's two axis signs are exactly what picks
+     * which of a cell's 6 diagonals was grabbed (e.g. "IUF" vs "IUB" are genuinely different
+     * twists), so collapsing sign the way ridge notation does would make different diagonals print
+     * identically (found 2026-08-11: "ROU" turned out ambiguous between two distinct real
+     * diagonals of cell R). No apostrophe (edge twists have no direction -- see
      * [TwistRecord.Edge]'s doc) and native rather than room-relative (see that same doc for why).
      * A provisional notation, not an established hypercubing.xyz convention -- there isn't one
      * documented for edge twists yet, unlike [TwistRecord.Ridge]'s. */
@@ -517,7 +546,8 @@ object Notation {
             record.roomCell.label + roomAxisRepresentativeCell(record.roomFixAxis2).label +
                 (if (record.displayApostrophe) "'" else "")
         is TwistRecord.Edge ->
-            record.cell.label + axisRepresentativeCell(record.axis1).label + axisRepresentativeCell(record.axis2).label
+            record.cell.label + signedAxisCell(record.axis1, record.sign1).label +
+                signedAxisCell(record.axis2, record.sign2).label
     }
 
     /** e.g. "RU' RF RU2" -- a whole move sequence in [communityNotation], doubled moves collapsed
