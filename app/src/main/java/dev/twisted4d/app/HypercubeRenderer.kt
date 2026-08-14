@@ -487,48 +487,50 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         requestTwist(cell, fixAxis2, prime, Cell4.I, roomFixAxis2, desiredApostrophe)
     }
 
-    /** STICK mode's Button-C+X (left face button) shortcut (added 2026-08-10, hardcoded per
-     * David -- he plans to make Button-C+ABXY/R1/R2 a fully configurable action grid later, but
-     * for now only this slot and [requestI180TwistURDL] are wired up). Twists whichever native
-     * cell currently occupies the room's I slot 180 degrees around the diagonal axis through its
-     * UF/DB stickers -- what real MagicCube4D itself does when you click the UF sticker (an
-     * *edge* sticker, 2 nonzero local axes) rather than an ordinary face-center *ridge* sticker's
-     * 90-degree twist. A genuine single 180-degree rotation, not three chained 90s: David caught
-     * both that the original chained-twist version showed 3 separate animations/history entries
-     * instead of one, and that its `y y x'` was actually landing on `y y x` (the UB axis, not UF)
-     * -- see [requestEdgeTwist]'s doc for how this replacement was verified (a brute-force search
-     * over the real native twist math, not another hand-derived guess) before shipping.
-     *
-     * Room-relative (added 2026-08-10, second fix): the first version of this hardcoded
-     * `requestEdgeTwist(Cell4.I, Axis4.Y, 1, Axis4.Z, 1)` -- always the *literal native* I cell
-     * and its own native Y/Z axes, regardless of orientation. David caught that this only behaved
-     * correctly at I's home orientation: once some other cell had been moved into I's room slot
-     * (e.g. via "move to I"), the shortcut kept acting on native I -- wherever it had drifted to
-     * -- instead of on whatever now visually sits in I, the same room-relative treatment
-     * [requestRktITwist] already gives RKT's I-twists. Same fix here: [snapViewToNearestCardinalOrientation]
-     * first (matching [requestRktITwist]'s own ordering -- resolution below must run *after* the
-     * synchronous orientation compensation it applies), then [nativeCellInRoomSlot] for the cell
-     * and [nativeAxisAndSignAtRoomAxis] for each of the two room-relative axes ("U" = room Y,+1;
-     * "F" = room Z,+1) -- resolved once, here, into concrete native identifiers, same
-     * "queuing must capture a decision" principle [requestTwist]'s own doc explains. */
-    fun requestI180TwistUFDB() {
-        snapViewToNearestCardinalOrientation()
-        val cell = nativeCellInRoomSlot(AXIS_W, -1)
-        val (axis1, sign1) = nativeAxisAndSignAtRoomAxis(AXIS_Y, 1) // U
-        val (axis2, sign2) = nativeAxisAndSignAtRoomAxis(AXIS_Z, 1) // F
-        requestEdgeTwist(cell, Axis4.entries.first { it.nativeIndex == axis1 }, sign1, Axis4.entries.first { it.nativeIndex == axis2 }, sign2)
-    }
+    // The old STICK-mode Button-C+X/B fixed 180-degree I-twist shortcuts (requestI180TwistUFDB/
+    // requestI180TwistURDL) were removed 2026-08-13 once the configurable button grid
+    // (ButtonConfigs/requestButtonAction below) subsumed them -- button_config.txt's default
+    // buttonC:X/buttonC:B slots ("IUF"/"IRU") now reach the exact same room-relative-resolved
+    // requestEdgeTwist call generically, so the two hardcoded wrappers were pure duplication. See
+    // requestEdgeTwist's own doc for the brute-force-verified decomposition math they both relied
+    // on -- unchanged, still exactly as correct as before.
 
-    /** STICK mode's Button-C+B (right face button) shortcut -- see [requestI180TwistUFDB]'s doc
-     * for the shared reasoning (including the room-relative fix). Twists whichever native cell
-     * currently occupies the room's I slot 180 degrees around the diagonal axis through its
-     * UR/DL stickers ("U" = room Y,+1; "R" = room X,+1). */
-    fun requestI180TwistURDL() {
+    /** Resolves and fires a configured button slot's [ButtonAction] (see [ButtonConfigs]' class
+     * doc) -- the same room-relative-letters-resolved-to-native-at-press-time pattern
+     * [requestRktITwist] and [requestI180TwistUFDB]/[requestI180TwistURDL] already use, just
+     * generalized to whichever cell/axes the config names instead of a single fixed shortcut.
+     * Unlike the old hardcoded per-button mapping this replaces, no [Notation.
+     * rotationInvertedForCell]-style "make this feel natural" correction is needed here: a
+     * configured token *is* the exact community-notation twist the user chose, and
+     * [correctedNativePrimeForRoomTwist] (already validated for all 8 cells/all 3 fixAxis2 choices
+     * each -- see its own doc) guarantees whatever native twist gets applied renders as exactly
+     * that label, regardless of current orientation. [ButtonAction.Edge] needs no equivalent
+     * correction at all -- a 180-degree edge twist has no apostrophe/direction to get wrong (see
+     * [TwistRecord.Edge]'s doc), and [EDGE_TWIST_DECOMPOSITIONS] is itself a complete table across
+     * all 4 possible cell axes, not just the single diagonal each hardcoded shortcut used. */
+    fun requestButtonAction(action: ButtonAction) {
         snapViewToNearestCardinalOrientation()
-        val cell = nativeCellInRoomSlot(AXIS_W, -1)
-        val (axis1, sign1) = nativeAxisAndSignAtRoomAxis(AXIS_X, 1) // R
-        val (axis2, sign2) = nativeAxisAndSignAtRoomAxis(AXIS_Y, 1) // U
-        requestEdgeTwist(cell, Axis4.entries.first { it.nativeIndex == axis1 }, sign1, Axis4.entries.first { it.nativeIndex == axis2 }, sign2)
+        when (action) {
+            is ButtonAction.Ridge -> {
+                val roomAxis = action.roomCell.axis.nativeIndex
+                val roomSign = action.roomCell.sign
+                val roomFixAxis2 = action.roomFixAxis2Cell.axis.nativeIndex
+                val cell = nativeCellInRoomSlot(roomAxis, roomSign)
+                val fixAxis2 = Axis4.entries.first { it.nativeIndex == nativeAxisAtRoomAxis(roomFixAxis2) }
+                val prime = correctedNativePrimeForRoomTwist(cell, fixAxis2, action.roomCell, roomFixAxis2, action.prime)
+                requestTwist(cell, fixAxis2, prime, action.roomCell, roomFixAxis2, action.prime)
+            }
+            is ButtonAction.Edge -> {
+                val cell = nativeCellInRoomSlot(action.roomCell.axis.nativeIndex, action.roomCell.sign)
+                val (axis1, sign1) = nativeAxisAndSignAtRoomAxis(action.axis1Cell.axis.nativeIndex, action.axis1Cell.sign)
+                val (axis2, sign2) = nativeAxisAndSignAtRoomAxis(action.axis2Cell.axis.nativeIndex, action.axis2Cell.sign)
+                requestEdgeTwist(
+                    cell,
+                    Axis4.entries.first { it.nativeIndex == axis1 }, sign1,
+                    Axis4.entries.first { it.nativeIndex == axis2 }, sign2,
+                )
+            }
+        }
     }
 
     // GL-thread-only edge-detection state for updateCell4Selection's snap-on-deflect behavior --

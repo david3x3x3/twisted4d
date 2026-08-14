@@ -15,4 +15,9 @@ object AppSettings {
      * [PieceFilter]s, so clipboard export is always byte-for-byte what was last imported/edited
      * rather than a reformatted round-trip. */
     @Volatile var pieceFiltersText: String = PieceFilters.BUILTIN_FILTERS_TEXT
+
+    /** Raw text of the currently-active button config (see [ButtonConfigs]' class doc for the
+     * format) -- same "persist the raw text, not a re-serialized structure" reasoning as
+     * [pieceFiltersText]. */
+    @Volatile var buttonConfigText: String = ButtonConfigs.BUILTIN_BUTTON_CONFIG_TEXT
 }

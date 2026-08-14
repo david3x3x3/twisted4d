@@ -68,18 +68,22 @@ class MainActivity : AppCompatActivity() {
     // the old screen's renderer/surfaceView). 4D-only for now -- see StartMenuView's doc; 3D mode
     // keeps its existing on-screen buttons untouched pending its own planned rework.
     //
-    // Two levels deep: startMenuView is the top-level Start Menu; filtersMenuView and
-    // settingsMenuView are its two submenus so far (siblings, not nested under each other).
-    // filtersMenuView is compact/puzzle-still-visible (see StartMenuView's doc on why Filters
-    // specifically needs that style); settingsMenuView is fullscreen like the Start Menu itself,
-    // a plain 1-column list of rows (gridCols=1). [activeMenu], [openMainMenu], [openFiltersMenu],
-    // [openSettingsMenu], [closeAllMenus], and [goBackOneLevel] are the only places that should
+    // Two levels deep: startMenuView is the top-level Start Menu; filtersMenuView, settingsMenuView,
+    // and buttonConfigMenuView are its submenus so far (siblings, not nested under each other, even
+    // though buttonConfigMenuView is only ever reached via a tile *inside* settingsMenuView --
+    // Back from it steps straight to the Start Menu, same flat one-level-back behavior every other
+    // submenu already has, rather than a real multi-level stack). filtersMenuView/buttonConfigMenuView
+    // are compact/puzzle-still-visible (see StartMenuView's doc on why Filters specifically needs
+    // that style); settingsMenuView is fullscreen like the Start Menu itself, a plain 1-column list
+    // of rows (gridCols=1). [activeMenu], [openMainMenu], [openFiltersMenu], [openSettingsMenu],
+    // [openButtonConfigMenu], [closeAllMenus], and [goBackOneLevel] are the only places that should
     // ever call open()/close() on any of these -- they keep menuButton's visibility and the
     // "which one's open" invariant (at most one at a time) in one place instead of scattered
     // across every gamepad/touch/back-button entry point.
     private lateinit var startMenuView: StartMenuView
     private lateinit var filtersMenuView: StartMenuView
     private lateinit var settingsMenuView: StartMenuView
+    private lateinit var buttonConfigMenuView: StartMenuView
 
     // The active set of filter-sets (built-ins plus whatever's been imported) -- parsed from
     // AppSettings.pieceFiltersText (the persisted source of truth, see loadAppSettings) and kept
@@ -90,6 +94,12 @@ class MainActivity : AppCompatActivity() {
     // would hand out fresh, structurally-equal-but-different instances each time -- harmless for
     // equals() but wasteful.
     private var currentFilterSets: List<PieceFilterSet> = PieceFilters.BUILTIN_FILTER_SETS
+
+    // The active button config (built-in or imported) -- parsed from AppSettings.buttonConfigText
+    // (the persisted source of truth, see loadAppSettings) and kept in sync with it by every
+    // writer (importButtonConfigFromClipboard/resetButtonConfigToDefaults in build4DScreen), same
+    // "cache the parsed structure, don't re-parse per press" reasoning as currentFilterSets.
+    private var currentButtonConfig: ButtonConfig = ButtonConfigs.BUILTIN_BUTTON_CONFIG
 
     // Persistent on-screen entry point into the Start Menu for controller-less users (see the
     // design doc's accessibility section) -- hidden while any menu is already open (per feedback:
@@ -272,12 +282,13 @@ class MainActivity : AppCompatActivity() {
     private var pendingRestoreSolved4D: Boolean? = null
 
     /** The currently-open menu, if any -- at most one of [startMenuView]/[filtersMenuView]/
-     * [settingsMenuView] is ever open at a time, enforced by only ever opening/closing them
-     * through this file's [openMainMenu]/[openFiltersMenu]/[openSettingsMenu]/[closeAllMenus]
-     * quartet. */
+     * [settingsMenuView]/[buttonConfigMenuView] is ever open at a time, enforced by only ever
+     * opening/closing them through this file's [openMainMenu]/[openFiltersMenu]/
+     * [openSettingsMenu]/[openButtonConfigMenu]/[closeAllMenus] quintet. */
     private fun activeMenu(): StartMenuView? = when {
         filtersMenuView.isOpen -> filtersMenuView
         settingsMenuView.isOpen -> settingsMenuView
+        buttonConfigMenuView.isOpen -> buttonConfigMenuView
         startMenuView.isOpen -> startMenuView
         else -> null
     }
@@ -291,7 +302,7 @@ class MainActivity : AppCompatActivity() {
      * action logic, which mirrors [goBackOneLevel]'s own one-level-at-a-time semantics. */
     private fun updateMenuButtonLabel() {
         menuButton.text = when {
-            filtersMenuView.isOpen || settingsMenuView.isOpen -> "Back"
+            filtersMenuView.isOpen || settingsMenuView.isOpen || buttonConfigMenuView.isOpen -> "Back"
             startMenuView.isOpen -> "Close"
             else -> "Menu"
         }
@@ -313,6 +324,7 @@ class MainActivity : AppCompatActivity() {
     private fun openMainMenu() {
         filtersMenuView.close()
         settingsMenuView.close()
+        buttonConfigMenuView.close()
         startMenuView.open()
         updateMenuButtonLabel()
     }
@@ -320,6 +332,7 @@ class MainActivity : AppCompatActivity() {
     private fun openFiltersMenu() {
         startMenuView.close()
         settingsMenuView.close()
+        buttonConfigMenuView.close()
         filtersMenuView.open()
         updateMenuButtonLabel()
     }
@@ -327,7 +340,20 @@ class MainActivity : AppCompatActivity() {
     private fun openSettingsMenu() {
         startMenuView.close()
         filtersMenuView.close()
+        buttonConfigMenuView.close()
         settingsMenuView.open()
+        updateMenuButtonLabel()
+    }
+
+    /** Reached via a tile inside [settingsMenuView] (see rebuildSettingsTiles), not directly from
+     * the Start Menu -- but Back from it still goes straight to the Start Menu, same flat
+     * one-level-back behavior [goBackOneLevel] already gives every other submenu (see the class
+     * field doc above for why a real nested-back stack wasn't built for this). */
+    private fun openButtonConfigMenu() {
+        startMenuView.close()
+        filtersMenuView.close()
+        settingsMenuView.close()
+        buttonConfigMenuView.open()
         updateMenuButtonLabel()
     }
 
@@ -335,6 +361,7 @@ class MainActivity : AppCompatActivity() {
         startMenuView.close()
         filtersMenuView.close()
         settingsMenuView.close()
+        buttonConfigMenuView.close()
         updateMenuButtonLabel()
     }
 
@@ -350,7 +377,7 @@ class MainActivity : AppCompatActivity() {
      * (submenu -> parent menu -> close menu -> resume puzzle), rather than closing everything at
      * once the way [toggleTopLevelMenu] does. */
     private fun goBackOneLevel() {
-        if (filtersMenuView.isOpen || settingsMenuView.isOpen) openMainMenu() else closeAllMenus()
+        if (filtersMenuView.isOpen || settingsMenuView.isOpen || buttonConfigMenuView.isOpen) openMainMenu() else closeAllMenus()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -388,6 +415,17 @@ class MainActivity : AppCompatActivity() {
         // positions plus center -- see the tile list in build4DScreen for which setting goes where
         // and why (each single-direction-reachable, no diagonal needed).
         settingsMenuView = StartMenuView(this, gridCols = 3, gridRows = 3)
+        // Compact, same reasoning/3x3-reachability as filtersMenuView above -- reached from a tile
+        // inside settingsMenuView (see rebuildSettingsTiles), not the Start Menu directly. Explicit
+        // caption (default "FILTERS" is filtersMenuView's own, per StartMenuView's doc) -- without
+        // this it silently shows "FILTERS" here too, a real bug caught by actually opening this
+        // menu on a device rather than trusting the code to be right (see verify_visually memory).
+        // "BUTTONS", not the tile's own longer "Button Config" label -- the caption is drawn
+        // left-aligned starting at the compact panel's left edge with no wrap/clipping (see
+        // StartMenuView.onDraw), so anything much longer than "FILTERS" (this view's own default,
+        // sized to fit) runs off the right edge of the screen -- caught by actually opening this
+        // menu on a device, not just reading the code (see verify_visually memory).
+        buttonConfigMenuView = StartMenuView(this, gridCols = 3, gridRows = 3, compact = true, caption = "BUTTONS")
         menuButton = Button(this).apply {
             text = "Menu"
             // Same one-level-at-a-time semantics as goBackOneLevel(), reused directly: from
@@ -819,14 +857,6 @@ class MainActivity : AppCompatActivity() {
             // HypercubeRenderer.effectiveRoomSign's doc; a no-op once something's actually
             // selected. Read now, same UI-thread-timing reason as selectHeldAtPress above.
             val moveModifierHeldAtPress = GamepadVisualState.thumbLHeld || GamepadVisualState.buttonCHeld
-            // Button-C-specific (not THUMB_L) STICK-mode shortcut (added 2026-08-10): X/B (left/
-            // right face buttons) become fixed 180-degree I-cell twists instead of their normal
-            // per-axis twist -- see HypercubeRenderer.requestI180TwistUFDB/URDL's doc. Read
-            // separately from moveModifierHeldAtPress (which stays THUMB_L-or-BUTTON_C, unchanged,
-            // for Y/A/R1/R2's existing opposite-cell modifier) since David wants this dedicated to
-            // Button C specifically -- he's planning to grow this into a configurable Button-C+
-            // ABXY/R1/R2 grid later, only X/B are wired up for now.
-            val buttonCHeldAtPress = GamepadVisualState.buttonCHeld
             surfaceView.queueEvent {
                 // Twisting without actively re-selecting via the stick (e.g. pressing a
                 // rotation button while it's centered, reusing the last selection) should
@@ -867,14 +897,26 @@ class MainActivity : AppCompatActivity() {
                     return@queueEvent
                 }
 
-                // Button-C+X/B fixed 180-degree I-twist shortcut -- see buttonCHeldAtPress's doc
-                // above. Checked after the Select-held whole-room-rotation branch (Select still
-                // wins if somehow both are held) and unconditionally of selection state, same as
-                // Select+L1/L2 undo/redo -- this always acts on I, not whatever's selected.
-                if (buttonCHeldAtPress && inputMode == GamepadInputMode.STICK &&
-                    (button == RotationButton.LEFT || button == RotationButton.RIGHT)
-                ) {
-                    if (button == RotationButton.LEFT) renderer.requestI180TwistUFDB() else renderer.requestI180TwistURDL()
+                // Configurable-button-grid shortcut (see ButtonConfigs' class doc), replacing what
+                // used to be a hardcoded per-axis twist plus a Button-C+X/B-only fixed 180-degree
+                // I-twist special case (requestI180TwistUFDB/URDL are still the machinery
+                // underneath, just reached generically now via requestButtonAction). Only applies
+                // with nothing currently selected -- renderer.selectedRoomCell is non-null whenever
+                // hasEffectiveSelection is (an active stick selection, or RKT's permanent pin to R
+                // -- see its own doc), and in that case every button still acts directly on the
+                // selection exactly as before, unaffected by this config.
+                if (renderer.selectedRoomCell == null) {
+                    val configButton = when (button) {
+                        RotationButton.UP -> ConfigButton.Y
+                        RotationButton.DOWN -> ConfigButton.A
+                        RotationButton.LEFT -> ConfigButton.X
+                        RotationButton.RIGHT -> ConfigButton.B
+                        RotationButton.BUMPER_R -> ConfigButton.R1
+                        RotationButton.TRIGGER_R -> ConfigButton.R2
+                    }
+                    val modifier = if (moveModifierHeldAtPress) ButtonModifier.BUTTON_C else ButtonModifier.PLAIN
+                    val action = currentButtonConfig.action(modifier, configButton)
+                    if (action != null) renderer.requestButtonAction(action)
                     return@queueEvent
                 }
 
@@ -1322,7 +1364,7 @@ class MainActivity : AppCompatActivity() {
                         saveAppSettings()
                         rebuildSettingsTiles()
                     }),
-                    null,
+                    MenuTile("Button Config", onSelect = { openButtonConfigMenu() }),
                 ),
             )
         }
@@ -1576,6 +1618,59 @@ class MainActivity : AppCompatActivity() {
         }
         rebuildFiltersMenuTiles()
 
+        // Button Config submenu -- same compact/Import-Export-Reset pattern as the Filters submenu
+        // just above, reused directly (see ButtonConfigs' class doc for the format this
+        // imports/exports). Only 3 items ever (no per-set list the way Filters has), so they just
+        // take the first 3 slots of the same center-then-cardinal reachability order.
+        fun rebuildButtonConfigMenuTiles() {
+            /** Parses [text] and, only on success, replaces the active button config with it (both
+             * in memory and persisted -- see [AppSettings.buttonConfigText]'s doc). Throws
+             * [IllegalArgumentException] on malformed [text] without changing any state --
+             * callers passing untrusted text (clipboard import) should catch that. */
+            fun applyButtonConfigText(text: String) {
+                currentButtonConfig = ButtonConfigs.parseConfigText(text)
+                AppSettings.buttonConfigText = text
+                saveAppSettings()
+            }
+
+            fun importButtonConfigFromClipboard() {
+                val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                val text = clipboard.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.text?.toString()
+                if (text.isNullOrBlank()) {
+                    Toast.makeText(this, "Clipboard is empty", Toast.LENGTH_SHORT).show()
+                    return
+                }
+                try {
+                    applyButtonConfigText(text)
+                } catch (e: IllegalArgumentException) {
+                    Toast.makeText(this, "Couldn't parse clipboard as a button config: ${e.message}", Toast.LENGTH_LONG).show()
+                    return
+                }
+                Toast.makeText(this, "Button config imported", Toast.LENGTH_SHORT).show()
+            }
+
+            fun exportButtonConfigToClipboard() {
+                val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                clipboard.setPrimaryClip(ClipData.newPlainText("twisted4d button config", AppSettings.buttonConfigText))
+                Toast.makeText(this, "Button config copied to clipboard", Toast.LENGTH_SHORT).show()
+            }
+
+            fun resetButtonConfigToDefaults() {
+                applyButtonConfigText(ButtonConfigs.BUILTIN_BUTTON_CONFIG_TEXT)
+                Toast.makeText(this, "Button config reset to defaults", Toast.LENGTH_SHORT).show()
+            }
+
+            val slots = arrayOfNulls<MenuTile>(9)
+            val items = listOf(
+                MenuTile("Import", onSelect = { importButtonConfigFromClipboard() }),
+                MenuTile("Export", onSelect = { exportButtonConfigToClipboard() }),
+                MenuTile("Reset to\nDefaults", onSelect = { resetButtonConfigToDefaults() }),
+            )
+            items.forEachIndexed { i, tile -> slots[filtersMenuSlotPriority[i]] = tile }
+            buttonConfigMenuView.setTiles(slots.toList())
+        }
+        rebuildButtonConfigMenuTiles()
+
         rootLayout.addView(surfaceView)
         rootLayout.addView(statusText, topCenterParams())
         rootLayout.addView(lastMoveColumnView, topStartParams())
@@ -1690,6 +1785,7 @@ class MainActivity : AppCompatActivity() {
         rootLayout.addView(startMenuView, menuOverlayParams())
         rootLayout.addView(filtersMenuView, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         rootLayout.addView(settingsMenuView, menuOverlayParams())
+        rootLayout.addView(buttonConfigMenuView, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
     }
 
     /** Drag on the main view controls the ordinary 3D-feeling rotation, same as [handle3DDrag]. */
@@ -2235,6 +2331,18 @@ class MainActivity : AppCompatActivity() {
         }
         AppSettings.pieceFiltersText = filtersText
         currentFilterSets = filterSets
+
+        // Same missing-or-unparseable fallback reasoning as the piece filters just above.
+        val persistedButtonConfigText = prefs.getString(PREF_BUTTON_CONFIG_TEXT, null)
+        val (buttonConfigText, buttonConfig) = try {
+            val text = persistedButtonConfigText ?: ButtonConfigs.BUILTIN_BUTTON_CONFIG_TEXT
+            text to ButtonConfigs.parseConfigText(text)
+        } catch (e: IllegalArgumentException) {
+            Log.w(TAG, "Persisted button config failed to parse, resetting to defaults", e)
+            ButtonConfigs.BUILTIN_BUTTON_CONFIG_TEXT to ButtonConfigs.BUILTIN_BUTTON_CONFIG
+        }
+        AppSettings.buttonConfigText = buttonConfigText
+        currentButtonConfig = buttonConfig
     }
 
     private fun saveAppSettings() {
@@ -2242,6 +2350,7 @@ class MainActivity : AppCompatActivity() {
             .putBoolean(PREF_EXPORT_FORMAT_MC4D, AppSettings.exportFormatIsMC4D)
             .putBoolean(PREF_CONFIRM_SCRAMBLE_RESET, AppSettings.confirmBeforeScrambleReset)
             .putString(PREF_PIECE_FILTERS_TEXT, AppSettings.pieceFiltersText)
+            .putString(PREF_BUTTON_CONFIG_TEXT, AppSettings.buttonConfigText)
             .apply()
     }
 
@@ -2416,6 +2525,7 @@ class MainActivity : AppCompatActivity() {
         private const val PREF_EXPORT_FORMAT_MC4D = "exportFormatIsMC4D"
         private const val PREF_CONFIRM_SCRAMBLE_RESET = "confirmBeforeScrambleReset"
         private const val PREF_PIECE_FILTERS_TEXT = "pieceFiltersText"
+        private const val PREF_BUTTON_CONFIG_TEXT = "buttonConfigText"
 
         // Lives in app/src/main/resources/help.html, a plain HTML-ish text file David can open
         // and edit directly, rather than an inline Kotlin string -- same JVM-classpath-resource

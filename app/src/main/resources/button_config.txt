@@ -1,0 +1,23 @@
+# twisted4d button configuration -- see ButtonConfigs' class doc (ButtonConfig.kt) for the format.
+#
+# Each line assigns a twist to a button, either alone ("plain") or held together with Button C
+# ("buttonC"), fired when nothing is currently selected via the stick. Tokens are hypercubing.xyz
+# community notation: a 2-letter ridge twist (e.g. "RO'" -- cell R, fixed axis O/W, prime) or a
+# 3-letter edge twist (e.g. "IUF" -- cell I, diagonal through U and F).
+#
+# This file reproduces exactly what used to be hardcoded per-button before button configs existed.
+
+plain:
+  A: RO'
+  B: UO'
+  X: UO
+  Y: RO
+  R1: FO'
+  R2: FO
+buttonC:
+  A: LO
+  B: IRU
+  X: IUF
+  Y: LO'
+  R1: BO
+  R2: BO'

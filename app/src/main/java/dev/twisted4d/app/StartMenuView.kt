@@ -56,6 +56,7 @@ class StartMenuView(
     private val gridCols: Int = 3,
     private val gridRows: Int = 3,
     private val compact: Boolean = false,
+    private val caption: String = "FILTERS",
 ) : View(context) {
 
     var isOpen: Boolean = false
@@ -233,7 +234,7 @@ class StartMenuView(
             val backdrop = RectF(rect.left - pad, rect.top - pad, rect.right + pad, rect.bottom + pad)
             canvas.drawRoundRect(backdrop, 14f, 14f, compactBgPaint)
             captionPaint.textSize = cellH * 0.32f
-            canvas.drawText("FILTERS", rect.left, rect.top - pad - captionPaint.textSize * 0.5f, captionPaint)
+            canvas.drawText(caption, rect.left, rect.top - pad - captionPaint.textSize * 0.5f, captionPaint)
         }
 
         labelPaint.textSize = min(cellW, cellH) * (if (compact) 0.24f else 0.15f)
