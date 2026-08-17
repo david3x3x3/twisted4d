@@ -246,6 +246,24 @@ class NotationTest {
         }
     }
 
+    @Test
+    fun `LEFT and RIGHT are only already-correct on U, D, L, F, I, and O`() {
+        // Real-device confirmation (2026-08-17): unlike UP/DOWN and BUMPER_R/TRIGGER_R above, O
+        // turned out NOT to need flipping for LEFT/RIGHT -- David reported X/LEFT moving the FO
+        // ridge to RO (backwards); comparing against I (O's own reference cell, sharing its W
+        // axis, where LEFT correctly moves F to L) confirmed O had been guessed into the flipped
+        // set wrongly, "by extension" of the same L/R/I grouping the other two button pairs use
+        // (where that same guess happened to be right).
+        for (button in listOf(RotationButton.LEFT, RotationButton.RIGHT)) {
+            for (cell in listOf(Cell4.U, Cell4.D, Cell4.L, Cell4.F, Cell4.I, Cell4.O)) {
+                assertFalse(Notation.rotationInvertedForCell(button, cell), "expected $cell to already be correct for $button")
+            }
+            for (cell in listOf(Cell4.R, Cell4.B)) {
+                assertTrue(Notation.rotationInvertedForCell(button, cell), "expected $cell to need flipping for $button")
+            }
+        }
+    }
+
     // --- consolidateDoubles: double-turn collapsing --------------------------------------------
 
     @Test

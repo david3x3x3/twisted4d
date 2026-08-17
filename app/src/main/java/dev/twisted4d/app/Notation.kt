@@ -118,16 +118,20 @@ object Notation {
      * and after applying this same correction, so reusing it keeps that relationship intact rather
      * than re-deriving it from scratch.
      *
-     * RIGHT/LEFT's reference is weaker -- not live-tested like UP was, but read off the original
-     * `todo-controller-input.md` spec's stated target ("Right button: rotates so the positive X
-     * axis moves away from the user, i.e. positive X -> negative Z"). U and D are RIGHT's
-     * "collision" cells (literalAxis=Y collides with their own axis, forcing fixAxis2=W, the clean
-     * case), and simulating RIGHT's *current, unmodified* formula on them produces exactly that
-     * +X->-Z rotation -- so U/D (plus L/F/I, which already independently matched U/D's resulting
-     * screen sense) were treated as the reference, and only R/B (and O by extension) get flipped.
-     * LEFT reuses the same set for the same structural reason DOWN reuses UP's. **Needs real
-     * controller confirmation** -- unlike UP, nobody has tested RIGHT/LEFT on hardware yet, this is
-     * only as good as the old spec doc's wording and the simulation.
+     * RIGHT/LEFT's reference was originally read off the `todo-controller-input.md` spec's stated
+     * target ("Right button: rotates so the positive X axis moves away from the user, i.e.
+     * positive X -> negative Z") rather than live-tested. U and D are RIGHT's "collision" cells
+     * (literalAxis=Y collides with their own axis, forcing fixAxis2=W, the clean case), and
+     * simulating RIGHT's *current, unmodified* formula on them produces exactly that +X->-Z
+     * rotation -- so U/D (plus L/F/I, which already independently matched U/D's resulting screen
+     * sense) were treated as the reference, and R/B were flipped to match. O was *guessed* into
+     * the flipped set too, "by extension" of the same rotating-axis-pair grouping L/R/I used --
+     * confirmed wrong by real-device testing (2026-08-17, David: X/left moved the FO ridge to RO,
+     * when comparing against I -- O's own reference cell, sharing its W axis -- shows LEFT should
+     * move F to L, not R). O is excluded here now, unlike UP/DOWN and BUMPER_R/TRIGGER_R below,
+     * where the same "by extension" guess for O was independently confirmed *correct* (O's
+     * inverted flag already matches I's for both those button pairs -- see NotationTest). LEFT
+     * reuses RIGHT's (corrected) set for the same structural reason DOWN reuses UP's.
      *
      * BUMPER_R/TRIGGER_R's reference is real-device-confirmed, like UP's: the user reported both
      * already look correct on `R` and `D`, backwards on the rest. Simulated confirmation matched
@@ -136,7 +140,7 @@ object Notation {
      * both), and flipping prime for that set made all 8 cells consistent for both buttons. */
     fun rotationInvertedForCell(button: RotationButton, roomCell: Cell4): Boolean = when (button) {
         RotationButton.UP, RotationButton.DOWN -> roomCell in setOf(Cell4.D, Cell4.L, Cell4.R, Cell4.F, Cell4.I, Cell4.O)
-        RotationButton.LEFT, RotationButton.RIGHT -> roomCell in setOf(Cell4.R, Cell4.B, Cell4.O)
+        RotationButton.LEFT, RotationButton.RIGHT -> roomCell in setOf(Cell4.R, Cell4.B)
         RotationButton.TRIGGER_R, RotationButton.BUMPER_R -> roomCell in setOf(Cell4.U, Cell4.L, Cell4.F, Cell4.B, Cell4.I, Cell4.O)
     }
 
