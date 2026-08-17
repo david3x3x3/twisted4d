@@ -121,6 +121,47 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
      * here. */
     @Volatile var onTwistApplied: ((TwistRecord) -> Unit)? = null
 
+    /** Called (on the GL thread) whenever [drainTwistQueueIfIdle] finds [twistQueue] empty --
+     * i.e. every pending twist/undo/redo/edge action has now actually been applied to native
+     * state, not just requested. Unlike [onTwistApplied] (fired the instant *any* new twist is
+     * applied, always safe to trust immediately -- native mutation happens synchronously inside
+     * [applyTwistInternal]/[applyEdgeTwistInternal]), undo/redo don't get an equivalent per-action
+     * callback: [MainActivity]'s `performUndo`/`performRedo` update their own history index
+     * *optimistically*, on whichever thread calls them, before the corresponding
+     * [requestUndo]/[requestRedo] has necessarily reached the GL thread or drained off
+     * [twistQueue] -- so mid-burst, that history index can briefly be ahead of what's actually
+     * been applied. This callback is the moment that gap is guaranteed closed again: exists for
+     * [MainActivity]'s export round-trip checker, so it can compare its own recorded history
+     * against live native state only once there's nothing left in flight to make that comparison
+     * premature. */
+    @Volatile var onQueueIdle: (() -> Unit)? = null
+
+    /** Called (on the GL thread) at the exact moment [applyTwistInternal]/[applyEdgeTwistInternal]
+     * actually mutates native state -- i.e. when a queued or immediate twist/undo/redo/edge action
+     * *really* happens, as opposed to when it was merely requested. [onTwistApplied]/[MainActivity]
+     * 's own request-time logging (`performUndo`/`performRedo`) only records *when a button press
+     * updated the bookkeeping*, not when the corresponding native mutation actually landed -- added
+     * specifically because a real trace (2026-08-17) of that request-side logging alone, while
+     * internally self-consistent, couldn't rule out a request/application ordering mismatch (e.g.
+     * queued actions applying out of order) since it had no visibility into the application side at
+     * all. See the mc4d_export_bug_investigation memory. */
+    @Volatile var onNativeApply: ((String) -> Unit)? = null
+
+    /** Called (on the GL thread) specifically when an undo/redo actually lands on native state --
+     * unlike [onTwistApplied] (new twists only) or [onNativeApply] (every kind, no way to tell
+     * which), this exists so [MainActivity] can track "an undo/redo I submitted hasn't landed yet"
+     * precisely, to close a real race confirmed 2026-08-17 via a debug-log trace: [onQueueIdle]
+     * fires whenever [twistQueue] is empty, but a just-submitted `surfaceView.queueEvent{...}`
+     * Runnable (from `performUndo`/`performRedo`, running on whichever thread called them) lives in
+     * *GLSurfaceView's own* separate event queue until the GL thread picks it up -- if an unrelated
+     * animation finishes and [onDrawFrame] calls `drainTwistQueueIfIdle` in the same frame, just
+     * before that Runnable is transferred in, [twistQueue] looks empty and [onQueueIdle] fires one
+     * frame early, while `historyIndex4D` (updated optimistically by `performUndo`/`performRedo`,
+     * see its own doc) has already moved past what's truly on the live puzzle. New twists don't
+     * have this problem (their own history bookkeeping only updates *after* [onTwistApplied]
+     * confirms landing), so only undo/redo needs this separate signal. */
+    @Volatile var onUndoRedoApplied: (() -> Unit)? = null
+
     /** If set (by MainActivity, *before* `setRenderer` is called -- see build4DScreen), consumed
      * by [onSurfaceCreated] instead of its usual [NativeLib.cube4Reset] -- restores a puzzle
      * saved before the process died. See [CubeRenderer.pendingRestoreState]'s doc for why this
@@ -135,15 +176,15 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
     private var hasCreatedSurfaceBefore = false
 
     // Piece filtering: dims whole pieces (all their stickers) that the active filter-set's
-    // current filter hasn't revealed yet -- see PieceFilterSet's class doc. activeFilterSet null
+    // current step hasn't revealed yet -- see PieceFilterSet's class doc. activeFilterSet null
     // means no filter-set is active (nothing dimmed); otherwise a piece is dimmed unless
-    // PieceFilter.isPieceVisible(activeFilterStep, home) is true for the piece's own *home*
-    // position (its permanent identity, not its current one -- see onDrawFrame), checked against
-    // activeFilterSet!!.filters[activeFilterIndex] specifically -- crossing into a different
-    // filter within the set does NOT fall back to unioning with an earlier filter's pieces, by
-    // design (see PieceFilterSet's doc). MainActivity's Filters submenu sets activeFilterSet
-    // (always starting both indices at 0), and Select+L1/L2 in STICK mode steps activeFilterStep,
-    // rolling over into activeFilterIndex++/-- at a filter's start/end.
+    // PieceFilterSet.isPieceVisible(activeFilterIndex, activeFilterStep, home) is true for the
+    // piece's own *home* position (its permanent identity, not its current one -- see
+    // onDrawFrame). Whether crossing into a different filter within the set carries an earlier
+    // filter's pieces forward or resets is decided per-subfilter by the filter text's own "+"
+    // grammar, not hardcoded here (see PieceFilter's doc). MainActivity's Filters submenu sets
+    // activeFilterSet (always starting both indices at 0), and Select+L1/L2 in STICK mode steps
+    // activeFilterStep, rolling over into activeFilterIndex++/-- at a filter's start/end.
     @Volatile var activeFilterSet: PieceFilterSet? = null
     @Volatile var activeFilterIndex: Int = 0
     @Volatile var activeFilterStep: Int = 0
@@ -1353,7 +1394,10 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
                     }
                 }
                 is QueuedAction.UndoRedo -> {
-                    if (applyTwistInternal(next.cell, next.fixAxis2, next.prime)) return
+                    if (applyTwistInternal(next.cell, next.fixAxis2, next.prime)) {
+                        onUndoRedoApplied?.invoke()
+                        return
+                    }
                 }
                 is QueuedAction.Edge -> {
                     if (applyEdgeTwistInternal(next.cell, next.axis1, next.sign1, next.axis2, next.sign2)) {
@@ -1362,11 +1406,15 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
                     }
                 }
                 is QueuedAction.EdgeReplay -> {
-                    if (applyEdgeTwistInternal(next.cell, next.axis1, next.sign1, next.axis2, next.sign2)) return
+                    if (applyEdgeTwistInternal(next.cell, next.axis1, next.sign1, next.axis2, next.sign2)) {
+                        onUndoRedoApplied?.invoke()
+                        return
+                    }
                 }
             }
         }
         twistQueueMax = 0
+        onQueueIdle?.invoke()
     }
 
     /** Re-applies [cell]/[fixAxis2] with [prime] inverted -- for undo, where the caller
@@ -1389,7 +1437,7 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
             twistQueueMax = max(twistQueueMax, twistQueue.size)
             return
         }
-        applyTwistInternal(cell, fixAxis2, prime)
+        if (applyTwistInternal(cell, fixAxis2, prime)) onUndoRedoApplied?.invoke()
     }
 
     private fun applyTwistInternal(cell: Cell4, fixAxis2: Axis4, prime: Boolean): Boolean {
@@ -1402,6 +1450,7 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         val before = currentTransforms
         NativeLib.cube4Twist(cell.nativeIndex, fixAxis2.nativeIndex, prime)
         val after = NativeLib.cube4GetTransforms()
+        onNativeApply?.invoke("ridge $cell/$fixAxis2/prime=$prime")
 
         val cellAxisIdx = cell.axis.nativeIndex
         animAffected = BooleanArray(HypercubeGeometry.HOME_POSITIONS.size) { i ->
@@ -1472,7 +1521,7 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
             twistQueueMax = max(twistQueueMax, twistQueue.size)
             return
         }
-        applyEdgeTwistInternal(cell, axis1, sign1, axis2, sign2)
+        if (applyEdgeTwistInternal(cell, axis1, sign1, axis2, sign2)) onUndoRedoApplied?.invoke()
     }
 
     private fun applyEdgeTwistInternal(cell: Cell4, axis1: Axis4, sign1: Int, axis2: Axis4, sign2: Int): Boolean {
@@ -1487,6 +1536,7 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
             NativeLib.cube4Twist(cell.nativeIndex, fixAxis2.nativeIndex, prime)
         }
         val after = NativeLib.cube4GetTransforms()
+        onNativeApply?.invoke("edge $cell/$axis1,$sign1/$axis2,$sign2")
 
         val cellAxisIdx = cell.axis.nativeIndex
         animAffected = BooleanArray(HypercubeGeometry.HOME_POSITIONS.size) { i ->
@@ -1508,10 +1558,19 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         return true
     }
 
-    /** Instantly re-randomizes the puzzle (no animation), refreshes solved state, and returns
-     * the moves actually applied -- MainActivity records these into its own twist history (see
-     * [NativeLib.cube4Scramble]'s doc) so an exported MC4D log can mark where the scramble ends,
-     * matching real MagicCube4D's own "m|" convention. */
+    /** Instantly resets to solved, then re-randomizes the puzzle from there (no animation),
+     * refreshes solved state, and returns the moves actually applied -- MainActivity records
+     * these into its own twist history (see [NativeLib.cube4Scramble]'s doc) so an exported MC4D
+     * log can mark where the scramble ends, matching real MagicCube4D's own "m|" convention. The
+     * reset-first is load-bearing, not defensive padding: [NativeLib.cube4Scramble] itself
+     * scrambles from *whatever state the native cube is already in*, and callers only ever record
+     * the returned moves as "the whole history so far," implicitly assuming that starting point
+     * was solved -- confirmed as a real bug (2026-08-17, via MainActivity's export round-trip
+     * checker) via the simplest possible repro: press Scramble twice in a row with no Reset
+     * in between. The second scramble silently scrambled from the first scramble's *already-
+     * scrambled* state, while MainActivity's history/export only ever recorded the second
+     * scramble's 250 moves as if they'd started from solved -- an export taken at that point would
+     * never replay back to solved in real MC4D, because the recorded "start" wasn't the true one. */
     fun requestScramble(moveCount: Int): List<Triple<Cell4, Axis4, Boolean>> {
         if (animating) return emptyList()
         // Any twist still queued (e.g. from a room-rotation in flight -- this check, like
@@ -1519,6 +1578,7 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         // the pre-scramble puzzle/orientation and would be nonsense applied afterward.
         twistQueue.clear()
         twistQueueMax = 0
+        NativeLib.cube4Reset()
         val raw = NativeLib.cube4Scramble(moveCount)
         currentTransforms = NativeLib.cube4GetTransforms()
         onStateChanged?.invoke(NativeLib.cube4IsSolved())
@@ -1638,8 +1698,8 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
             // Filtered-out pieces are no longer skipped outright -- they're dimmed the same way
             // an unselected piece is (see frameEmphasizedCell below), so a filter still lets you
             // see roughly where hidden pieces are instead of punching a hole in the puzzle.
-            val filterDimmed = activeFilterSet?.filters?.getOrNull(activeFilterIndex)
-                ?.let { !it.isPieceVisible(activeFilterStep, home) } ?: false
+            val filterDimmed = activeFilterSet
+                ?.let { !it.isPieceVisible(activeFilterIndex, activeFilterStep, home) } ?: false
 
             val base = i * 20
             val src = when {

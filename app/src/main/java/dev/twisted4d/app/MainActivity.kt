@@ -8,6 +8,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.res.Configuration
+import android.graphics.Color
 import android.hardware.input.InputManager
 import android.opengl.GLSurfaceView
 import android.os.Bundle
@@ -36,6 +37,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.util.Collections
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
@@ -267,6 +269,41 @@ class MainActivity : AppCompatActivity() {
     // overwrite historyIndex4D unconditionally themselves (see doScramble/doReset), so there's no
     // window where a dropped queue entry leaves this field stale.
     @Volatile private var historyIndex4D = 0
+
+    // Debug instrumentation for the export round-trip checker (see checkExportRoundTrip's doc) --
+    // a ring buffer (last 100) of recent undo/redo/twist bookkeeping events *and* the matching
+    // HypercubeRenderer.onNativeApply "actually applied to native state" events, both timestamped,
+    // so a mismatch's log line can show the *exact sequence* of both request-time actions (which
+    // button, in what order, how many ms apart) and application-time actions -- letting the two be
+    // compared for an ordering mismatch, not just the final snapshot, which loses exactly the
+    // ordering/timing information most likely to matter for a race. Written from the UI thread
+    // (performUndo/performRedo) and the GL thread (onTwistApplied/onQueueIdle/onNativeApply), same
+    // threading as historyIndex4D itself, hence synchronizedList.
+    private val recentHistoryActions = Collections.synchronizedList(mutableListOf<String>())
+    private fun logHistoryAction(description: String) {
+        synchronized(recentHistoryActions) {
+            recentHistoryActions.add("${System.currentTimeMillis() % 100_000}ms: $description")
+            while (recentHistoryActions.size > 100) recentHistoryActions.removeAt(0)
+        }
+    }
+
+    // Closes a real race confirmed 2026-08-17 via a debug-log trace: HypercubeRenderer.onQueueIdle
+    // fires whenever its own twistQueue is empty, but a just-submitted `surfaceView.queueEvent{...}`
+    // Runnable (from performUndo/performRedo below) lives in *GLSurfaceView's own* separate event
+    // queue until the GL thread picks it up -- if an unrelated animation finishes and onDrawFrame
+    // calls drainTwistQueueIfIdle in the same frame, just before that Runnable is transferred in,
+    // twistQueue looks empty and onQueueIdle fires one frame early, while historyIndex4D (already
+    // bumped optimistically) has moved past what's truly on the live puzzle -- a transient mismatch
+    // that checkExportRoundTrip would then report and (by design) never un-show, even once the
+    // pending undo/redo lands milliseconds later and the *real* state catches up. Incremented in
+    // performUndo/performRedo right when a real (non-no-op) undo/redo is submitted, decremented via
+    // HypercubeRenderer.onUndoRedoApplied (fired specifically when that submission's own native
+    // mutation actually lands -- see its doc for why new twists don't need this: their own history
+    // bookkeeping only updates *after* confirmed application, so they can't get ahead of reality the
+    // way undo/redo's optimistic update can). AtomicInteger, not a plain @Volatile Int, since
+    // increments happen on whichever thread calls performUndo/performRedo and decrements happen on
+    // the GL thread -- a bare `++`/`--` would be a non-atomic read-modify-write race between them.
+    private val pendingUndoRedoCount = AtomicInteger(0)
 
     // Set by loadState() (called once, before the first rebuildUi()) when a saved puzzle state
     // exists for that mode; consumed (and nulled) by build3DScreen/build4DScreen the first time
@@ -688,12 +725,17 @@ class MainActivity : AppCompatActivity() {
             val targetIndex: Int
             val record: TwistRecord
             synchronized(moveHistory4D) {
-                if (historyIndex4D <= scrambleMoveCount4D) return
+                if (historyIndex4D <= scrambleMoveCount4D) {
+                    logHistoryAction("undo: no-op (historyIndex4D=$historyIndex4D already at scrambleMoveCount4D=$scrambleMoveCount4D)")
+                    return
+                }
                 targetIndex = historyIndex4D - 1
                 record = moveHistory4D[targetIndex]
                 historyIndex4D = targetIndex
             }
+            logHistoryAction("undo -> historyIndex4D=$historyIndex4D, reversing ${Notation.communityNotation(record)}")
             updateTurnCount()
+            pendingUndoRedoCount.incrementAndGet()
             // Edge twists are self-inverse (see TwistRecord.Edge's doc) -- requestEdgeReplay just
             // re-applies the same one, no separate "undo direction" the way a Ridge's requestUndo
             // (invert prime) has.
@@ -716,12 +758,17 @@ class MainActivity : AppCompatActivity() {
             val targetIndex: Int
             val record: TwistRecord
             synchronized(moveHistory4D) {
-                if (historyIndex4D >= moveHistory4D.size) return
+                if (historyIndex4D >= moveHistory4D.size) {
+                    logHistoryAction("redo: no-op (historyIndex4D=$historyIndex4D already at moveHistory4D.size=${moveHistory4D.size})")
+                    return
+                }
                 record = moveHistory4D[historyIndex4D]
                 targetIndex = historyIndex4D + 1
                 historyIndex4D = targetIndex
             }
+            logHistoryAction("redo -> historyIndex4D=$historyIndex4D, replaying ${Notation.communityNotation(record)}")
             updateTurnCount()
+            pendingUndoRedoCount.incrementAndGet()
             when (record) {
                 is TwistRecord.Ridge ->
                     surfaceView.queueEvent { renderer.requestRedo(record.cell, record.fixAxis2, record.prime) }
@@ -1209,6 +1256,104 @@ class MainActivity : AppCompatActivity() {
         }
         updateInputModeText()
 
+        // Debug instrumentation for the real-MC4D-export-doesn't-solve bug (2026-08 investigation,
+        // see the mc4d_export_bug_investigation memory): visible, persistent (until Reset/Scramble)
+        // warning if the live puzzle ever diverges from what checkExportRoundTrip below computes
+        // exporting-and-replaying the current move history would produce. Styled like
+        // filterStatusText/inputModeText but red and GONE only until first triggered -- unlike
+        // those, this never goes back to GONE on its own once shown, since a one-off desync is
+        // exactly the kind of thing that should stay visible rather than silently scroll away.
+        // Tappable -- see shareDebugLog's doc for why.
+        /** Shares [recentHistoryActions]' full undo/redo/twist trace plus the current exportable
+         * move-history snapshot, via the same share-sheet/clipboard path real export uses ([
+         * shareTwistLog]) -- reachable both by tapping [exportCheckText] once it's showing (the
+         * obvious place to look right when the mismatch happens) and from the Settings screen's
+         * "Debug Log" tile (in case the banner already scrolled out of mind, or for a proactive
+         * grab before anything's gone wrong yet). Exists specifically because David has no USB
+         * cable handy to pull logcat when the mismatch banner fires -- see the
+         * mc4d_export_bug_investigation memory. */
+        fun shareDebugLog() {
+            val trace = synchronized(recentHistoryActions) { recentHistoryActions.joinToString("\n") }
+            val snapshot = synchronized(moveHistory4D) { moveHistory4D.take(historyIndex4D) }
+            val recentMoves = snapshot.takeLast(20).joinToString(" ") { Notation.communityNotation(it) }
+            val log = buildString {
+                appendLine("twisted4d debug log")
+                appendLine(
+                    "moveHistory4D.size=${moveHistory4D.size}, historyIndex4D=$historyIndex4D, " +
+                        "scrambleMoveCount4D=$scrambleMoveCount4D",
+                )
+                appendLine("last 20 recorded moves: $recentMoves")
+                appendLine()
+                appendLine("recent undo/redo/twist action trace (oldest first):")
+                appendLine(trace)
+            }
+            shareTwistLog(log)
+        }
+
+        val exportCheckText = TextView(this).apply {
+            textSize = 14f
+            setTextColor(Color.RED)
+            setPadding(24, 0, 24, 8)
+            visibility = View.GONE
+            setOnClickListener { shareDebugLog() }
+        }
+
+        /** Independently reconstructs the puzzle state from [moveHistory4D]'s current exportable
+         * snapshot (`moveHistory4D.take(historyIndex4D)` -- the exact same snapshot [doExportMC4D]
+         * below turns into an MC4D log file) by replaying it into a fresh, disposable [ShadowCube4],
+         * then diffs that against the live native state ([NativeLib.cube4GetTransforms]). Any
+         * mismatch means the history this app *thinks* it recorded doesn't match what actually
+         * happened to the puzzle -- exactly the class of bug behind solves that look complete but
+         * don't replay solved in real MC4D (see the mc4d_export_bug_investigation memory). Replays
+         * raw [TwistRecord] fields directly rather than round-tripping through MC4D grip/dir
+         * numbers first -- see [ShadowCube4]'s doc for why that's an equally powerful check with
+         * less code (encoding then decoding with our own tables is a proven-lossless round trip, so
+         * it could never catch anything this simpler replay wouldn't also catch).
+         *
+         * [context] is a short label for the log line only, identifying which caller triggered this
+         * pass. Called from three places, each for a different reason:
+         * - [renderer]'s `onTwistApplied` (below): fires the instant any *new* twist is applied,
+         *   always safe to check right away -- native state mutates synchronously inside
+         *   `applyTwistInternal`/`applyEdgeTwistInternal`, and [historyIndex4D] is only ever
+         *   updated from inside this same callback for new twists, so it's never ahead of reality.
+         * - [renderer]'s `onQueueIdle` (below): fires once every pending twist/undo/redo/edge action
+         *   has actually drained. This is the *only* safe place to check after undo/redo
+         *   specifically -- David's suspicion, and a real gap in the code: `performUndo`/
+         *   `performRedo` update [historyIndex4D] optimistically, on whichever thread calls them,
+         *   before the matching native undo has necessarily reached the GL thread or drained off
+         *   the twist queue, so a rapid burst of undo presses can leave [historyIndex4D] briefly
+         *   ahead of what's truly been applied. Checking immediately from inside performUndo/
+         *   performRedo would produce false positives during exactly that gap; onQueueIdle is the
+         *   guaranteed-caught-up moment instead.
+         * - [doScramble] directly: a scramble applies instantly with no animation, so it never goes
+         *   through the animating->onQueueIdle path at all. */
+        fun checkExportRoundTrip(context: String) {
+            val snapshot = synchronized(moveHistory4D) { moveHistory4D.take(historyIndex4D) }
+            val shadow = ShadowCube4()
+            snapshot.forEach { shadow.apply(it) }
+            val live = NativeLib.cube4GetTransforms()
+            val mismatches = shadow.mismatchCount(live)
+            if (mismatches > 0) {
+                val description = shadow.describeDivergence(live)
+                // Last few recorded moves and the full recent undo/redo/twist action trace --
+                // see recentHistoryActions' doc for why the trace matters more than the snapshot
+                // alone: it shows the exact sequence/timing of button presses that led here, which
+                // a moveHistory4D snapshot alone (just the *result*) can't reconstruct.
+                val recentMoves = snapshot.takeLast(6).joinToString(" ") { Notation.communityNotation(it) }
+                val trace = synchronized(recentHistoryActions) { recentHistoryActions.joinToString("\n  ") }
+                Log.e(
+                    TAG,
+                    "EXPORT ROUND-TRIP MISMATCH ($context): live puzzle state diverges from the " +
+                        "recorded move history at ${snapshot.size} moves (historyIndex4D=$historyIndex4D) -- " +
+                        "$description\nlast recorded moves: $recentMoves\nrecent action trace:\n  $trace",
+                )
+                runOnUiThread {
+                    exportCheckText.text = "⚠ Export mismatch: $mismatches pieces, move ${snapshot.size}"
+                    exportCheckText.visibility = View.VISIBLE
+                }
+            }
+        }
+
         renderer.onTwistApplied = { record ->
             synchronized(moveHistory4D) {
                 // A genuinely new move made while historyIndex4D isn't at the end (i.e. after one
@@ -1218,8 +1363,24 @@ class MainActivity : AppCompatActivity() {
                 moveHistory4D.add(record)
                 historyIndex4D = moveHistory4D.size
             }
+            logHistoryAction("twist applied -> historyIndex4D=$historyIndex4D, ${Notation.communityNotation(record)}")
+            checkExportRoundTrip("twist")
             runOnUiThread { updateTurnCount() }
         }
+        renderer.onQueueIdle = {
+            logHistoryAction("queue idle (pendingUndoRedoCount=${pendingUndoRedoCount.get()})")
+            // Skip the check (not just its report) while an undo/redo submission is still in
+            // flight -- see pendingUndoRedoCount's doc for the race this closes: this "queue idle"
+            // signal can fire one frame before that submission's own queueEvent Runnable has even
+            // reached HypercubeRenderer's twistQueue, well before its native mutation has actually
+            // happened, so historyIndex4D would still be ahead of the live puzzle for real (if
+            // transiently) right now -- not a bug to report, just not settled yet. The *next*
+            // onQueueIdle, once that submission's onUndoRedoApplied confirms it landed, will find
+            // pendingUndoRedoCount back at 0 and check for real.
+            if (pendingUndoRedoCount.get() == 0) checkExportRoundTrip("queue idle")
+        }
+        renderer.onNativeApply = { description -> logHistoryAction("APPLIED: $description") }
+        renderer.onUndoRedoApplied = { pendingUndoRedoCount.decrementAndGet() }
 
         // The big last-move notation display (e.g. "RU'") that used to live here was removed
         // 2026-08-01 -- it was only ever a cell-selection-debugging aid (see communityNotation's
@@ -1235,6 +1396,7 @@ class MainActivity : AppCompatActivity() {
             addView(filterStatusText)
             addView(inputModeText)
             addView(batteryText)
+            addView(exportCheckText)
         }
         lastMoveColumn = lastMoveColumnView
 
@@ -1270,6 +1432,13 @@ class MainActivity : AppCompatActivity() {
             timerArmed = true
             startSolveTimer()
             updateTimerText()
+            // A new solve attempt starts clean -- any export-mismatch warning from a previous
+            // attempt is no longer relevant (see exportCheckText's doc: it otherwise never clears
+            // itself, by design). Also resets pendingUndoRedoCount defensively -- see its own doc:
+            // in practice every increment should always be matched by a decrement, but this is a
+            // cheap, natural place to self-heal if that ever somehow didn't happen.
+            exportCheckText.visibility = View.GONE
+            pendingUndoRedoCount.set(0)
             surfaceView.queueEvent {
                 // Scrambles have no button/room context of their own -- treat room as native
                 // (a reasonable fallback since a scramble always starts from a fresh, default
@@ -1283,6 +1452,9 @@ class MainActivity : AppCompatActivity() {
                 }
                 scrambleMoveCount4D = scrambleMoves.size
                 historyIndex4D = scrambleMoves.size
+                // Scrambles apply instantly (no animation), so they never pass through
+                // onQueueIdle -- check explicitly instead (see checkExportRoundTrip's doc).
+                checkExportRoundTrip("scramble")
                 runOnUiThread { updateTurnCount() }
             }
         }
@@ -1295,6 +1467,8 @@ class MainActivity : AppCompatActivity() {
             updateTurnCount()
             resetSolveTimer()
             updateTimerText()
+            exportCheckText.visibility = View.GONE
+            pendingUndoRedoCount.set(0)
         }
 
         // Settings submenu -- same cross-shaped 3x3 reachability layout as filtersMenuView (see
@@ -1358,7 +1532,12 @@ class MainActivity : AppCompatActivity() {
                         rebuildSettingsTiles()
                     }),
                     controllerToggleTile("Z Dir Right", { it.zDirRight }, { e, v -> e.zDirRight = v }),
-                    null,
+                    // Temporary debug tile for the export-round-trip-mismatch investigation (see
+                    // shareDebugLog's doc and the mc4d_export_bug_investigation memory) -- a
+                    // proactive way to grab the same trace exportCheckText's tap does, in case the
+                    // banner already scrolled out of mind. Remove once that investigation is
+                    // closed out -- not meant as a permanent tile.
+                    MenuTile("Debug Log", onSelect = { shareDebugLog() }),
                     MenuTile("Export Format\n${if (AppSettings.exportFormatIsMC4D) "MC4D" else "Log"}", onSelect = {
                         AppSettings.exportFormatIsMC4D = !AppSettings.exportFormatIsMC4D
                         saveAppSettings()
