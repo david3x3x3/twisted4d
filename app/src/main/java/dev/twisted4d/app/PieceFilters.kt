@@ -93,14 +93,33 @@ private fun parseSubfilterTokens(subfilter: String): List<FilterToken> =
         FilterToken(positive = groups.first(), removals = groups.drop(1))
     }
 
+/** One subfilter after splitting off its leading `"+"` (see [PieceFilter]'s doc): [additive]
+ * means "union with whatever was visible just before this step" rather than resetting to just
+ * this subfilter's own matches. */
+private data class ParsedSubfilter(val additive: Boolean, val tokens: List<FilterToken>)
+
+private fun parseSubfilter(raw: String): ParsedSubfilter {
+    val additive = raw.startsWith("+")
+    val text = if (additive) raw.substring(1) else raw
+    return ParsedSubfilter(additive, parseSubfilterTokens(text))
+}
+
 /**
  * One *filter*: an ordered list of subfilter expression strings (see [PieceFilters]' class doc
- * for the grammar), one stage of a [PieceFilterSet]. Stepping into a filter shows only the pieces
- * matched by `subfilters[0]`; each step forward within it reveals the union of every piece
- * matched by `subfilters[0..step]` -- see [MainActivity]'s Select+L1/L2 wiring (which steps
- * through a filter, and past its last subfilter into the filter-set's next filter) for how this
- * is surfaced. That union is strictly local to this filter -- moving into the *next* filter does
- * not carry it forward (see [PieceFilterSet]'s doc for why that's the point).
+ * for the grammar), one stage of a [PieceFilterSet]. Stepping into a filter starts at
+ * `subfilters[0]`; each step forward reveals `subfilters[step]`'s own matches, *plus* whatever
+ * was visible just before it if `subfilters[step]` starts with `"+"` (union/accumulate) -- a
+ * subfilter with no `"+"` resets to just its own matches instead, clearing anything shown by
+ * earlier subfilters. This is a uniform per-subfilter rule with no special case for a filter's
+ * own `subfilters[0]`: whether crossing into a *new* filter clears the previous filter's pieces
+ * is decided the exact same way, by whether the new filter's first subfilter starts with `"+"`
+ * (see [PieceFilterSet.isPieceVisible] for how that carry-in across filters is resolved) --
+ * deliberately decoupling "this step gets a new label" (which filter you're in) from "this step
+ * clears prior pieces" (whether its first subfilter has "+"), which used to be the same event
+ * (crossing a filter boundary always reset) and didn't need to be.
+ *
+ * See [MainActivity]'s Select+L1/L2 wiring (which steps through a filter, and past its last
+ * subfilter into the filter-set's next filter) for how stepping is surfaced.
  */
 data class PieceFilter(val name: String, val subfilters: List<String>) {
     // Parsed eagerly, once per (immutable) PieceFilter instance, rather than per-frame --
@@ -110,38 +129,89 @@ data class PieceFilter(val name: String, val subfilters: List<String>) {
     // surfaces immediately as an exception from construction/parseFilterText -- callers importing
     // untrusted text (MainActivity's clipboard import) need to catch a bad paste *before*
     // committing it, not discover it later when the renderer first evaluates the filter.
-    private val parsedSubfilters: List<List<FilterToken>> = subfilters.map(::parseSubfilterTokens)
+    private val parsedSubfilters: List<ParsedSubfilter> = subfilters.map(::parseSubfilter)
 
-    /** True if [home] (a piece's permanent HOME_POSITIONS identity) is matched by any token in
-     * any of `subfilters[0..step]` -- i.e. whether it's visible once the filter has been stepped
-     * forward to [step] (clamped into range; a freshly-selected filter starts at step 0). */
+    /** The index of the nearest subfilter at or before [clampedStep] that does NOT start with
+     * `"+"` -- i.e. where this filter's own *local* accumulation window starts. Falls back to 0
+     * (the whole local range) if every subfilter through [clampedStep] is additive -- that case
+     * means this filter alone can't resolve visibility; see [needsCarryIn]. */
+    private fun localWindowStart(clampedStep: Int): Int {
+        for (i in clampedStep downTo 0) {
+            if (!parsedSubfilters[i].additive) return i
+        }
+        return 0
+    }
+
+    /** True if [home] (a piece's permanent HOME_POSITIONS identity) is matched by this filter's
+     * own subfilters alone, once stepped to [step] (clamped into range; a freshly-selected filter
+     * starts at step 0) -- unions `subfilters[localWindowStart(step)..step]`, i.e. everything back
+     * to the nearest non-additive ("reset") subfilter. Doesn't see anything from a *previous*
+     * filter even if [needsCarryIn] is true for [step] -- that's [PieceFilterSet.isPieceVisible]'s
+     * job, since only it knows what filter came before this one. */
     fun isPieceVisible(step: Int, home: Vec4i): Boolean {
         if (parsedSubfilters.isEmpty()) return false
         val homeCoords = intArrayOf(home.x, home.y, home.z, home.w)
         val stickerCount = home.stickerCount
-        val lastStep = step.coerceIn(0, parsedSubfilters.size - 1)
-        for (i in 0..lastStep) {
-            if (parsedSubfilters[i].any { it.matches(homeCoords, stickerCount) }) return true
+        val clampedStep = step.coerceIn(0, parsedSubfilters.size - 1)
+        val windowStart = localWindowStart(clampedStep)
+        for (i in windowStart..clampedStep) {
+            if (parsedSubfilters[i].tokens.any { it.matches(homeCoords, stickerCount) }) return true
         }
         return false
+    }
+
+    /** True if every subfilter from 0 through [step] (clamped) starts with `"+"` -- i.e. this
+     * filter never hits a "reset" subfilter on the way back to its own start, so resolving full
+     * visibility at [step] needs reaching back into whatever filter preceded this one in its
+     * [PieceFilterSet] (or, if this is already the set's first filter, there's nothing to reach
+     * back into and a leading "+" there is simply a no-op). */
+    fun needsCarryIn(step: Int): Boolean {
+        if (parsedSubfilters.isEmpty()) return false
+        val clampedStep = step.coerceIn(0, parsedSubfilters.size - 1)
+        return (0..clampedStep).all { parsedSubfilters[it].additive }
     }
 }
 
 /**
  * One named group of [PieceFilter]s, selected as a unit from the Filters menu -- e.g. `pieces`,
- * `cfop`, or a future `3block`. Stepping (Select+L1/L2 in STICK mode) moves through
- * `filters[0].subfilters`, then on reaching its last subfilter, the *next* press moves into
- * `filters[1]`'s own subfilters starting fresh at its step 0 -- deliberately NOT unioned with
- * whatever was visible at the end of `filters[0]` (see [MainActivity].updateFilterStatusText's
- * doc for why "the previous filter's pieces disappear" is the intended default here, not a bug):
- * David wants filter-sets like `3block`, which walk through many named solve stages, to be able
- * to stop showing an earlier stage's pieces once you've moved past it and they're just visual
- * clutter -- unlike `cfop`, whose single filter wants everything solved so far to stay visible.
- * A filter-set author gets this "starts fresh" behavior for free by simply putting each stage in
- * its own [PieceFilter]; if a later filter *should* keep showing something from an earlier one,
- * its own first subfilter just needs to re-include those same tokens.
+ * `cfop`, or `3block`. Stepping (Select+L1/L2 in STICK mode) moves through `filters[0].
+ * subfilters`, then on reaching its last subfilter, the *next* press moves into `filters[1]`'s
+ * own subfilters starting fresh at its step 0 (see [MainActivity].updateFilterStatusText's doc).
+ * Whether that crossing also *clears* what was visible at the end of `filters[0]` is controlled
+ * by [PieceFilter]'s `"+"` grammar, exactly the same way it's controlled between two subfilters
+ * inside one filter -- crossing into a new filter is not itself special-cased. By default (no
+ * `"+"` on the new filter's first subfilter) it does reset: David wants filter-sets like `3block`,
+ * which walk through many named solve stages, to be able to stop showing an earlier stage's
+ * pieces once you've moved past it and they're just visual clutter -- unlike `cfop`, whose single
+ * filter wants everything solved so far to stay visible. A filter-set author gets that "starts
+ * fresh" behavior for free by simply putting each stage in its own [PieceFilter] and not
+ * prefixing its first subfilter with `"+"`; if a later filter *should* keep showing what an
+ * earlier one revealed, prefixing its first subfilter with `"+"` carries that forward without
+ * having to re-list the earlier tokens by hand (the whole point of decoupling "new filter, new
+ * label" from "new filter, clears prior pieces" -- see [PieceFilter]'s doc).
  */
-data class PieceFilterSet(val name: String, val filters: List<PieceFilter>)
+data class PieceFilterSet(val name: String, val filters: List<PieceFilter>) {
+    /** Whether [home] is visible once stepped to ([filterIndex], [step]) (both clamped into
+     * range). First checks `filters[filterIndex]` alone ([PieceFilter.isPieceVisible]); if that
+     * filter never finds a local reset point on the way back to its own subfilter 0 (i.e.
+     * [PieceFilter.needsCarryIn] is true at [step]), recurses into the *previous* filter's own
+     * last step to pull in whatever it had accumulated -- which may itself recurse further back,
+     * chaining across as many consecutive all-additive filters as the definition uses. Grounds
+     * out (returns false) at [filterIndex] 0 needing carry-in, since there's no earlier filter to
+     * reach into -- a leading `"+"` on a filter-set's very first subfilter is a harmless no-op. */
+    fun isPieceVisible(filterIndex: Int, step: Int, home: Vec4i): Boolean {
+        if (filters.isEmpty()) return false
+        val clampedIndex = filterIndex.coerceIn(0, filters.size - 1)
+        val filter = filters[clampedIndex]
+        val clampedStep = step.coerceIn(0, filter.subfilters.size - 1)
+        if (filter.isPieceVisible(clampedStep, home)) return true
+        if (clampedIndex > 0 && filter.needsCarryIn(clampedStep)) {
+            val prev = filters[clampedIndex - 1]
+            return isPieceVisible(clampedIndex - 1, prev.subfilters.size - 1, home)
+        }
+        return false
+    }
+}
 
 private val FILTER_SET_HEADER_LINE = Regex("""^(\S.*):\s*$""")
 private val FILTER_HEADER_LINE = Regex("""^\s+(\S.*):\s*$""")
@@ -159,29 +229,37 @@ private val SUBFILTER_LINE = Regex("""^\s*-\s*"(.*)"\s*$""")
  * pieces:
  *   pieces:
  *     - "m"
- *     - "r"
+ *     - "+r"
  *
  * 3block:
  *   cross:
  *     - "m,Ir"
  *   left cross:
- *     - "IUFe,UFr"
+ *     - "+IUFe,UFr"
  * ```
+ * (the leading `"+"` on `"+r"`/`"+IUFe,UFr"` above means each accumulates onto what the previous
+ * step showed, rather than resetting -- see the `"+"` paragraph below.)
  * An unindented `name:` line starts a filter-set; an indented `name:` line (any amount of leading
  * whitespace -- not pinned to a specific width, so tabs or a different number of spaces both
  * work) starts a filter within it; an indented `- "subfilter"` line (distinguished from a filter
  * header by its leading `-`, not by indent depth either) appends one subfilter string to it.
  *
- * A subfilter string is comma-separated tokens (union), each token optionally dash-separated
- * into a positive group and one or more groups to subtract from it (e.g. `"mre-LR"` = every
- * center/ridge/edge piece, except any touching L or R). Each group -- on either side of a `-` --
- * is one of: cell letters intersected, optionally narrowed to one type by a single trailing type
- * letter (`"IUFe"` = the one piece touching I, U, *and* F, that's also an edge -- the original
- * grammar's only shape); a bare run of *only* cell letters, unioned (`"LR"` = touches L *or* R,
- * not the always-empty "touches both"); or a bare run of *only* type letters, unioned (`"mre"` =
- * a center, ridge, *or* edge, not the always-empty "is simultaneously all three"). See
- * [parsePieceGroup]/[parseSubfilterTokens] for the exact rules, and [PieceFilterSet] for why a
- * filter-set can hold more than one filter and what crossing from one into the next actually does.
+ * A subfilter string optionally starts with `"+"` (see [PieceFilter]'s doc -- stepping to this
+ * subfilter unions its matches with whatever was visible one step before, instead of the default
+ * of resetting to just this subfilter's own matches; the same rule applies uniformly whether the
+ * previous step was another subfilter in this filter or the last subfilter of the *previous*
+ * filter, so a filter's label can change independently of whether its pieces get cleared). After
+ * that optional `"+"`, the rest is comma-separated tokens (union), each token optionally
+ * dash-separated into a positive group and one or more groups to subtract from it (e.g.
+ * `"mre-LR"` = every center/ridge/edge piece, except any touching L or R). Each group -- on
+ * either side of a `-` -- is one of: cell letters intersected, optionally narrowed to one type by
+ * a single trailing type letter (`"IUFe"` = the one piece touching I, U, *and* F, that's also an
+ * edge -- the original grammar's only shape); a bare run of *only* cell letters, unioned (`"LR"` =
+ * touches L *or* R, not the always-empty "touches both"); or a bare run of *only* type letters,
+ * unioned (`"mre"` = a center, ridge, *or* edge, not the always-empty "is simultaneously all
+ * three"). See [parsePieceGroup]/[parseSubfilterTokens] for the exact rules, and [PieceFilterSet]
+ * for why a filter-set can hold more than one filter and what crossing from one into the next
+ * actually does.
  *
  * [MainActivity] persists the *raw text* of the currently-active filter set (starting from
  * [BUILTIN_FILTERS_TEXT]) rather than a re-serialized structure, so clipboard export is always

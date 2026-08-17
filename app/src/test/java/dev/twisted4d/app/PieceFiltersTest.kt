@@ -22,12 +22,14 @@ class PieceFiltersTest {
         // pieces/cfop both wrap David's original flat filter unchanged, as a single same-named
         // filter.
         assertEquals(listOf("pieces"), filterSets[0].filters.map { it.name })
-        assertEquals(listOf("m", "r", "e", "c"), filterSets[0].filters[0].subfilters)
+        // "+" on every subfilter after the first preserves the original cumulative-stepping
+        // behavior (see PieceFilter's "+" doc) -- the raw text round-trips with it included.
+        assertEquals(listOf("m", "+r", "+e", "+c"), filterSets[0].filters[0].subfilters)
         assertEquals(listOf("cfop"), filterSets[1].filters.map { it.name })
         // 22 original steps with a single catch-all "O" at the end, split (by David) into three
         // separate Or/Oe/Oc steps -- one per piece type -- for 24 total.
         assertEquals(24, filterSets[1].filters[0].subfilters.size)
-        assertEquals(listOf("Or", "Oe", "Oc"), filterSets[1].filters[0].subfilters.takeLast(3))
+        assertEquals(listOf("+Or", "+Oe", "+Oc"), filterSets[1].filters[0].subfilters.takeLast(3))
     }
 
     @Test
@@ -63,7 +65,7 @@ class PieceFiltersTest {
         // text David provided had "IDFRc,DFre" here (lowercase r, missing e-vs-c letter symmetry)
         // where every sibling line (e.g. "IUFRc,URFe") does not.
         val lastCornerLine = PieceFilters.BUILTIN_FILTER_SETS[1].filters[0].subfilters[20]
-        assertEquals("IDFRc,DFRe", lastCornerLine)
+        assertEquals("+IDFRc,DFRe", lastCornerLine)
     }
 
     // --- Token grammar: intersection (concatenated letters), union (commas), type letters ------
@@ -173,17 +175,48 @@ class PieceFiltersTest {
         }
     }
 
-    // --- Cumulative stepping within one filter: visible set only grows as step advances --------
+    // --- "+"-controlled stepping within one filter: reset by default, accumulate with "+" ------
 
     @Test
-    fun `stepping forward reveals the union of every subfilter up to and including step`() {
+    fun `a subfilter with no leading + resets, clearing what the previous step showed`() {
         val filter = PieceFilter("test", listOf("m", "r"))
         val center = Vec4i(1, 0, 0, 0)
         val ridge = Vec4i(1, 1, 0, 0)
         assertTrue(filter.isPieceVisible(0, center))
         assertFalse(filter.isPieceVisible(0, ridge))
-        assertTrue(filter.isPieceVisible(1, center)) // still visible -- union grows, never shrinks
+        // Step 1 ("r", no "+") resets -- the center from step 0 is no longer visible.
+        assertFalse(filter.isPieceVisible(1, center))
         assertTrue(filter.isPieceVisible(1, ridge))
+    }
+
+    @Test
+    fun `a leading + accumulates onto what the previous step showed instead of resetting`() {
+        val filter = PieceFilter("test", listOf("m", "+r"))
+        val center = Vec4i(1, 0, 0, 0)
+        val ridge = Vec4i(1, 1, 0, 0)
+        assertTrue(filter.isPieceVisible(0, center))
+        assertFalse(filter.isPieceVisible(0, ridge))
+        // Step 1 ("+r") accumulates -- the center from step 0 stays visible too.
+        assertTrue(filter.isPieceVisible(1, center))
+        assertTrue(filter.isPieceVisible(1, ridge))
+    }
+
+    @Test
+    fun `a reset partway through a run of + subfilters clears everything before it`() {
+        val filter = PieceFilter("test", listOf("m", "+r", "e", "+c"))
+        val center = Vec4i(1, 0, 0, 0)
+        val ridge = Vec4i(1, 1, 0, 0)
+        val edge = Vec4i(1, 1, 1, 0)
+        val corner = Vec4i(1, 1, 1, 1)
+        // Step 2 ("e", no "+") resets, dropping the accumulated m+r from steps 0-1.
+        assertFalse(filter.isPieceVisible(2, center))
+        assertFalse(filter.isPieceVisible(2, ridge))
+        assertTrue(filter.isPieceVisible(2, edge))
+        // Step 3 ("+c") accumulates back onto step 2's reset window (edge), not steps 0-1.
+        assertFalse(filter.isPieceVisible(3, center))
+        assertFalse(filter.isPieceVisible(3, ridge))
+        assertTrue(filter.isPieceVisible(3, edge))
+        assertTrue(filter.isPieceVisible(3, corner))
     }
 
     @Test
@@ -192,6 +225,57 @@ class PieceFiltersTest {
         val ridge = Vec4i(1, 1, 0, 0)
         assertFalse(filter.isPieceVisible(-1, ridge)) // clamps to 0, ridge not visible yet
         assertTrue(filter.isPieceVisible(99, ridge)) // clamps to the last subfilter
+    }
+
+    // --- "+" also controls whether crossing into a *new* filter clears prior pieces ------------
+
+    @Test
+    fun `crossing into a new filter resets by default, same as within a filter`() {
+        val set = PieceFilterSet("set", listOf(PieceFilter("a", listOf("m")), PieceFilter("b", listOf("r"))))
+        val center = Vec4i(1, 0, 0, 0)
+        val ridge = Vec4i(1, 1, 0, 0)
+        assertTrue(set.isPieceVisible(0, 0, center))
+        // Filter b's first subfilter has no "+" -- crossing into it clears filter a's pieces.
+        assertFalse(set.isPieceVisible(1, 0, center))
+        assertTrue(set.isPieceVisible(1, 0, ridge))
+    }
+
+    @Test
+    fun `a + on a new filter's first subfilter carries the previous filter's pieces forward`() {
+        val set = PieceFilterSet("set", listOf(PieceFilter("a", listOf("m")), PieceFilter("b", listOf("+r"))))
+        val center = Vec4i(1, 0, 0, 0)
+        val ridge = Vec4i(1, 1, 0, 0)
+        assertTrue(set.isPieceVisible(0, 0, center))
+        // Filter b's first subfilter is "+r" -- filter a's center stays visible alongside it,
+        // even though the on-screen *label* has already moved from "a" to "b".
+        assertTrue(set.isPieceVisible(1, 0, center))
+        assertTrue(set.isPieceVisible(1, 0, ridge))
+    }
+
+    @Test
+    fun `+ carry-in chains across multiple consecutive all-additive filters`() {
+        val set = PieceFilterSet(
+            "set",
+            listOf(
+                PieceFilter("a", listOf("m")),
+                PieceFilter("b", listOf("+r")),
+                PieceFilter("c", listOf("+e")),
+            ),
+        )
+        val center = Vec4i(1, 0, 0, 0)
+        val ridge = Vec4i(1, 1, 0, 0)
+        val edge = Vec4i(1, 1, 1, 0)
+        // Filter c's "+e" reaches back through filter b's "+r" all the way to filter a's "m".
+        assertTrue(set.isPieceVisible(2, 0, center))
+        assertTrue(set.isPieceVisible(2, 0, ridge))
+        assertTrue(set.isPieceVisible(2, 0, edge))
+    }
+
+    @Test
+    fun `a leading + on a filter-set's very first subfilter is a harmless no-op`() {
+        val set = PieceFilterSet("set", listOf(PieceFilter("a", listOf("+m"))))
+        assertTrue(set.isPieceVisible(0, 0, Vec4i(1, 0, 0, 0)))
+        assertFalse(set.isPieceVisible(0, 0, Vec4i(1, 1, 0, 0)))
     }
 
     // --- Parsing a multi-filter filter-set -------------------------------------------------------

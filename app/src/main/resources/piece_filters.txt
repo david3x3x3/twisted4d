@@ -11,7 +11,7 @@
 #
 # Cell letters: U D L R F B I O -- a piece matching a cell letter touches that cell.
 # Type letters: m r e c -- Centers(1 sticker) / Ridges(2) / Edges(3) / Corners(4).
-# Comma-separating tokens within one subfilter string is a union.
+# Comma-separating tokens within one subfilter is a union.
 # Within one token, a "-" splits off pieces to remove, e.g. "mre-LR" = every center/ridge/edge
 # piece, except any touching L or R -- chainable ("mre-L-R" removes the same thing).
 # On either side of a "-": cell letters concatenated together are an intersection (piece must
@@ -21,58 +21,66 @@
 # R; "mre" = a center, ridge, or edge) -- intersecting same-category letters would always be
 # empty (no piece touches two opposite cells, or is more than one type at once), so that
 # combination means "any of these" instead.
+#
+# A leading "+" on a subfilter (e.g. "+r") means "add this to whatever was visible one step
+# ago" instead of the default, which clears everything visible before applying this subfilter's
+# own matches -- the same rule whether the previous step was another subfilter in this filter,
+# or the last subfilter of the previous filter in this filter-set. That's what lets a filter's
+# label change without clearing its pieces (or vice versa) -- they're no longer tied together.
 
 pieces:
   pieces:
     - "m"
-    - "r"
-    - "e"
-    - "c"
+    - "+r"
+    - "+e"
+    - "+c"
 
 cfop:
   cfop:
     - "m,Ir"
-    - "IUFe,UFr"
-    - "IURe,URr"
-    - "IUBe,UBr"
-    - "IULe,ULr"
-    - "IFRe,FRr"
-    - "IRBe,RBr"
-    - "IBLe,BLr"
-    - "ILFe,LFr"
-    - "IDFe,DFr"
-    - "IDLe,DLr"
-    - "IDBe,DBr"
-    - "IDRe,DRr"
-    - "IUFRc,URFe"
-    - "IURBc,URBe"
-    - "IUBLc,UBLe"
-    - "IULFc,ULFe"
-    - "IDLFc,DLFe"
-    - "IDBLc,DBLe"
-    - "IDBRc,DBRe"
-    - "IDFRc,DFRe"
-    - "Or"
-    - "Oe"
-    - "Oc"
+    - "+IUFe,UFr"
+    - "+IURe,URr"
+    - "+IUBe,UBr"
+    - "+IULe,ULr"
+    - "+IFRe,FRr"
+    - "+IRBe,RBr"
+    - "+IBLe,BLr"
+    - "+ILFe,LFr"
+    - "+IDFe,DFr"
+    - "+IDLe,DLr"
+    - "+IDBe,DBr"
+    - "+IDRe,DRr"
+    - "+IUFRc,URFe"
+    - "+IURBc,URBe"
+    - "+IUBLc,UBLe"
+    - "+IULFc,ULFe"
+    - "+IDLFc,DLFe"
+    - "+IDBLc,DBLe"
+    - "+IDBRc,DBRe"
+    - "+IDFRc,DFRe"
+    - "+Or"
+    - "+Oe"
+    - "+Oc"
+
+# Josie's three block filters
 3block:
   mid:
     - "m"
-    - "OUr,OBr,ODr,OFr"
-    - "mre-LRI"
+    - "+OUr,OBr,ODr,OFr"
+    - "+mre-LRI"
   left cross:
     - "mre-LRI,Lm,LOr"
   left:
     - "L-BFI,LBr,LBOe"
-    - "L-FI"
-    - "L-FI,LFr,LFOe"
-    - "L-I"
-    - "Rm,ROr"
+    - "+L-FI"
+    - "+L-FI,LFr,LFOe"
+    - "+L-I"
+    - "+Rm,ROr"
   right:
     - "R-BFI,RBr,RBOe"
-    - "R-FI"
-    - "R-FI,RFr,RFOe"
-    - "R-I"
+    - "+R-FI"
+    - "+R-FI,RFr,RFOe"
+    - "+R-I"
   ll-cross:
     - "Im,Ir"
   ll-oe:
@@ -83,6 +91,6 @@ cfop:
     - "m,Ir"
   plc cross:
     - "Ir,Im,IUe"
-    - "IUc,Ie-D"
-    - "I"
-    - "mrec"
+    - "+IUc,Ie-D"
+    - "+I"
+    - "+mrec"
