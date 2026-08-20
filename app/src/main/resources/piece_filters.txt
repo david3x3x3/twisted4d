@@ -36,61 +36,85 @@ pieces:
     - "+c"
 
 cfop:
-  cfop:
+  cross:
     - "m,Ir"
+  f2l-a white:
     - "+IUFe,UFr"
     - "+IURe,URr"
     - "+IUBe,UBr"
     - "+IULe,ULr"
+  f2l-a equator:
     - "+IFRe,FRr"
     - "+IRBe,RBr"
     - "+IBLe,BLr"
     - "+ILFe,LFr"
+  f2l-a yellow:
     - "+IDFe,DFr"
     - "+IDLe,DLr"
     - "+IDBe,DBr"
     - "+IDRe,DRr"
+  f2l-b white:
     - "+IUFRc,URFe"
     - "+IURBc,URBe"
     - "+IUBLc,UBLe"
     - "+IULFc,ULFe"
+  f2l-b yellow:
     - "+IDLFc,DLFe"
     - "+IDBLc,DBLe"
     - "+IDBRc,DBRe"
     - "+IDFRc,DFRe"
+  ll:
     - "+Or"
     - "+Oe"
     - "+Oc"
 
 # Josie's three block filters
 3block:
-  mid:
+  centers:
     - "m"
+  cross:
     - "+OUr,OBr,ODr,OFr"
-    - "+mre-LRI"
+  mid back:
+    - "mre-LRIF,Fm,OFr"
+  mid front:
+    - "mre-LRI"
   left cross:
-    - "mre-LRI,Lm,LOr"
-  left:
-    - "L-BFI,LBr,LBOe"
-    - "+L-FI"
-    - "+L-FI,LFr,LFOe"
-    - "+L-I"
+    - "+Lm,LOr"
+  left mid:
+    - "L-BFI"
+  left back a:
+    - "+LBr,LBOe"
+  left back b:
+    - "L-FI"
+  left front a:
+    - "+LFr,LFOe"
+  left front b:
+    - "L-I"
+  right cross:
     - "+Rm,ROr"
-  right:
-    - "R-BFI,RBr,RBOe"
-    - "+R-FI"
-    - "+R-FI,RFr,RFOe"
-    - "+R-I"
-  ll-cross:
+  right mid:
+    - "R-BFI"
+  right back a:
+    - "+RBr,RBOe"
+  right back b:
+    - "R-FI"
+  right front a:
+    - "+RFr,RFOe"
+  right front b:
+    - "R-I"
+  olc 2c:
     - "Im,Ir"
-  ll-oe:
+  olc 3c:
     - "Ie"
-  ll-oc:
+  olc 4c:
     - "Ic"
-  ll-pe:
+  plc 2c:
     - "m,Ir"
   plc cross:
-    - "Ir,Im,IUe"
+    - "Ir,IUe"
+  plc f2l:
     - "+IUc,Ie-D"
-    - "+I"
+  plc ll:
+    - "I"
+  end:
     - "+mrec"
