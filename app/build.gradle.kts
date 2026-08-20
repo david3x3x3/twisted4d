@@ -83,10 +83,15 @@ android {
         // piece filters rebuilt as a filter-set/filter/subfilter hierarchy (built-in Pieces/CFOP/
         // David's own hand-authored 3block filter set, a new cell-or-type-letter union + "-"
         // subtraction token grammar, clipboard import/export/reset) plus a persistent "Time: M:SS"
-        // solve timer. Still not 1.0: whether Fire TV is even a 1.0 target remains undecided, and
-        // Settings is still missing its D-pad-assignment rows.
-        versionCode = 10
-        versionName = "0.7.4"
+        // solve timer. 0.8.0 (2026-08-19): configurable ABXY/R1/R2(+Button-C) button-twist grid,
+        // MC4D log export fixes (edge-twist grip Z-axis sign, edge community notation, a live
+        // export round-trip checker that caught two real bugs), a fix for cell O twisting
+        // LEFT/RIGHT backwards, the "+" accumulate/reset subfilter grammar, and David's
+        // hand-authored 3block filter set restructured/renamed into named F2L/OLC/PLC stages.
+        // Still not 1.0: whether Fire TV is even a 1.0 target remains undecided, and Settings is
+        // still missing its D-pad-assignment rows.
+        versionCode = 11
+        versionName = "0.8.0"
         buildConfigField("String", "GIT_VERSION", "\"$gitVersion\"")
     }
 
