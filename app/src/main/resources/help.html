@@ -29,8 +29,8 @@ I &#8212; Button C exists for controllers with no stick click (e.g. the 8BitDo M
 nothing selected, holding either instead flips every twist button's default cell to the opposite
 side of its axis (L/D/B instead of R/U/F) for as long as it's held<br>
 &#8226; Button C + X: twists I 180&#176; around the UF/DB diagonal. Button C + B: twists I 180&#176;
-around the UR/DL diagonal &#8212; two fixed shortcuts for now, more Button-C combos may become
-configurable later<br>
+around the UR/DL diagonal &#8212; these, and every other button's plain/Button-C twist, are just
+the shipped default; customize any of them under Settings &#8594; Button Config<br>
 <br>
 <b>Mode 2 &#8212; RKT</b><br>
 For the final phase of a solve, where every twist is either an I-cell rotation or R itself &#8212;
@@ -42,7 +42,7 @@ them; push again (after returning to center) for another twist<br>
 &#8226; Y / A / X / B, R1 / R2: twist R, same as if it were selected in mode 1<br>
 &#8226; D-pad left / right: twist I as IU / IU'<br>
 &#8226; D-pad up / down: twist I as IR / IR'<br>
-&#8226; L1 / L2 (bumper / trigger): twist I as IF / IF'<br>
+&#8226; L1 / L2 (bumper / trigger): twist I as IF' / IF<br>
 &#8226; Button C: unused on its own (Select still does whole-room snap rotation/undo/redo/mode
 toggle, see below)<br>
 <br>
@@ -61,10 +61,6 @@ Release Select to go back to normal twisting/navigation.<br>
 &#8226; Turns: twists made since the last scramble (or reset)<br>
 &#8226; Time: solve timer, M:SS -- starts on Scramble, stops once solved (resumes if you undo back
 off a solve), resets to 0:00 on Scramble or Reset<br>
-&#8226; Selected X: showing Y -- the room slot actively selected by the stick/d-pad right now, and
-which native cell currently occupies it; reads "Selected: none" once released -- the next twist
-still lands on a definite cell (see Stick Select above), there just isn't one *actively held*
-to report<br>
 &#8226; Filter: the active piece filter (if any) and how far you've stepped through it, e.g.
 "Filter: CFOP (3/24)"<br>
 &#8226; Mode: Stick or RKT -- the active input mode (see the Start Menu's Mode tile)<br>
@@ -91,7 +87,7 @@ included); Reset to Defaults restores just Pieces and CFOP<br>
 &#8226; Scramble / Reset<br>
 &#8226; Mode: toggles between Stick and RKT input (see above)<br>
 &#8226; Settings: Nintendo ABXY, Z Dir Left/Right, Export Format (MC4D or hypercubing.xyz-style
-Log), and Confirm Scramble/Reset -- see below<br>
+Log), Confirm Scramble/Reset, and Button Config -- see below<br>
 &#8226; Export: runs whichever format Settings' Export Format row specifies<br>
 &#8226; Help: this screen<br>
 <br>
@@ -106,9 +102,15 @@ whose bumper/trigger arrangement makes one or both sides feel backwards<br>
 &#8226; Export Format: MC4D (a real MagicCube4D .log file) or Log (hypercubing.xyz-style community
 notation) -- whichever the Start Menu's Export tile runs; app-wide, not per-controller<br>
 &#8226; Confirm Scramble/Reset: ask before actually scrambling or resetting; also app-wide<br>
+&#8226; Button Config: opens a submenu to customize every face/shoulder button's plain and
+Button-C twist (see Mode 1 above) -- Import/Export/Reset work the same way as the Filters
+submenu's, as plain clipboard text; app-wide, not per-controller<br>
 <br>
-<b>GAMEPAD OVERLAY</b><br>
-The small controller diagram in the bottom-left corner lights up buttons and sticks live as they're used &#8212; handy for confirming exactly which input produced a twist, e.g. when reviewing a screen recording.<br>
+<b>ON-SCREEN CONTROLS</b><br>
+The touch controller stays on screen even with a real gamepad connected &#8212; pressing a real
+button lights up the matching on-screen button too, so it doubles as a live reference for what
+each physical button does. Each button shows a small caption above it (its native gamepad name)
+and, inside it, whatever it currently does.<br>
 <br>
 <b>CREDITS</b><br>
 Version {{VERSION_NAME}}<br>
