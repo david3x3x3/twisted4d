@@ -19,53 +19,71 @@ class PieceFiltersTest {
     fun `built-in text parses into pieces, cfop, and 3block filter sets, in order`() {
         val filterSets = PieceFilters.BUILTIN_FILTER_SETS
         assertEquals(listOf("pieces", "cfop", "3block"), filterSets.map { it.name })
-        // pieces/cfop both wrap David's original flat filter unchanged, as a single same-named
-        // filter.
+        // pieces wraps David's original flat filter unchanged, as a single same-named filter.
         assertEquals(listOf("pieces"), filterSets[0].filters.map { it.name })
         // "+" on every subfilter after the first preserves the original cumulative-stepping
         // behavior (see PieceFilter's "+" doc) -- the raw text round-trips with it included.
         assertEquals(listOf("m", "+r", "+e", "+c"), filterSets[0].filters[0].subfilters)
-        assertEquals(listOf("cfop"), filterSets[1].filters.map { it.name })
+        // cfop's original single 24-subfilter "cfop" filter was later split (1638bb5) into 7
+        // named stages -- cross, f2l-a white/equator/yellow, f2l-b white/yellow, ll -- so each
+        // step's label matches exactly what it reveals; still 24 subfilters total across all 7.
+        assertEquals(
+            listOf("cross", "f2l-a white", "f2l-a equator", "f2l-a yellow", "f2l-b white", "f2l-b yellow", "ll"),
+            filterSets[1].filters.map { it.name },
+        )
+        assertEquals(24, filterSets[1].filters.sumOf { it.subfilters.size })
         // 22 original steps with a single catch-all "O" at the end, split (by David) into three
-        // separate Or/Oe/Oc steps -- one per piece type -- for 24 total.
-        assertEquals(24, filterSets[1].filters[0].subfilters.size)
-        assertEquals(listOf("+Or", "+Oe", "+Oc"), filterSets[1].filters[0].subfilters.takeLast(3))
+        // separate Or/Oe/Oc steps -- one per piece type -- now the "ll" filter's own subfilters.
+        assertEquals(listOf("+Or", "+Oe", "+Oc"), filterSets[1].filters.last().subfilters)
     }
 
     @Test
     fun `3block filter set has the expected filters, in order`() {
         val threeBlock = PieceFilters.BUILTIN_FILTER_SETS.first { it.name == "3block" }
         assertEquals(
-            listOf("mid", "left cross", "left", "right", "ll-cross", "ll-oe", "ll-oc", "ll-pe", "plc cross"),
+            listOf(
+                "centers", "cross", "mid back", "mid front", "left cross", "left mid",
+                "left back a", "left back b", "left front a", "left front b",
+                "right cross", "right mid", "right back a", "right back b", "right front a", "right front b",
+                "olc 2c", "olc 3c", "olc 4c", "plc 2c", "plc cross", "plc f2l", "plc ll", "end",
+            ),
             threeBlock.filters.map { it.name },
         )
     }
 
     @Test
-    fun `3block's mid filter accumulates every center, then the 4 ridges in O's non-LR ring`() {
-        val mid = PieceFilters.BUILTIN_FILTER_SETS.first { it.name == "3block" }.filters.first { it.name == "mid" }
-        // Every center, regardless of cell -- subfilter 0 alone.
-        assertTrue(mid.isPieceVisible(0, Vec4i(1, 0, 0, 0))) // R center
-        assertTrue(mid.isPieceVisible(0, Vec4i(0, 0, 0, 1))) // O center
-        // The O-ring ridges only arrive at subfilter 1 (cumulative with subfilter 0's centers).
-        assertFalse(mid.isPieceVisible(0, Vec4i(0, 1, 0, 1))) // O-U ridge, not yet at step 0
-        assertTrue(mid.isPieceVisible(1, Vec4i(0, 1, 0, 1))) // O-U ridge
-        assertTrue(mid.isPieceVisible(1, Vec4i(0, 0, -1, 1))) // O-B ridge
-        assertTrue(mid.isPieceVisible(1, Vec4i(1, 0, 0, 0))) // R center still visible (cumulative)
+    fun `3block's centers and cross filters accumulate every center, then the 4 ridges in O's non-LR ring`() {
+        // The original single "mid" filter (subfilter 0 = every center, subfilter 1 = "+" the
+        // O-ring ridges) was later split (1638bb5) into two separate filters, "centers" and
+        // "cross" -- "cross"'s own leading "+" carries "centers"' pieces forward across that
+        // filter boundary instead, same cumulative behavior as before.
+        val threeBlock = PieceFilters.BUILTIN_FILTER_SETS.first { it.name == "3block" }
+        val centersIndex = threeBlock.filters.indexOfFirst { it.name == "centers" }
+        val crossIndex = threeBlock.filters.indexOfFirst { it.name == "cross" }
+        // Every center, regardless of cell -- the "centers" filter alone.
+        assertTrue(threeBlock.isPieceVisible(centersIndex, 0, Vec4i(1, 0, 0, 0))) // R center
+        assertTrue(threeBlock.isPieceVisible(centersIndex, 0, Vec4i(0, 0, 0, 1))) // O center
+        // The O-ring ridges only arrive at the "cross" filter.
+        assertFalse(threeBlock.isPieceVisible(centersIndex, 0, Vec4i(0, 1, 0, 1))) // O-U ridge, not yet
+        assertTrue(threeBlock.isPieceVisible(crossIndex, 0, Vec4i(0, 1, 0, 1))) // O-U ridge
+        assertTrue(threeBlock.isPieceVisible(crossIndex, 0, Vec4i(0, 0, -1, 1))) // O-B ridge
+        assertTrue(threeBlock.isPieceVisible(crossIndex, 0, Vec4i(1, 0, 0, 0))) // R center still visible (carried)
         // The O-L and O-R ridges are deliberately left out (4-Cross leaves L/R unsolved).
-        assertFalse(mid.isPieceVisible(1, Vec4i(-1, 0, 0, 1))) // O-L ridge
-        assertFalse(mid.isPieceVisible(1, Vec4i(1, 0, 0, 1))) // O-R ridge
+        assertFalse(threeBlock.isPieceVisible(crossIndex, 0, Vec4i(-1, 0, 0, 1))) // O-L ridge
+        assertFalse(threeBlock.isPieceVisible(crossIndex, 0, Vec4i(1, 0, 0, 1))) // O-R ridge
         // A non-O ridge shouldn't be swept in just for touching a named cell (e.g. U-F).
-        assertFalse(mid.isPieceVisible(1, Vec4i(0, 1, 1, 0)))
+        assertFalse(threeBlock.isPieceVisible(crossIndex, 0, Vec4i(0, 1, 1, 0)))
     }
 
     @Test
     fun `the corner-block typo is fixed -- last cfop line matches its siblings' pattern`() {
         // Every corner-block line is "I<3 letters><Reps>c,<same 3 letters><Reps>e" -- the source
         // text David provided had "IDFRc,DFre" here (lowercase r, missing e-vs-c letter symmetry)
-        // where every sibling line (e.g. "IUFRc,URFe") does not.
-        val lastCornerLine = PieceFilters.BUILTIN_FILTER_SETS[1].filters[0].subfilters[20]
-        assertEquals("+IDFRc,DFRe", lastCornerLine)
+        // where every sibling line (e.g. "IUFRc,URFe") does not. Now the last subfilter of cfop's
+        // "f2l-b yellow" filter -- the corner-block stages were later split (1638bb5) out of the
+        // original single 24-subfilter "cfop" filter.
+        val f2lBYellow = PieceFilters.BUILTIN_FILTER_SETS[1].filters.first { it.name == "f2l-b yellow" }
+        assertEquals("+IDFRc,DFRe", f2lBYellow.subfilters.last())
     }
 
     // --- Token grammar: intersection (concatenated letters), union (commas), type letters ------
