@@ -363,10 +363,16 @@ class GamepadInputHandler(
      * interchangeable to callers. Same up=negative-y sign convention as the real AXIS_Y stick
      * (see [handleMotionEvent]): [GamepadVisualState.dpadUpHeld] alone must yield the same sign
      * pushing the stick up would, since [MainActivity] feeds both into
-     * [HypercubeRenderer.updateCell4Selection] unchanged. */
+     * [HypercubeRenderer.updateCell4Selection] unchanged. Also mirrors into
+     * [GamepadVisualState.leftStickX]/`leftStickY` -- confirmed via a real report (2026-09-07)
+     * that the virtual stick's on-screen dot never moved for d-pad-driven selection, since
+     * [handleMotionEvent] is the only other place those two fields were ever written and a d-pad
+     * press doesn't go through it. */
     private fun reportDpadStick() {
         val x = (if (GamepadVisualState.dpadRightHeld) 1f else 0f) - (if (GamepadVisualState.dpadLeftHeld) 1f else 0f)
         val y = (if (GamepadVisualState.dpadDownHeld) 1f else 0f) - (if (GamepadVisualState.dpadUpHeld) 1f else 0f)
+        GamepadVisualState.leftStickX = x
+        GamepadVisualState.leftStickY = y
         onDpadStick(x, y)
     }
 
