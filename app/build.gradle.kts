@@ -88,10 +88,18 @@ android {
         // export round-trip checker that caught two real bugs), a fix for cell O twisting
         // LEFT/RIGHT backwards, the "+" accumulate/reset subfilter grammar, and David's
         // hand-authored 3block filter set restructured/renamed into named F2L/OLC/PLC stages.
+        // 0.8.1 (2026-09-07): virtual controls now stay on screen even with a real gamepad
+        // connected (highlighting from real input too, retiring the old small status-HUD
+        // swap-over), and show each button's live function -- text as before, or, for a
+        // face-diamond/R1/R2 twist with a cell selected, a small isometric-cube rotation-direction
+        // icon (TwistIcon) instead of RO/Rx-style notation. Z Dir Left/Right now only swaps which
+        // native-name caption is shown at a fixed screen position, never the function itself. A
+        // d-pad-driven cell selection now also moves the on-screen stick dot, matching the real
+        // analog stick.
         // Still not 1.0: whether Fire TV is even a 1.0 target remains undecided, and Settings is
         // still missing its D-pad-assignment rows.
-        versionCode = 11
-        versionName = "0.8.0"
+        versionCode = 12
+        versionName = "0.8.1"
         buildConfigField("String", "GIT_VERSION", "\"$gitVersion\"")
     }
 
