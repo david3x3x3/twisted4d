@@ -72,6 +72,34 @@ class ButtonConfigTest {
         assertThrows(IllegalArgumentException::class.java) { parseButtonActionToken("RQ") }
     }
 
+    // --- ButtonAction.notationString(): forward inverse of parseButtonActionToken ----------------
+
+    @Test
+    fun `notationString round-trips a non-prime ridge token`() {
+        assertEquals("RO", parseButtonActionToken("RO").notationString())
+    }
+
+    @Test
+    fun `notationString round-trips a prime ridge token`() {
+        assertEquals("RO'", parseButtonActionToken("RO'").notationString())
+    }
+
+    @Test
+    fun `notationString round-trips an edge token`() {
+        assertEquals("IUF", parseButtonActionToken("IUF").notationString())
+    }
+
+    @Test
+    fun `notationString round-trips every slot in the built-in config`() {
+        for (modifier in ButtonModifier.entries) {
+            for (button in ConfigButton.entries) {
+                val action = ButtonConfigs.BUILTIN_BUTTON_CONFIG.action(modifier, button)!!
+                val reparsed = parseButtonActionToken(action.notationString())
+                assertEquals(action, reparsed, "round-trip mismatch for $modifier:$button")
+            }
+        }
+    }
+
     // --- parseConfigText: group/slot grammar ------------------------------------------------------
 
     @Test

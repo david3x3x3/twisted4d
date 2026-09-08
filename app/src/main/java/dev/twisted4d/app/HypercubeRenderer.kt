@@ -91,22 +91,6 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
     /** Called (on the GL thread) right after a twist/scramble/reset with the new solved state. */
     @Volatile var onStateChanged: ((Boolean) -> Unit)? = null
 
-    /** Called (on the GL thread, from [onDrawFrame]) whenever [selectedRoomCell] or
-     * [selectedCell4] changes -- a troubleshooting aid so a tester can see exactly which room the
-     * app has actively selected right now, if any ([selectedRoomCell]/[selectedCell4] -- both
-     * `null` once the stick/d-pad has been released, see [hasSelection]'s doc). Confirmed via a
-     * real repro where an earlier version of this label showed the stick's raw, uncorrected wedge
-     * name instead and visibly diverged from the actual rotation's letter -- that was the bug,
-     * not a drag producing a "surprising" but correct room. Note this can now legitimately differ
-     * from "the next twist's first letter" while both args are null: the next twist still resolves
-     * to a definite cell via [effectiveCell4] (R/U/F, or L/D/B under the THUMB_L/BUTTON_C
-     * modifier), but *which* one depends on which button gets pressed, so there's no single
-     * "currently selected" cell left to report here -- null means exactly that, not a bug. Fires
-     * continuously as selection changes in any input mode, not just on twists. */
-    @Volatile var onSelectedCellChanged: ((roomCell: Cell4?, nativeCell: Cell4?) -> Unit)? = null
-    private var lastReportedRoomCell: Cell4? = null
-    private var lastReportedNativeCell: Cell4? = null
-
     /** Called (on the GL thread) right after a twist is applied via [requestTwist] or
      * [requestEdgeTwist] -- not fired by [requestUndo]/[requestRedo]/[requestEdgeReplay], so a
      * caller (MainActivity) using this to build an undo/log history doesn't see its own undo/redo
@@ -213,6 +197,21 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
     // slot exactly as before, unaffected by this feature.
     private val hasEffectiveSelection: Boolean get() = hasSelection || inputMode == GamepadInputMode.RKT
 
+    /** UI-thread-safe mirror of [hasEffectiveSelection]/[selectedRoomAxis]/[selectedRoomSign], for
+     * VirtualClusterView's per-frame function-label computation (see MainActivity's
+     * rotationButtonContent and friends). Those three fields are deliberately GL-thread-only (see
+     * [selectedRoomAxis]'s doc); publishing just this snapshot as a single @Volatile reference (one
+     * atomic read, no torn state) is enough to make [hasEffectiveSelectionForLabel]/
+     * [selectedRoomAxisForLabel]/[selectedRoomSignForLabel] below safe to call from the UI thread's
+     * repaint loop. Worst case a label is one frame stale (~33ms) until the next publish --
+     * cosmetic only, self-correcting. */
+    private data class LabelSelectionSnapshot(val hasEffectiveSelection: Boolean, val roomAxis: Int, val roomSign: Int)
+    @Volatile private var labelSelectionSnapshot =
+        LabelSelectionSnapshot(hasEffectiveSelection, selectedRoomAxis, selectedRoomSign)
+    private fun publishLabelSnapshot() {
+        labelSelectionSnapshot = LabelSelectionSnapshot(hasEffectiveSelection, selectedRoomAxis, selectedRoomSign)
+    }
+
     /** Which of the 2 left-hand input schemes is active -- see [GamepadInputMode]. Read from the
      * UI thread (MainActivity's on4DNavigate/onLeftStick closures, both running inside their own
      * queueEvent already) and written only via [setInputMode], also GL-thread-only. */
@@ -241,6 +240,7 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
             GamepadInputMode.RKT -> { selectedRoomAxis = AXIS_X; selectedRoomSign = 1 }
         }
         inputMode = mode
+        publishLabelSnapshot()
     }
 
     /** Which [Cell4] the gamepad's left stick currently has selected for the next twist, or
@@ -346,6 +346,20 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
      * the MC4D file export, just not for what's shown on screen. */
     fun roomFixAxis2For(buttonLiteralAxis: Axis4): Int =
         if (buttonLiteralAxis.nativeIndex == effectiveRoomAxis(buttonLiteralAxis)) AXIS_W else buttonLiteralAxis.nativeIndex
+
+    /** UI-thread-safe counterpart to `selectedRoomCell != null` -- reads [labelSelectionSnapshot]
+     * instead of the live GL-thread-only fields (see that snapshot's doc). Label use only (the
+     * precedence check for "is a cell selected right now" -- MainActivity.rotationButtonContent's
+     * Select-held/cell-selected/config-mapped precedence, and l3CLabel's STICK-mode check). */
+    val hasEffectiveSelectionForLabel: Boolean get() = labelSelectionSnapshot.hasEffectiveSelection
+
+    /** UI-thread-safe counterparts to the raw [selectedRoomAxis]/[selectedRoomSign] -- label use
+     * only (MainActivity's l3CLabel, which needs the actual selected plane to preview the
+     * Select-not-held "move selected cell to I" tap -- see [requestMoveSelectedCellToI], itself
+     * just [requestCameraRotate90] in the (selectedRoomAxis, AXIS_W) plane, so the label reuses
+     * [Notation.roomRotationPlaneLabel] the same way the Select-held room-rotation labels do). */
+    val selectedRoomAxisForLabel: Int get() = labelSelectionSnapshot.roomAxis
+    val selectedRoomSignForLabel: Int get() = labelSelectionSnapshot.roomSign
 
     /** One rendered sticker's current room position and color, as computed by [currentSceneColors]
      * -- [roomAxis]/[roomSign] is which wall it's on (or [AXIS_W]/`-1` for the I slot; the O slot
@@ -1290,6 +1304,7 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         if (!isSignificant) {
             lastStickWedge = -1
             hasSelection = false
+            publishLabelSnapshot()
             return
         }
         hasSelection = true
@@ -1317,6 +1332,7 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         }
         selectedRoomAxis = roomAxis
         selectedRoomSign = roomSign
+        publishLabelSnapshot()
     }
 
     /** Which native [Cell4] currently occupies the room slot at ([roomAxis], [roomSign]) --
@@ -1609,14 +1625,6 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         // Resolved once per frame (not once per sticker below) since emphasizedCell is a
         // computed property now -- see its doc for why it needs to be live rather than cached.
         val frameEmphasizedCell = emphasizedCell
-
-        val currentRoomCell = selectedRoomCell
-        val currentNativeCell = selectedCell4
-        if (currentRoomCell != lastReportedRoomCell || currentNativeCell != lastReportedNativeCell) {
-            lastReportedRoomCell = currentRoomCell
-            lastReportedNativeCell = currentNativeCell
-            onSelectedCellChanged?.invoke(currentRoomCell, currentNativeCell)
-        }
 
         if (snapAnimating) {
             // Only the small hop itself animates; reaching the end here means it's time for the

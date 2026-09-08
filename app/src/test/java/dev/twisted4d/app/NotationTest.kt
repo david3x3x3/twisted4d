@@ -166,6 +166,33 @@ class NotationTest {
         assertEquals(Axis4.X, record.fixAxis2)
     }
 
+    // --- ridgeNotation / roomRotationPlaneLabel: new live-label helpers ----------------------
+
+    @Test
+    fun `ridgeNotation matches communityNotation for the same fields`() {
+        val record = TwistRecord.Ridge(
+            cell = Cell4.I, fixAxis2 = Axis4.X, prime = true,
+            roomCell = Cell4.L, roomFixAxis2 = Axis4.Y.nativeIndex,
+            displayApostrophe = false,
+        )
+        assertEquals(Notation.communityNotation(record), Notation.ridgeNotation(record.roomCell, record.roomFixAxis2, record.displayApostrophe))
+    }
+
+    @Test
+    fun `roomRotationPlaneLabel uses lowercase axis letters and flips order with reverse`() {
+        assertEquals("xy", Notation.roomRotationPlaneLabel(Axis4.X.nativeIndex, Axis4.Y.nativeIndex, reverse = false))
+        assertEquals("yx", Notation.roomRotationPlaneLabel(Axis4.X.nativeIndex, Axis4.Y.nativeIndex, reverse = true))
+    }
+
+    @Test
+    fun `roomRotationPlaneLabel's letter order matches the worked "move U to I, not O" derivation`() {
+        // See roomRotationPlaneLabel's doc: selecting U (Y, sign +1) calls
+        // requestCameraRotate90(Y, W, reverse=true) to reach I (W, sign -1), and hypercubing.xyz's
+        // own notation states "wy" (letters swapped from "yw") is the rotation sending +y to -w --
+        // exactly this case, and exactly what must render on the L3/C pill while U is selected.
+        assertEquals("wy", Notation.roomRotationPlaneLabel(Axis4.Y.nativeIndex, Axis4.W.nativeIndex, reverse = true))
+    }
+
     // --- correctedNativePrime: the reorientation-aware physics fix ---------------------------
 
     @Test

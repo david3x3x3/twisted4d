@@ -6,9 +6,13 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
+import android.os.Handler
+import android.os.Looper
 import android.view.MotionEvent
 import android.view.View
+import kotlin.math.cos
 import kotlin.math.hypot
+import kotlin.math.sin
 
 /**
  * One touch-operable control cluster for the portrait virtual controller (see
@@ -29,13 +33,31 @@ import kotlin.math.hypot
  */
 class VirtualClusterView(
     context: Context,
+    // topLeft/topRightCaption default null -- a null caption means single-line rendering (just
+    // About, whose native name and function are the same thing, nothing to split). Non-null for
+    // Select/Start/L3-C, matching the shoulder pills' native-name-caption-above-function-label
+    // treatment for visual consistency (2026-09-07 feedback) -- Select/Start's *function* never
+    // itself changes ("Mod1"/"Menu"), so a plain fixed String suffices there, unlike L3/C's, which
+    // previews the Select-held STICK<->RKT toggle or a "move to I" rotation (see MainActivity's
+    // l3CLabel) and so needs a supplier.
     private val topLeftLabel: String,
-    private val topRightLabel: String,
+    private val topLeftCaption: String? = null,
+    private val topRightLabel: () -> String,
+    private val topRightCaption: String? = null,
     private val onTopLeftTap: () -> Unit,
     private val onTopRightTap: () -> Unit,
-    private val shoulderLeftLabel: String,
-    private val shoulderRightLabel: String,
+    // Live caption + live function-label suppliers for the two shoulder pills (L1/L2 on the left
+    // cluster, R1/R2 on the right). The *function* at each screen position is fixed (left always
+    // fires BUMPER_L/BUMPER_R, right always fires TRIGGER_L/TRIGGER_R -- see MainActivity's
+    // l1L2Label/rotationButtonLiveLabel callers), so a Z Dir Left/Right swap never moves what a
+    // press *does*; it only moves which native-name caption ("L1" vs "L2", "R1" vs "R2") is shown
+    // at which position -- hence the caption is a supplier too, not a fixed string like
+    // topLeft/topRightLabel (About/Start/Select/L3-C, which never swap at all).
+    private val shoulderLeftCaption: () -> String,
+    private val shoulderLeftLabel: () -> FaceButtonContent,
     private val onShoulderLeftTap: () -> Unit,
+    private val shoulderRightCaption: () -> String,
+    private val shoulderRightLabel: () -> FaceButtonContent,
     private val onShoulderRightTap: () -> Unit,
     mainControl: MainControl,
     // Optional true hold-state pairing for onTop*/onShoulder*Tap above -- default no-op, since
@@ -49,6 +71,14 @@ class VirtualClusterView(
     private val onTopRightRelease: () -> Unit = {},
     private val onShoulderLeftRelease: () -> Unit = {},
     private val onShoulderRightRelease: () -> Unit = {},
+    // Real-gamepad highlight hooks (added alongside always-visible virtual controls retiring
+    // GamepadOverlayView from 4D mode) -- read GamepadVisualState directly so a real controller
+    // press lights up the matching virtual button too, not just a touch. Default no-op for
+    // About/Start, which have no real-gamepad equivalent tracked in GamepadVisualState (same
+    // omission GamepadOverlayView itself always had).
+    private val topRightRealHeld: () -> Boolean = { false },
+    private val shoulderLeftRealHeld: () -> Boolean = { false },
+    private val shoulderRightRealHeld: () -> Boolean = { false },
 ) : View(context) {
 
     /** [Stick]'s [onChanged] fires continuously while dragging (and once more with (0,0) on
@@ -60,23 +90,61 @@ class VirtualClusterView(
      * instead of named buttons -- used in place of [Stick] for the left cluster while RKT mode is
      * active, since RKT has no cell-selection role for a stick to drive (see
      * MainActivity.applyInputModeToVirtualController's doc). */
+    /** What a face-diamond or R1/R2 shoulder-pill button shows for its current function -- either
+     * plain text (room-rotation labels, config-mapped notation, Undo/Redo/Filter/IF-IF', Mod1/
+     * Mod2/Menu) or [Icon], the isometric cube-with-wrapping-arrow drawn by [TwistIcon] (only ever
+     * used for the live per-cell-twist case -- see MainActivity.rotationButtonContent's doc for
+     * exactly when, per the 2026-09-07 product decision to scope the icon to that one case and
+     * leave every other text label as-is). */
+    sealed class FaceButtonContent {
+        data class Text(val text: String) : FaceButtonContent()
+        data class Icon(val axis: TwistIcon.Axis, val reverse: Boolean) : FaceButtonContent()
+    }
+
     sealed class MainControl {
         class Stick(val onChanged: (x: Float, y: Float) -> Unit) : MainControl()
+
+        /** [topCaption]/etc. are the fixed native button name (Y/X/B/A); [topLabel]/etc. are
+         * suppliers re-invoked every repaint for the currently-active function (see
+         * MainActivity.rotationButtonContent and friends -- the precedence is Select-held room
+         * rotation, then a selected cell's live twist, then the button-config's Button-C/plain
+         * mapping). [topRealHeld]/etc. mirror a real gamepad press of the same button (see
+         * GamepadVisualState) so the highlight isn't touch-only. */
         class FaceDiamond(
-            val topLabel: String,
+            val topCaption: String,
+            val topLabel: () -> FaceButtonContent,
             val onTopTap: () -> Unit,
+            val topRealHeld: () -> Boolean = { false },
+            val leftCaption: String,
+            val leftLabel: () -> FaceButtonContent,
+            val onLeftTap: () -> Unit,
+            val leftRealHeld: () -> Boolean = { false },
+            val rightCaption: String,
+            val rightLabel: () -> FaceButtonContent,
+            val onRightTap: () -> Unit,
+            val rightRealHeld: () -> Boolean = { false },
+            val bottomCaption: String,
+            val bottomLabel: () -> FaceButtonContent,
+            val onBottomTap: () -> Unit,
+            val bottomRealHeld: () -> Boolean = { false },
+        ) : MainControl()
+
+        /** [upLabel]/etc. are fixed (RKT-mode-only, never change while the D-pad is showing --
+         * see RktMoveLabels); no separate caption, the arrow glyph already stands in for a native
+         * name. [upRealHeld]/etc. mirror a real D-pad press. */
+        class DPad(
+            val upLabel: String,
+            val onUpTap: () -> Unit,
+            val upRealHeld: () -> Boolean = { false },
             val leftLabel: String,
             val onLeftTap: () -> Unit,
+            val leftRealHeld: () -> Boolean = { false },
             val rightLabel: String,
             val onRightTap: () -> Unit,
-            val bottomLabel: String,
-            val onBottomTap: () -> Unit,
-        ) : MainControl()
-        class DPad(
-            val onUpTap: () -> Unit,
-            val onLeftTap: () -> Unit,
-            val onRightTap: () -> Unit,
+            val rightRealHeld: () -> Boolean = { false },
+            val downLabel: String,
             val onDownTap: () -> Unit,
+            val downRealHeld: () -> Boolean = { false },
         ) : MainControl()
     }
 
@@ -115,6 +183,24 @@ class VirtualClusterView(
         color = Color.argb(210, 220, 225, 235)
         textAlign = Paint.Align.CENTER
     }
+    // Native-button-name caption, drawn smaller/dimmer than labelPaint's in-button function label
+    // -- above each face-diamond button and as the top line of each dynamic shoulder pill.
+    private val captionPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(175, 170, 180, 200)
+        textAlign = Paint.Align.CENTER
+    }
+    // Smaller than labelPaint so a caption + function label both fit inside one shoulder pill's
+    // short height -- see heightForWidth's pillH; topLeft/topRightLabel (About/Start/Select/L3-C)
+    // have no caption to share space with, so they keep using labelPaint at full size.
+    private val pillLabelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(210, 220, 225, 235)
+        textAlign = Paint.Align.CENTER
+    }
+    // The 8 fixed compass-direction cell labels drawn around the stick's circumference.
+    private val stickLabelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(190, 210, 220, 235)
+        textAlign = Paint.Align.CENTER
+    }
     private val arrowFillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL
         color = Color.argb(210, 220, 225, 235)
@@ -147,6 +233,29 @@ class VirtualClusterView(
     // a release callback to fire.
     private val pointerRegions = HashMap<Int, String>()
 
+    // Self-driven ~30fps repaint (same idiom as GamepadOverlayView, which this view's always-
+    // visible role now folds in) -- needed because function labels/highlighting can change from
+    // real-gamepad state or held modifiers with no other UI-thread trigger to invalidate from
+    // (a touch-driven invalidate() alone, as before this feature, only ever covered this view's
+    // own touch events).
+    private val repaintHandler = Handler(Looper.getMainLooper())
+    private val repaintTick = object : Runnable {
+        override fun run() {
+            invalidate()
+            repaintHandler.postDelayed(this, 33L)
+        }
+    }
+
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        repaintHandler.post(repaintTick)
+    }
+
+    override fun onDetachedFromWindow() {
+        repaintHandler.removeCallbacks(repaintTick)
+        super.onDetachedFromWindow()
+    }
+
     override fun onMeasure(widthSpec: Int, heightSpec: Int) {
         val w = MeasureSpec.getSize(widthSpec).toFloat()
         setMeasuredDimension(w.toInt(), heightForWidth(w).toInt())
@@ -169,6 +278,14 @@ class VirtualClusterView(
         // their reserved-space math would drift out of sync with each other.
         const val WIDTH_FRACTION_OF_SCREEN = 0.45f
 
+        // Wedge 0..7 room-slot letters, mirroring HypercubeRenderer.updateCell4Selection's own
+        // wedge table exactly (~HypercubeRenderer.kt:1308-1317) -- wedge 0 = right = I's slot,
+        // going counterclockwise. Room-relative (fixed for the app's lifetime), NOT the live
+        // native occupant (nativeCellInRoomSlot), which would drift as the puzzle is scrambled --
+        // see HypercubeRenderer.effectiveRoomCell's doc for why room identity is what a human
+        // reads off a fixed control, not whichever piece currently happens to sit there.
+        private val STICK_WEDGE_LABELS = listOf("I", "B", "U", "L", "O", "F", "D", "R")
+
         /** Mirrors onSizeChanged's own stacking exactly (see its comments there: two pills per
          * row with a gap between them, then the same gap again before a square main control --
          * not stretched to fill whatever height is available, that's the whole point of this
@@ -180,7 +297,13 @@ class VirtualClusterView(
         fun heightForWidth(width: Float): Float {
             val innerWidth = width - EDGE_INSET * 2f
             val gap = innerWidth * 0.05f
-            val pillH = (innerWidth - gap) / 2f / 2.3f
+            // 1.7f (was 2.3f) -- the shoulder pills now carry 2 lines (native-name caption +
+            // dynamic function label, e.g. "L1"/"Filter−"), which a 2.3f-ratio pill was too short
+            // for -- confirmed via emulator screenshot (the caption rendered clipped above the
+            // pill's own top edge). Applies uniformly to all 4 pills, including the single-line
+            // top row (About/Select/Start/L3-C) -- harmless there, just a little extra vertical
+            // centering room.
+            val pillH = (innerWidth - gap) / 2f / 1.7f
             return pillH + gap + pillH + gap + innerWidth + EDGE_INSET * 2f
         }
     }
@@ -192,7 +315,7 @@ class VirtualClusterView(
         val width = w.toFloat() - EDGE_INSET * 2f
         val gap = width * 0.05f
         val pillW = (width - gap) / 2f
-        val pillH = pillW / 2.3f
+        val pillH = pillW / 1.7f // see heightForWidth's doc for why 1.7f, not 2.3f
         pillCornerRadius = pillH * 0.22f
 
         topLeftRect.set(EDGE_INSET, EDGE_INSET, EDGE_INSET + pillW, EDGE_INSET + pillH)
@@ -206,22 +329,68 @@ class VirtualClusterView(
 
     override fun onDraw(canvas: Canvas) {
         labelPaint.textSize = width * 0.11f
+        captionPaint.textSize = width * 0.05f
+        pillLabelPaint.textSize = width * 0.075f
+        stickLabelPaint.textSize = width * 0.055f
 
-        drawPill(canvas, topLeftRect, topLeftLabel, "topLeft" in heldRegions)
-        drawPill(canvas, topRightRect, topRightLabel, "topRight" in heldRegions)
-        drawPill(canvas, shoulderLeftRect, shoulderLeftLabel, "shoulderLeft" in heldRegions)
-        drawPill(canvas, shoulderRightRect, shoulderRightLabel, "shoulderRight" in heldRegions)
+        if (topLeftCaption != null) {
+            drawShoulderPill(canvas, topLeftRect, topLeftCaption, FaceButtonContent.Text(topLeftLabel), "topLeft" in heldRegions)
+        } else {
+            drawPill(canvas, topLeftRect, topLeftLabel, "topLeft" in heldRegions)
+        }
+        if (topRightCaption != null) {
+            drawShoulderPill(canvas, topRightRect, topRightCaption, FaceButtonContent.Text(topRightLabel()), ("topRight" in heldRegions) || topRightRealHeld())
+        } else {
+            drawPill(canvas, topRightRect, topRightLabel(), ("topRight" in heldRegions) || topRightRealHeld())
+        }
+        drawShoulderPill(canvas, shoulderLeftRect, shoulderLeftCaption(), shoulderLeftLabel(), ("shoulderLeft" in heldRegions) || shoulderLeftRealHeld())
+        drawShoulderPill(canvas, shoulderRightRect, shoulderRightCaption(), shoulderRightLabel(), ("shoulderRight" in heldRegions) || shoulderRightRealHeld())
 
         when (val control = mainControl) {
             is MainControl.Stick -> drawStick(canvas, control)
             is MainControl.FaceDiamond -> drawFaceDiamond(canvas, control)
-            is MainControl.DPad -> drawDpad(canvas)
+            is MainControl.DPad -> drawDpad(canvas, control)
         }
     }
 
     private fun drawPill(canvas: Canvas, r: RectF, label: String, held: Boolean) {
         canvas.drawRoundRect(r, pillCornerRadius, pillCornerRadius, if (held) litPaint else outlinePaint)
+        // Auto-shrink-to-fit: labelPaint's size is tuned for short native names (About/Select/
+        // Start/L3-C), but this pill's label can now go dynamic (e.g. L3/C previewing "RKT Mode"/
+        // "Stick Mode" while Select is held) and outgrow the pill's width at that fixed size --
+        // confirmed via emulator screenshot (the text visibly overflowed the pill's border).
+        // Temporarily shrinks just for this call, not a permanent mutation, since labelPaint's
+        // size is set once per frame in onDraw and shared by every pill/face-button draw this
+        // frame.
+        val maxWidth = r.width() * 0.88f
+        val textWidth = labelPaint.measureText(label)
+        val originalSize = labelPaint.textSize
+        if (textWidth > maxWidth) labelPaint.textSize = originalSize * (maxWidth / textWidth)
         canvas.drawText(label, r.centerX(), r.centerY() + labelPaint.textSize * 0.35f, labelPaint)
+        labelPaint.textSize = originalSize
+    }
+
+    private fun drawShoulderPill(canvas: Canvas, r: RectF, caption: String, content: FaceButtonContent, held: Boolean) {
+        canvas.drawRoundRect(r, pillCornerRadius, pillCornerRadius, if (held) litPaint else outlinePaint)
+        canvas.drawText(caption, r.centerX(), r.top + r.height() * 0.38f, captionPaint)
+        when (content) {
+            is FaceButtonContent.Text -> {
+                // Auto-shrink-to-fit -- see drawPill's identical comment; this label can be as
+                // long as "Filter−"/"Filter+", which doesn't reliably fit at pillLabelPaint's
+                // tuned-for-"Undo"/"IF'" size.
+                val label = content.text
+                val maxWidth = r.width() * 0.88f
+                val textWidth = pillLabelPaint.measureText(label)
+                val originalSize = pillLabelPaint.textSize
+                if (textWidth > maxWidth) pillLabelPaint.textSize = originalSize * (maxWidth / textWidth)
+                canvas.drawText(label, r.centerX(), r.top + r.height() * 0.8f, pillLabelPaint)
+                pillLabelPaint.textSize = originalSize
+            }
+            is FaceButtonContent.Icon -> {
+                val iconR = r.height() * 0.34f
+                TwistIcon.draw(canvas, r.centerX(), r.top + r.height() * 0.68f, iconR, content.axis, content.reverse)
+            }
+        }
     }
 
     private fun drawStick(canvas: Canvas, control: MainControl.Stick) {
@@ -229,7 +398,27 @@ class VirtualClusterView(
         val cy = mainRect.centerY()
         val r = mainRect.width() / 2f
         canvas.drawCircle(cx, cy, r, outlinePaint)
-        val (dotX, dotY) = currentStickOffset
+        // Radius 0.8f (inside the drawn circle, near its rim), not outside it -- mainRect is
+        // exactly as tall/wide as the circle's own diameter, so a label placed *outside* the
+        // circle along a cardinal direction (0/90/180/270 degrees) has nowhere left to go before
+        // hitting mainRect's own edge and getting clipped -- confirmed via emulator screenshot:
+        // only the "up" label survived (the one direction with a little slack from the pill row
+        // above), the other 3 cardinal labels (I/O/D) were silently clipped off-screen entirely,
+        // while the 4 diagonal ones (L/B/F/R) happened to fit since a diagonal's per-axis
+        // component is smaller by a factor of ~0.7. Drawing inside the circle avoids the
+        // direction-dependent margin entirely.
+        for (wedge in STICK_WEDGE_LABELS.indices) {
+            val angleRad = Math.toRadians(wedge * 45.0)
+            val lx = cx + (cos(angleRad) * r * 0.8f).toFloat()
+            val ly = cy - (sin(angleRad) * r * 0.8f).toFloat()
+            canvas.drawText(STICK_WEDGE_LABELS[wedge], lx, ly + stickLabelPaint.textSize * 0.35f, stickLabelPaint)
+        }
+        // While a finger is actively dragging the virtual stick, show that touch position;
+        // otherwise reflect the real gamepad's physical left stick live (GamepadVisualState.
+        // leftStickX/Y -- same +x-right/+y-down convention as currentStickOffset, since both
+        // ultimately feed HypercubeRenderer.updateCell4Selection's atan2(-y, x)). Falls back to
+        // (0,0) with no gamepad connected, same as an untouched virtual stick.
+        val (dotX, dotY) = if (stickPointerId != -1) currentStickOffset else GamepadVisualState.leftStickX to GamepadVisualState.leftStickY
         canvas.drawCircle(cx + dotX * r * 0.7f, cy + dotY * r * 0.7f, r * 0.22f, stickDotPaint)
     }
 
@@ -243,29 +432,39 @@ class VirtualClusterView(
         val cy = mainRect.centerY()
         val spread = mainRect.width() * 0.27f
         val r = mainRect.width() * 0.16f
-        drawFaceButton(canvas, cx, cy - spread, r, control.topLabel, "faceTop" in heldRegions)
-        drawFaceButton(canvas, cx - spread, cy, r, control.leftLabel, "faceLeft" in heldRegions)
-        drawFaceButton(canvas, cx + spread, cy, r, control.rightLabel, "faceRight" in heldRegions)
-        drawFaceButton(canvas, cx, cy + spread, r, control.bottomLabel, "faceBottom" in heldRegions)
+        drawFaceButton(canvas, cx, cy - spread, r, control.topCaption, control.topLabel(), ("faceTop" in heldRegions) || control.topRealHeld())
+        drawFaceButton(canvas, cx - spread, cy, r, control.leftCaption, control.leftLabel(), ("faceLeft" in heldRegions) || control.leftRealHeld())
+        drawFaceButton(canvas, cx + spread, cy, r, control.rightCaption, control.rightLabel(), ("faceRight" in heldRegions) || control.rightRealHeld())
+        drawFaceButton(canvas, cx, cy + spread, r, control.bottomCaption, control.bottomLabel(), ("faceBottom" in heldRegions) || control.bottomRealHeld())
     }
 
-    private fun drawFaceButton(canvas: Canvas, cx: Float, cy: Float, r: Float, label: String, held: Boolean) {
+    private fun drawFaceButton(canvas: Canvas, cx: Float, cy: Float, r: Float, caption: String, content: FaceButtonContent, held: Boolean) {
         canvas.drawCircle(cx, cy, r, if (held) litPaint else outlinePaint)
-        canvas.drawText(label, cx, cy + labelPaint.textSize * 0.35f, labelPaint)
+        if (content is FaceButtonContent.Icon) {
+            TwistIcon.draw(canvas, cx, cy, r, content.axis, content.reverse)
+        }
+        // Small a fixed gap as this can be -- the top button's own caption has very little
+        // clearance before mainRect's own top edge (confirmed via emulator screenshot: a 0.5x
+        // gap had the caption visibly touching the circle), since spread+r already consumes most
+        // of mainRect's half-width.
+        canvas.drawText(caption, cx, cy - r - captionPaint.textSize * 0.15f, captionPaint)
+        if (content is FaceButtonContent.Text) {
+            canvas.drawText(content.text, cx, cy + labelPaint.textSize * 0.35f, labelPaint)
+        }
     }
 
-    private fun drawDpad(canvas: Canvas) {
+    private fun drawDpad(canvas: Canvas, control: MainControl.DPad) {
         val cx = mainRect.centerX()
         val cy = mainRect.centerY()
         val spread = mainRect.width() * 0.27f
         val r = mainRect.width() * 0.16f
-        drawArrowButton(canvas, cx, cy - spread, r, DiamondDirection.UP, "faceTop" in heldRegions)
-        drawArrowButton(canvas, cx - spread, cy, r, DiamondDirection.LEFT, "faceLeft" in heldRegions)
-        drawArrowButton(canvas, cx + spread, cy, r, DiamondDirection.RIGHT, "faceRight" in heldRegions)
-        drawArrowButton(canvas, cx, cy + spread, r, DiamondDirection.DOWN, "faceBottom" in heldRegions)
+        drawArrowButton(canvas, cx, cy - spread, r, DiamondDirection.UP, control.upLabel, ("faceTop" in heldRegions) || control.upRealHeld())
+        drawArrowButton(canvas, cx - spread, cy, r, DiamondDirection.LEFT, control.leftLabel, ("faceLeft" in heldRegions) || control.leftRealHeld())
+        drawArrowButton(canvas, cx + spread, cy, r, DiamondDirection.RIGHT, control.rightLabel, ("faceRight" in heldRegions) || control.rightRealHeld())
+        drawArrowButton(canvas, cx, cy + spread, r, DiamondDirection.DOWN, control.downLabel, ("faceBottom" in heldRegions) || control.downRealHeld())
     }
 
-    private fun drawArrowButton(canvas: Canvas, cx: Float, cy: Float, r: Float, direction: DiamondDirection, held: Boolean) {
+    private fun drawArrowButton(canvas: Canvas, cx: Float, cy: Float, r: Float, direction: DiamondDirection, label: String, held: Boolean) {
         canvas.drawCircle(cx, cy, r, if (held) litPaint else outlinePaint)
         val s = r * 0.45f
         arrowPath.reset()
@@ -293,6 +492,10 @@ class VirtualClusterView(
         }
         arrowPath.close()
         canvas.drawPath(arrowPath, arrowFillPaint)
+        // Below the button, same tight-margin reasoning as drawFaceButton's caption gap -- the
+        // DOWN arrow's label has only the same ~0.07x-mainRect-width clearance to mainRect's own
+        // bottom edge that the face diamond's UP button has to its top edge.
+        canvas.drawText(label, cx, cy + r + captionPaint.textSize * 0.65f, captionPaint)
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {

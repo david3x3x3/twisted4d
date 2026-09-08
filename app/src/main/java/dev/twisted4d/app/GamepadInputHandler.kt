@@ -75,6 +75,27 @@ enum class RotationButton(val literalAxis: Axis4, val primaryPrime: Boolean) {
  * move-to-I tap, which is STICK-only) since toggling out of RKT has to be reachable from RKT. */
 enum class NavigationButton { LEFT, RIGHT, UP, DOWN, BUMPER_L, TRIGGER_L, SELECT, THUMB_L, START, BUTTON_C }
 
+/** RKT mode's fixed D-pad/L1/L2 twist labels, matching MainActivity.handleNavigateButton's
+ * hardcoded `requestRktITwist(roomFixAxis2, desiredApostrophe)` calls exactly -- `desiredApostrophe`
+ * is what directly becomes the community-notation trailing apostrophe (passed straight through as
+ * `TwistRecord.Ridge.displayApostrophe`, never re-derived -- see that field's doc), so these were
+ * derived from each call's actual boolean, not from the (wrong, since corrected) inline comment
+ * above that dispatch block: LEFT=IU (Y,false), RIGHT=IU' (Y,true), UP=IR (X,false), DOWN=IR'
+ * (X,true), L1=IF' (Z,true), L2=IF (Z,false) -- confirmed backwards for UP/DOWN and L1/L2 via a
+ * real report (2026-09-07); LEFT/RIGHT already matched. Extracted purely so VirtualClusterView's
+ * on-screen labels and that dispatch code share the same literal strings instead of two
+ * independent copies. Kept in sync *by hand*: these are display-only, not fed back into the
+ * dispatch itself, so a future change to the actual RKT twist mapping won't automatically update
+ * these -- update both together. */
+object RktMoveLabels {
+    const val DPAD_LEFT = "IU"
+    const val DPAD_RIGHT = "IU'"
+    const val DPAD_UP = "IR"
+    const val DPAD_DOWN = "IR'"
+    const val L1 = "IF'"
+    const val L2 = "IF"
+}
+
 /**
  * Detects connected gamepads, logs button/axis events, and reports left-stick/right-stick/
  * button input via callbacks -- deliberately renderer-agnostic so the same handler drives

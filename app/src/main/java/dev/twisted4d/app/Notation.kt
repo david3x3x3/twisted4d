@@ -173,6 +173,13 @@ object Notation {
     fun signedAxisCell(axis: Axis4, sign: Int): Cell4 =
         Cell4.entries.first { it.axis == axis && it.sign == sign }
 
+    /** e.g. "RU'" -- a ridge twist's community notation, given its already-resolved room-relative
+     * fields. Extracted out of [communityNotation]'s [TwistRecord.Ridge] branch so the same formula
+     * can also build a *live* (not-yet-applied) label from [HypercubeRenderer]'s label-safe
+     * accessors, without needing a full [TwistRecord]. */
+    fun ridgeNotation(roomCell: Cell4, roomFixAxis2: Int, displayApostrophe: Boolean): String =
+        roomCell.label + roomAxisRepresentativeCell(roomFixAxis2).label + (if (displayApostrophe) "'" else "")
+
     /** MC4D's own cell order, empirically reverse-engineered (not documented in MC4D's source --
      * it comes from an external geometry library's traversal order): both the "which 27-grip
      * block" index for a cell *and* the within-block ordering of ridge-piece grips (see
@@ -546,12 +553,31 @@ object Notation {
      * A provisional notation, not an established hypercubing.xyz convention -- there isn't one
      * documented for edge twists yet, unlike [TwistRecord.Ridge]'s. */
     fun communityNotation(record: TwistRecord): String = when (record) {
-        is TwistRecord.Ridge ->
-            record.roomCell.label + roomAxisRepresentativeCell(record.roomFixAxis2).label +
-                (if (record.displayApostrophe) "'" else "")
+        is TwistRecord.Ridge -> ridgeNotation(record.roomCell, record.roomFixAxis2, record.displayApostrophe)
         is TwistRecord.Edge ->
             record.cell.label + signedAxisCell(record.axis1, record.sign1).label +
                 signedAxisCell(record.axis2, record.sign2).label
+    }
+
+    /** Hyperspeedcube/hypercubing.xyz-style whole-room rotation label, e.g. "xy"/"yx" for a
+     * 90-degree rotation in the X/Y plane -- direction is encoded purely by letter order (no prime
+     * symbol, per hypercubing.xyz/notation/), matching [HypercubeRenderer.requestCameraRotate90]'s
+     * `(axisA, axisB, reverse)` parameters exactly.
+     *
+     * The `reverse == false` -> `axisA+axisB` assignment (rather than `axisB+axisA`) is confirmed
+     * correct, not guessed -- derived from [HypercubeRenderer.requestMoveSelectedCellToI], which is
+     * exactly `requestCameraRotate90(selectedRoomAxis, AXIS_W, reverse = selectedRoomSign > 0)` and
+     * must (by its own already-relied-upon contract, unrelated to this label) send the selected
+     * cell to [Cell4.I], never [Cell4.O]. Worked example: selecting [Cell4.U] (`Axis4.Y`, sign
+     * `+1`) calls this with `reverse=true`; hypercubing.xyz's own notation page states "yw: bring
+     * +y to +w" and that "wy is the inverse of yw", i.e. "wy" sends +y to *-w* -- exactly [Cell4.I]
+     * (`Axis4.W`, sign `-1`), matching `reverse=true` -> `"w"+"y"` (letters swapped) below. The same
+     * `(axisA, axisB, reverse)` parameters, with the identical meaning, drive the Select-held
+     * room-rotation labels too, so this one worked example confirms both use sites at once. */
+    fun roomRotationPlaneLabel(axisA: Int, axisB: Int, reverse: Boolean): String {
+        val a = Axis4.entries.first { it.nativeIndex == axisA }.label.lowercase()
+        val b = Axis4.entries.first { it.nativeIndex == axisB }.label.lowercase()
+        return if (reverse) b + a else a + b
     }
 
     /** e.g. "RU' RF RU2" -- a whole move sequence in [communityNotation], doubled moves collapsed

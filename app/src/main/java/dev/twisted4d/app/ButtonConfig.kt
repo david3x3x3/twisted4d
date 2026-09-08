@@ -20,14 +20,23 @@ enum class ButtonModifier { PLAIN, BUTTON_C }
  * Deliberately doesn't carry a corner (3-axis-diagonal) variant yet -- see
  * [parseButtonActionToken]'s doc for why that's not supported. */
 sealed class ButtonAction {
+    /** The forward inverse of [parseButtonActionToken] -- e.g. `Ridge(R, O, true)` ->
+     * `"RO'"`, `Edge(I, U, F)` -> `"IUF"`. Used to display what a configured button slot
+     * currently does, without needing an already-resolved [TwistRecord]/[Notation.communityNotation]. */
+    abstract fun notationString(): String
+
     /** e.g. `"RO'"` -- twist [roomCell] with [roomFixAxis2Cell]'s axis held fixed, [prime] for
      * counterclockwise (community-notation apostrophe). */
-    data class Ridge(val roomCell: Cell4, val roomFixAxis2Cell: Cell4, val prime: Boolean) : ButtonAction()
+    data class Ridge(val roomCell: Cell4, val roomFixAxis2Cell: Cell4, val prime: Boolean) : ButtonAction() {
+        override fun notationString(): String = roomCell.label + roomFixAxis2Cell.label + (if (prime) "'" else "")
+    }
 
     /** e.g. `"IUF"` -- a genuine 180-degree edge twist of [roomCell] around the diagonal through
      * [axis1Cell]/[axis2Cell]'s two signed axes. No prime (a 180-degree edge twist is its own
      * inverse -- see [TwistRecord.Edge]'s doc). */
-    data class Edge(val roomCell: Cell4, val axis1Cell: Cell4, val axis2Cell: Cell4) : ButtonAction()
+    data class Edge(val roomCell: Cell4, val axis1Cell: Cell4, val axis2Cell: Cell4) : ButtonAction() {
+        override fun notationString(): String = roomCell.label + axis1Cell.label + axis2Cell.label
+    }
 }
 
 /** Parses one hypercubing.xyz-style notation token (as typed in a button-config file, e.g. `"RO'"`

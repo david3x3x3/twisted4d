@@ -687,7 +687,7 @@ class MainActivity : AppCompatActivity() {
         // the state machine (doScramble arms+starts it, renderer.onStateChanged stops/resumes it,
         // doReset clears it). Always visible (never GONE), same convention as turnCountText just
         // above -- both are per-attempt stats meant to be glanceable at all times, unlike the
-        // GONE-when-empty fields further down (selectedCellText etc.).
+        // GONE-when-empty fields further down (batteryText etc.).
         val timerText = TextView(this).apply {
             textSize = 14f
             alpha = 0.6f
@@ -865,6 +865,18 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        /** [button]'s slot in the configurable button grid (see [ButtonConfigs]' class doc) --
+         * shared by [handleRotationButton]'s no-selection branch and [rotationButtonContent]
+         * below, so the two can never drift on which physical button means which config slot. */
+        fun configButtonFor(button: RotationButton): ConfigButton = when (button) {
+            RotationButton.UP -> ConfigButton.Y
+            RotationButton.DOWN -> ConfigButton.A
+            RotationButton.LEFT -> ConfigButton.X
+            RotationButton.RIGHT -> ConfigButton.B
+            RotationButton.BUMPER_R -> ConfigButton.R1
+            RotationButton.TRIGGER_R -> ConfigButton.R2
+        }
+
         /** [RotationButton] dispatch (menu confirm/back, twists, Select-held whole-room
          * rotation) -- extracted (2026-08-01), same reasoning as [handleLeftStickInput]: shared
          * verbatim by the real gamepad's on4DRotationButton wiring below and the portrait virtual
@@ -953,16 +965,8 @@ class MainActivity : AppCompatActivity() {
                 // -- see its own doc), and in that case every button still acts directly on the
                 // selection exactly as before, unaffected by this config.
                 if (renderer.selectedRoomCell == null) {
-                    val configButton = when (button) {
-                        RotationButton.UP -> ConfigButton.Y
-                        RotationButton.DOWN -> ConfigButton.A
-                        RotationButton.LEFT -> ConfigButton.X
-                        RotationButton.RIGHT -> ConfigButton.B
-                        RotationButton.BUMPER_R -> ConfigButton.R1
-                        RotationButton.TRIGGER_R -> ConfigButton.R2
-                    }
                     val modifier = if (moveModifierHeldAtPress) ButtonModifier.BUTTON_C else ButtonModifier.PLAIN
-                    val action = currentButtonConfig.action(modifier, configButton)
+                    val action = currentButtonConfig.action(modifier, configButtonFor(button))
                     if (action != null) renderer.requestButtonAction(action)
                     return@queueEvent
                 }
@@ -986,6 +990,43 @@ class MainActivity : AppCompatActivity() {
                 val prime = renderer.correctedNativePrimeForRoomTwist(cell, fixAxis2, roomCell, roomFixAxis2, displayApostrophe)
                 renderer.requestTwist(cell, fixAxis2, prime, roomCell, roomFixAxis2, displayApostrophe)
             }
+        }
+
+        /** Live function content for [button], mirroring [handleRotationButton]'s exact
+         * precedence (see MainControl.FaceDiamond's doc for the on-screen wording of this same
+         * order): Select-held room-rotation label, else a selected cell's live twist (shown as a
+         * [VirtualClusterView.FaceButtonContent.Icon] -- see TwistIcon's class doc for why this
+         * one case gets a picture instead of RO/Rx-style text, per the 2026-09-07 HactarCE Discord
+         * conversation), else the button-config's Button-C/plain mapping (still text). Pure and
+         * UI-thread-safe -- uses HypercubeRenderer's `*ForLabel` accessors (see their doc) instead
+         * of the GL-thread-only ones `handleRotationButton` itself uses inside `queueEvent`, so
+         * this can be called directly from VirtualClusterView's repaint loop without racing the GL
+         * thread. Never resolves a native twist (no `cell`/`fixAxis2`/`prime`) -- a label only
+         * needs the room-level community-notation intent. */
+        fun rotationButtonContent(button: RotationButton): VirtualClusterView.FaceButtonContent {
+            if (GamepadVisualState.selectHeld) {
+                val spatialAxes = listOf(HypercubeRenderer.AXIS_X, HypercubeRenderer.AXIS_Y, HypercubeRenderer.AXIS_Z)
+                val (axisA, axisB) = spatialAxes.filter { it != button.literalAxis.nativeIndex }
+                val reverse = if (button.literalAxis == Axis4.X || button.literalAxis == Axis4.Z) {
+                    !button.primaryPrime
+                } else {
+                    button.primaryPrime
+                }
+                return VirtualClusterView.FaceButtonContent.Text(Notation.roomRotationPlaneLabel(axisA, axisB, reverse))
+            }
+            if (renderer.hasEffectiveSelectionForLabel) {
+                // Deliberately ignores which cell is actually selected (unlike the old text
+                // notation's roomCell/roomFixAxis2-corrected letters) -- confirmed via a real
+                // report (2026-09-07): the icon must stay the same on a given button regardless
+                // of selection, the same "Rx over RO" consistency David and HactarCE discussed for
+                // text, just applied to the icon instead. Pinned to the button's own fixed
+                // literalAxis/primaryPrime only.
+                return VirtualClusterView.FaceButtonContent.Icon(TwistIcon.forFixAxis(button.literalAxis), button.primaryPrime)
+            }
+            val moveModifierHeld = GamepadVisualState.thumbLHeld || GamepadVisualState.buttonCHeld
+            val modifier = if (moveModifierHeld) ButtonModifier.BUTTON_C else ButtonModifier.PLAIN
+            val text = currentButtonConfig.action(modifier, configButtonFor(button))?.notationString() ?: ""
+            return VirtualClusterView.FaceButtonContent.Text(text)
         }
 
         // Added once Hide 4c/Hide 3c became reachable from the Start Menu (see StartMenuView's
@@ -1117,8 +1158,11 @@ class MainActivity : AppCompatActivity() {
                                 renderer.snapViewToNearestCardinalOrientation()
                                 renderer.requestMoveSelectedCellToI()
                             }
-                        // Community notation: LEFT=IU, RIGHT=IU', UP=IR', DOWN=IR, BUMPER_L(L1)=IF,
-                        // TRIGGER_L(L2)=IF'. SELECT/START/BUTTON_C/THUMB_L are unbound -- no role
+                        // Community notation: LEFT=IU, RIGHT=IU', UP=IR, DOWN=IR', BUMPER_L(L1)=IF',
+                        // TRIGGER_L(L2)=IF -- see RktMoveLabels' doc (this comment previously had
+                        // UP/DOWN and L1/L2 backwards; corrected 2026-09-07 against the actual
+                        // desiredApostrophe argument each call below passes, not re-guessed).
+                        // SELECT/START/BUTTON_C/THUMB_L are unbound -- no role
                         // specified for RKT mode (no cell selection exists there to move to I).
                         // The X/Z axis pairs need prime flipped relative to what their label would
                         // naively suggest -- real-device-confirmed: Y (LEFT/RIGHT) was already
@@ -1147,6 +1191,51 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
             }
+        }
+
+        /** Live function-label text for L1 ([isL1]=true) or L2, mirroring [handleNavigateButton]'s
+         * exact precedence for those two buttons (see its doc): Select-held with an active
+         * filter-series in STICK mode -> filter-step; else Select-held -> undo/redo (overrides
+         * RKT's own twist role too); else STICK mode -> undo/redo; else (RKT, no Select) ->
+         * the fixed IF/IF' twist labels. */
+        fun l1L2Label(isL1: Boolean): String {
+            val selectHeld = GamepadVisualState.selectHeld
+            if (selectHeld && inputMode == GamepadInputMode.STICK && renderer.activeFilterSet != null) {
+                return if (isL1) "Filter−" else "Filter+"
+            }
+            if (selectHeld) return if (isL1) "Undo" else "Redo"
+            if (inputMode == GamepadInputMode.STICK) return if (isL1) "Undo" else "Redo"
+            return if (isL1) RktMoveLabels.L1 else RktMoveLabels.L2
+        }
+
+        /** Live label for the right cluster's L3/C pill -- precedence mirrors
+         * handleNavigateButton's own for THUMB_L/BUTTON_C exactly:
+         * 1. Select held -> previews the STICK<->RKT mode toggle, naming whichever mode tapping it
+         *    would switch *to* (2026-09-07 feedback).
+         * 2. Else, STICK mode with a cell actually selected (not RKT's permanent R-pin, which this
+         *    button does nothing with -- see handleNavigateButton's RKT branch leaving THUMB_L/
+         *    BUTTON_C unbound) -> previews "move selected cell to I", which
+         *    [HypercubeRenderer.requestMoveSelectedCellToI] implements as nothing more than
+         *    [HypercubeRenderer.requestCameraRotate90] in the (selected axis, W) plane -- so this
+         *    reuses [Notation.roomRotationPlaneLabel] exactly like the Select-held room-rotation
+         *    labels do, rather than inventing a separate notation (hypercubing.xyz's own "yw:
+         *    bring +y to +w" example is literally this same move). No preview if the selected
+         *    axis is already W (I or O selected) -- requestMoveSelectedCellToI is a no-op there.
+         * 3. Else, "Mod2" -- the caption above already shows the native name ("L3/C"), so the
+         *    function slot names its role (a modifier, like Select's "Mod1") instead of repeating
+         *    the caption (2026-09-07 feedback, for consistency with Select/Start). */
+        fun l3CLabel(): String {
+            if (GamepadVisualState.selectHeld) {
+                return if (inputMode == GamepadInputMode.RKT) "Stick Mode" else "RKT Mode"
+            }
+            if (inputMode == GamepadInputMode.STICK && renderer.hasEffectiveSelectionForLabel) {
+                val axis = renderer.selectedRoomAxisForLabel
+                if (axis != HypercubeRenderer.AXIS_W) {
+                    val reverse = renderer.selectedRoomSignForLabel > 0
+                    return Notation.roomRotationPlaneLabel(axis, HypercubeRenderer.AXIS_W, reverse)
+                }
+            }
+            return "Mod2"
         }
 
         gamepadInput = GamepadInputHandler(
@@ -1214,29 +1303,6 @@ class MainActivity : AppCompatActivity() {
             runOnUiThread {
                 statusText.text = if (solved) SOLVED_LABEL else ""
                 updateTimerText()
-            }
-        }
-
-        // Troubleshooting aid: which room the app has actively selected right now, if any, and
-        // which native cell currently occupies it -- see HypercubeRenderer.onSelectedCellChanged's
-        // doc. Confirmed via a real repro where an earlier version (showing the stick's raw,
-        // uncorrected wedge instead) visibly diverged from the actual rotation. Updated live in
-        // any input mode, not just on twists. Shows "none" once the stick/d-pad is released
-        // (2026-08-02 design change) -- the next twist still resolves to a definite cell via
-        // effectiveCell4, but which one depends on which button gets pressed, so there's no
-        // single selection left to report.
-        val selectedCellText = TextView(this).apply {
-            textSize = 14f
-            alpha = 0.6f
-            setPadding(24, 0, 24, 8)
-        }
-        renderer.onSelectedCellChanged = { roomCell, nativeCell ->
-            runOnUiThread {
-                selectedCellText.text = if (roomCell != null && nativeCell != null) {
-                    "Selected ${roomCell.label}: showing ${nativeCell.label}"
-                } else {
-                    "Selected: none"
-                }
             }
         }
 
@@ -1392,7 +1458,6 @@ class MainActivity : AppCompatActivity() {
             orientation = LinearLayout.VERTICAL
             addView(turnCountText)
             addView(timerText)
-            addView(selectedCellText)
             addView(filterStatusText)
             addView(inputModeText)
             addView(batteryText)
@@ -1596,10 +1661,18 @@ class MainActivity : AppCompatActivity() {
             val showDpad = inputMode == GamepadInputMode.RKT && activeMenu() == null
             virtualClusterLeft?.mainControl = if (showDpad) {
                 VirtualClusterView.MainControl.DPad(
+                    upLabel = RktMoveLabels.DPAD_UP,
                     onUpTap = virtualAction { handleNavigateButton(NavigationButton.UP) },
+                    upRealHeld = { GamepadVisualState.dpadUpHeld },
+                    leftLabel = RktMoveLabels.DPAD_LEFT,
                     onLeftTap = virtualAction { handleNavigateButton(NavigationButton.LEFT) },
+                    leftRealHeld = { GamepadVisualState.dpadLeftHeld },
+                    rightLabel = RktMoveLabels.DPAD_RIGHT,
                     onRightTap = virtualAction { handleNavigateButton(NavigationButton.RIGHT) },
+                    rightRealHeld = { GamepadVisualState.dpadRightHeld },
+                    downLabel = RktMoveLabels.DPAD_DOWN,
                     onDownTap = virtualAction { handleNavigateButton(NavigationButton.DOWN) },
+                    downRealHeld = { GamepadVisualState.dpadDownHeld },
                 )
             } else {
                 VirtualClusterView.MainControl.Stick(onChanged = virtualStickAction { x, y -> handleLeftStickInput(x, y) })
@@ -1853,8 +1926,10 @@ class MainActivity : AppCompatActivity() {
         rootLayout.addView(surfaceView)
         rootLayout.addView(statusText, topCenterParams())
         rootLayout.addView(lastMoveColumnView, topStartParams())
-        gamepadOverlay = gamepadOverlayView()
-        rootLayout.addView(gamepadOverlay, bottomStartParams())
+        // GamepadOverlayView is no longer built here (retired 4D-mode-only -- see
+        // updateControlVisibility's doc): the always-visible virtual controls below now show
+        // real-gamepad state directly via each button's realHeld lambda, so a separate status HUD
+        // would be redundant. 3D mode still builds and uses its own (see build3DScreen).
         val buildLabel = buildNumberLabel()
         buildNumberLabelView = buildLabel
         rootLayout.addView(buildLabel, bottomEndParams())
@@ -1876,28 +1951,29 @@ class MainActivity : AppCompatActivity() {
         // virtualStickAction/applyInputModeToVirtualController are declared earlier (see their
         // docs, up by rebuildStartMenuTiles) rather than here where they're first *used*.
 
-        /** R1/R2's *labels* stay fixed to the 8BitDo Micro's own physical layout (R2 left of R1),
-         * but which literal twist each performs is resolved through the exact same per-controller
-         * Z Dir Right toggle a real pad's backwards-feeling shoulder buttons already use (see
-         * GamepadInputHandler.zDirSwappedKeyCode's doc) -- confirmed backwards on real-device
-         * testing (2026-08-01, David's Pixel), and PerControllerSettings.loadEntry now defaults
-         * this one descriptor's zDirRight to true specifically because of that, rather than
-         * hardcoding a one-off swap here that Settings could never re-expose or undo. */
-        fun handleVirtualR1Tap() {
+        /** The *function* at each shoulder screen position is fixed -- the left R-pill always
+         * fires BUMPER_R ("z'", the prime twist), the right always fires TRIGGER_R ("z", the
+         * non-prime twist) -- see l1L2Label's sibling doc on virtualClusterLeft for why (2026-09-07
+         * feedback: Z Dir Right must only swap which native-name caption ("R1"/"R2") is shown at
+         * which position, never the function itself). Named by fixed screen position, not by
+         * R1/R2, since which caption applies to which position is now itself the thing that
+         * swaps. Calls noteVirtualControllerActive() so PerControllerSettings.current() (used by
+         * the caption/highlight suppliers below) tracks touch input the same way it already
+         * tracks real gamepad input. */
+        fun handleVirtualLeftShoulderRTap() {
             PerControllerSettings.noteVirtualControllerActive()
-            val swapped = PerControllerSettings.current()?.zDirRight == true
-            handleRotationButton(if (swapped) RotationButton.TRIGGER_R else RotationButton.BUMPER_R)
+            handleRotationButton(RotationButton.BUMPER_R)
         }
-        fun handleVirtualR2Tap() {
+        fun handleVirtualRightShoulderRTap() {
             PerControllerSettings.noteVirtualControllerActive()
-            val swapped = PerControllerSettings.current()?.zDirRight == true
-            handleRotationButton(if (swapped) RotationButton.BUMPER_R else RotationButton.TRIGGER_R)
+            handleRotationButton(RotationButton.TRIGGER_R)
         }
 
         virtualClusterLeft = VirtualClusterView(
             context = this,
             topLeftLabel = "About",
-            topRightLabel = "Select",
+            topRightLabel = { "Mod1" },
+            topRightCaption = "Select",
             onTopLeftTap = virtualAction { showAboutDialog() },
             // A true hold, not a tap -- writes the same GamepadVisualState.selectHeld flag a
             // real Select button press/release does, so handleRotationButton/handleNavigateButton
@@ -1906,23 +1982,43 @@ class MainActivity : AppCompatActivity() {
             // exactly like the physical controller.
             onTopRightTap = virtualAction { GamepadVisualState.selectHeld = true },
             onTopRightRelease = virtualAction { GamepadVisualState.selectHeld = false },
-            // L1 left of L2, matching the 8BitDo Micro's own physical shoulder layout.
-            shoulderLeftLabel = "L1",
-            shoulderRightLabel = "L2",
+            topRightRealHeld = { GamepadVisualState.selectHeld },
+            // The *function* at each screen position is fixed -- left always fires BUMPER_L
+            // (Undo/IF), right always fires TRIGGER_L (Redo/IF') -- see l1L2Label's doc. Z Dir
+            // Left only ever swaps which native-name caption ("L1"/"L2") is shown at which
+            // position, matching whichever physical button a real pad's zDirSwappedKeyCode would
+            // actually route to that function; it never moves the function itself, so Undo/Redo
+            // (or IF/IF') always stay left/right exactly as printed here, per David's 2026-09-07
+            // feedback (an earlier version swapped the function instead of the caption, which
+            // made a held-down physical button's actual effect disagree with its own label).
+            shoulderLeftCaption = { if (PerControllerSettings.current()?.zDirLeft == true) "L2" else "L1" },
+            shoulderLeftLabel = { VirtualClusterView.FaceButtonContent.Text(l1L2Label(isL1 = true)) },
+            shoulderRightCaption = { if (PerControllerSettings.current()?.zDirLeft == true) "L1" else "L2" },
+            shoulderRightLabel = { VirtualClusterView.FaceButtonContent.Text(l1L2Label(isL1 = false)) },
             // Routes straight through handleNavigateButton, same as the physical gamepad's
             // on4DNavigate wiring above -- that function now handles every case itself (plain
             // STICK-mode undo/redo, RKT mode's real Z/Z' twist, Select-held undo/redo or
             // filter-series stepping), so this no longer needs its own copy of that branch's
             // mode/Select logic (removed 2026-08-06 once handleNavigateButton grew the plain-
-            // STICK-mode-undo/redo case this used to hardcode -- see its doc).
+            // STICK-mode-undo/redo case this used to hardcode -- see its doc). Never swapped by
+            // Z Dir Left -- see the caption comment above for why the function stays fixed.
             onShoulderLeftTap = virtualAction { handleNavigateButton(NavigationButton.BUMPER_L) },
             onShoulderRightTap = virtualAction { handleNavigateButton(NavigationButton.TRIGGER_L) },
+            // A real pad's physical L1/L2 keys get remapped by zDirSwappedKeyCode when Z Dir Left
+            // is on (physical L1 fires as if L2 and vice versa) -- so highlighting the *fixed*
+            // left/right function position has to resolve through the same swap, not read
+            // l1Held/l2Held directly, or the lit button would silently stop matching whichever
+            // physical key is actually held once the setting is on.
+            shoulderLeftRealHeld = { if (PerControllerSettings.current()?.zDirLeft == true) GamepadVisualState.l2Held else GamepadVisualState.l1Held },
+            shoulderRightRealHeld = { if (PerControllerSettings.current()?.zDirLeft == true) GamepadVisualState.l1Held else GamepadVisualState.l2Held },
             mainControl = VirtualClusterView.MainControl.Stick(onChanged = virtualStickAction { x, y -> handleLeftStickInput(x, y) }),
         )
         virtualClusterRight = VirtualClusterView(
             context = this,
-            topLeftLabel = "Start",
-            topRightLabel = "C",
+            topLeftLabel = "Menu",
+            topLeftCaption = "Start",
+            topRightLabel = { l3CLabel() },
+            topRightCaption = "L3/C",
             onTopLeftTap = virtualAction { toggleTopLevelMenu() },
             // Sets buttonCHeld for the same reason virtualClusterLeft's Select pill does (see
             // its onTopRightTap/Release doc above): with nothing selected, this now doubles as
@@ -1933,18 +2029,34 @@ class MainActivity : AppCompatActivity() {
                 handleNavigateButton(NavigationButton.BUTTON_C)
             },
             onTopRightRelease = virtualAction { GamepadVisualState.buttonCHeld = false },
-            // R2 left of R1, matching the 8BitDo Micro's own physical shoulder layout -- see
-            // handleVirtualR1Tap/handleVirtualR2Tap's doc for why *which twist* each performs is
-            // resolved dynamically instead of hardcoded here.
-            shoulderLeftLabel = "R2",
-            shoulderRightLabel = "R1",
-            onShoulderLeftTap = { handleVirtualR2Tap() },
-            onShoulderRightTap = { handleVirtualR1Tap() },
+            topRightRealHeld = { GamepadVisualState.thumbLHeld || GamepadVisualState.buttonCHeld },
+            // Left always shows/fires BUMPER_R's function ("z'"), right always shows/fires
+            // TRIGGER_R's ("z") -- see handleVirtualLeftShoulderRTap's doc. Z Dir Right only ever
+            // swaps which caption ("R1"/"R2") is shown at which fixed position.
+            shoulderLeftCaption = { if (PerControllerSettings.current()?.zDirRight == true) "R2" else "R1" },
+            shoulderLeftLabel = { rotationButtonContent(RotationButton.BUMPER_R) },
+            shoulderRightCaption = { if (PerControllerSettings.current()?.zDirRight == true) "R1" else "R2" },
+            shoulderRightLabel = { rotationButtonContent(RotationButton.TRIGGER_R) },
+            onShoulderLeftTap = { handleVirtualLeftShoulderRTap() },
+            onShoulderRightTap = { handleVirtualRightShoulderRTap() },
+            // Same real-pad zDirSwappedKeyCode reasoning as virtualClusterLeft's L1/L2 highlight
+            // comment: a fixed screen position's highlight must resolve through the same swap Z
+            // Dir Right applies to real key events, not read r1Held/r2Held directly.
+            shoulderLeftRealHeld = { if (PerControllerSettings.current()?.zDirRight == true) GamepadVisualState.r2Held else GamepadVisualState.r1Held },
+            shoulderRightRealHeld = { if (PerControllerSettings.current()?.zDirRight == true) GamepadVisualState.r1Held else GamepadVisualState.r2Held },
             mainControl = VirtualClusterView.MainControl.FaceDiamond(
-                topLabel = "Y", onTopTap = virtualAction { handleRotationButton(RotationButton.UP) },
-                leftLabel = "X", onLeftTap = virtualAction { handleRotationButton(RotationButton.LEFT) },
-                rightLabel = "B", onRightTap = virtualAction { handleRotationButton(RotationButton.RIGHT) },
-                bottomLabel = "A", onBottomTap = virtualAction { handleRotationButton(RotationButton.DOWN) },
+                topCaption = "Y", topLabel = { rotationButtonContent(RotationButton.UP) },
+                onTopTap = virtualAction { handleRotationButton(RotationButton.UP) },
+                topRealHeld = { GamepadVisualState.yHeld },
+                leftCaption = "X", leftLabel = { rotationButtonContent(RotationButton.LEFT) },
+                onLeftTap = virtualAction { handleRotationButton(RotationButton.LEFT) },
+                leftRealHeld = { GamepadVisualState.xHeld },
+                rightCaption = "B", rightLabel = { rotationButtonContent(RotationButton.RIGHT) },
+                onRightTap = virtualAction { handleRotationButton(RotationButton.RIGHT) },
+                rightRealHeld = { GamepadVisualState.bHeld },
+                bottomCaption = "A", bottomLabel = { rotationButtonContent(RotationButton.DOWN) },
+                onBottomTap = virtualAction { handleRotationButton(RotationButton.DOWN) },
+                bottomRealHeld = { GamepadVisualState.aHeld },
             ),
         )
         rootLayout.addView(virtualClusterLeft, virtualClusterParams(startSide = true))
@@ -2151,14 +2263,17 @@ class MainActivity : AppCompatActivity() {
      * overlap there either). An earlier attempt pushed this down by the cluster's top-edge
      * position instead -- looked right on paper but still overlapped the cluster's top-row pills
      * in practice, since clearing just the cluster's top *edge* isn't the same as clearing the
-     * pills' own height. Only applies while the cluster is actually the thing showing there (see
-     * [updateControlVisibility]'s doc) -- with a real gamepad connected, the small
-     * [gamepadOverlay] HUD box takes its place instead, which doesn't reach anywhere near this
-     * corner, so clearing space for the (now-hidden) cluster would just waste it for nothing.
-     * Portrait doesn't need any of this: the cluster sits at the bottom there, nowhere near this
-     * corner. Harmless for build3DScreen's modeToggleButton (this function's other caller) too --
-     * 3D mode has no virtual controller to clear, so this just nudges that button right slightly
-     * in landscape for no real reason, not a problem worth special-casing around. */
+     * pills' own height. The left cluster is now always visible in landscape (see
+     * [updateControlVisibility]'s doc -- it no longer hides behind a real gamepad connecting), so
+     * this always clears space for it in landscape regardless of connection state; checking
+     * [GamepadInputHandler.anyGamepadConnected] here too (as an earlier version did, back when a
+     * connected gamepad hid the cluster in favor of a small status HUD) is exactly what let this
+     * column collapse to the small margin and sit underneath/covered by the still-visible cluster
+     * once a real controller connected -- confirmed via a real report (2026-09-07). Portrait
+     * doesn't need any of this: the cluster sits at the bottom there, nowhere near this corner.
+     * Harmless for build3DScreen's modeToggleButton (this function's other caller) too -- 3D mode
+     * has no virtual controller to clear, so this just nudges that button right slightly in
+     * landscape for no real reason, not a problem worth special-casing around. */
     private fun topStartParams(): FrameLayout.LayoutParams {
         val params = FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.WRAP_CONTENT,
@@ -2167,7 +2282,7 @@ class MainActivity : AppCompatActivity() {
         )
         params.topMargin = 24 + systemBarInsets.top
         val portrait = resources.configuration.orientation == Configuration.ORIENTATION_PORTRAIT
-        params.leftMargin = systemBarInsets.left + if (portrait || GamepadInputHandler.anyGamepadConnected()) {
+        params.leftMargin = systemBarInsets.left + if (portrait) {
             24
         } else {
             val marginPx = 12 * resources.displayMetrics.density
@@ -2366,9 +2481,16 @@ class MainActivity : AppCompatActivity() {
         // in their own halves).
         virtualClusterLeft?.layoutParams = virtualClusterParams(startSide = true)
         virtualClusterRight?.layoutParams = virtualClusterParams(startSide = false)
+        // 4D's virtual controls stay visible regardless of a real gamepad's connection state now
+        // (added alongside per-button live function labels/highlighting) -- a real controller
+        // press lights up the same on-screen buttons instead of switching to a separate status
+        // HUD, so the mapping stays visible as a teaching aid either way. gamepadOverlay is 4D-only
+        // dead weight now (build4DScreen no longer constructs one -- see its doc), but this field
+        // is shared with 3D mode, which still uses connection state to show/hide its own overlay
+        // exactly as before.
+        virtualClusterLeft?.visibility = View.VISIBLE
+        virtualClusterRight?.visibility = View.VISIBLE
         val realGamepadConnected = GamepadInputHandler.anyGamepadConnected()
-        virtualClusterLeft?.visibility = if (realGamepadConnected) View.GONE else View.VISIBLE
-        virtualClusterRight?.visibility = if (realGamepadConnected) View.GONE else View.VISIBLE
         gamepadOverlay?.visibility = if (realGamepadConnected) View.VISIBLE else View.GONE
         if (::menuButton.isInitialized) {
             menuButton.visibility = View.GONE
