@@ -92,9 +92,9 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
     @Volatile var onStateChanged: ((Boolean) -> Unit)? = null
 
     /** Called (on the GL thread) right after a twist is applied via [requestTwist] or
-     * [requestEdgeTwist] -- not fired by [requestUndo]/[requestRedo]/[requestEdgeReplay], so a
-     * caller (MainActivity) using this to build an undo/log history doesn't see its own undo/redo
-     * moves recorded back into that same history. Takes the already-resolved [TwistRecord]
+     * [requestEdgeTwist] -- not fired by [requestUndo]/[requestRedo], so a caller (MainActivity)
+     * using this to build an undo/log history doesn't see its own undo/redo moves recorded back
+     * into that same history. Takes the already-resolved [TwistRecord]
      * directly (changed 2026-08-10 from 6 flat args, to accommodate [TwistRecord.Edge] alongside
      * [TwistRecord.Ridge] without a second callback or a growing arg list) -- [TwistRecord.Ridge]'s
      * `roomCell`/`roomFixAxis2` are room-relative context for community-notation labeling,
@@ -145,6 +145,29 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
      * have this problem (their own history bookkeeping only updates *after* [onTwistApplied]
      * confirms landing), so only undo/redo needs this separate signal. */
     @Volatile var onUndoRedoApplied: (() -> Unit)? = null
+
+    /** Called (on the GL thread) exactly when a requested undo is actually about to be applied --
+     * whether immediately ([requestUndo]'s idle branch) or after draining ahead of it in
+     * [twistQueue] ([drainTwistQueueIfIdle]'s [QueuedAction.UndoRequest] branch) -- to resolve
+     * which [TwistRecord] to reverse right now. Deliberately resolved this late rather than back
+     * when the button was pressed (contrast [requestTwist], which takes fully-resolved params):
+     * closes a real bug (2026-09-11, see the mc4d_export_bug_investigation-adjacent memory) where
+     * MainActivity used to decrement its own historyIndex4D optimistically at press time, which
+     * could go stale the instant a twist requested *earlier* but still sitting in [twistQueue]
+     * finally landed -- that twist's own bookkeeping would then run against a historyIndex4D the
+     * not-yet-applied undo had already rewritten out from under it, permanently diverging the live
+     * puzzle from the recorded history by exactly that twist's worth. Resolving here instead --
+     * called at the exact moment this undo is really about to apply, in the same guaranteed FIFO
+     * order [twistQueue] already applies everything else in -- means MainActivity always resolves
+     * against its own *current*, fully-caught-up history state, never a stale one. Returns null if
+     * there's nothing left to undo (e.g. already back at the scramble boundary); [onUndoRedoApplied]
+     * still fires in that case, since a `pendingUndoRedoCount` increment from the original request
+     * needs exactly one matching decrement regardless of outcome. */
+    @Volatile var resolveUndo: (() -> TwistRecord?)? = null
+
+    /** Redo counterpart to [resolveUndo] -- see its doc for why resolution is deferred to apply
+     * time here too. Returns null once caught back up to the end of history. */
+    @Volatile var resolveRedo: (() -> TwistRecord?)? = null
 
     /** If set (by MainActivity, *before* `setRenderer` is called -- see build4DScreen), consumed
      * by [onSurfaceCreated] instead of its usual [NativeLib.cube4Reset] -- restores a puzzle
@@ -767,17 +790,18 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
     private var animAfter: FloatArray? = null
     private var animAffected: BooleanArray? = null
 
-    /** A [requestTwist]/[requestUndo]/[requestRedo] call's fully-resolved parameters -- captured
-     * at the moment the button was pressed (see [requestTwist]'s doc), not re-derived when this
-     * eventually leaves [twistQueue], since live selection/stick/orientation state may have moved
-     * on by then. [Twist] and [UndoRedo] share one queue (and one [twistQueueMax] high-water mark,
-     * see its doc) so a rapid burst of undo/redo presses gets exactly the same dynamic speed-up a
-     * burst of fresh twists already got -- added 2026-08-09 to fix undo/redo not sharing in that
-     * speed-up (rapid clicks were simply dropped by [applyTwistInternal]'s animating guard instead
-     * of queuing at all, since [requestUndo]/[requestRedo] used to apply immediately-or-not with no
-     * queue of their own). [UndoRedo] doesn't carry the room-context fields [Twist] does, since
-     * undo/redo never notify [onTwistApplied] (the caller -- MainActivity -- already owns its own
-     * history bookkeeping for a replay, unlike a genuinely new twist). */
+    /** [Twist]/[Edge]: a [requestTwist]/[requestEdgeTwist] call's fully-resolved parameters --
+     * captured at the moment the button was pressed (see [requestTwist]'s doc), not re-derived
+     * when this eventually leaves [twistQueue], since live selection/stick/orientation state may
+     * have moved on by then. [UndoRequest]/[RedoRequest] carry no parameters at all, by contrast
+     * -- see [resolveUndo]'s doc for why undo/redo are resolved fresh via callback at the moment
+     * they actually apply instead. All four share one queue (and one [twistQueueMax] high-water
+     * mark, see its doc) so a rapid burst of any mix of twists/undos/redos gets the same dynamic
+     * speed-up -- added 2026-08-09 for undo/redo specifically (rapid clicks used to be simply
+     * dropped by [applyTwistInternal]'s animating guard instead of queuing at all). [UndoRequest]/
+     * [RedoRequest] don't carry the room-context fields [Twist] does, since undo/redo never notify
+     * [onTwistApplied] (the caller -- MainActivity -- already owns its own history bookkeeping for
+     * a replay, unlike a genuinely new twist). */
     private sealed class QueuedAction {
         data class Twist(
             val cell: Cell4,
@@ -788,13 +812,13 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
             val displayApostrophe: Boolean,
         ) : QueuedAction()
 
-        data class UndoRedo(val cell: Cell4, val fixAxis2: Axis4, val prime: Boolean) : QueuedAction()
+        object UndoRequest : QueuedAction()
+        object RedoRequest : QueuedAction()
 
-        /** [Edge] twin of [Twist]/[UndoRedo] -- [Edge] notifies [onTwistApplied] (a genuine new
-         * edge twist, e.g. from [requestEdgeTwist]), [EdgeReplay] doesn't (undo/redo replaying one
-         * that's already in history, from [requestEdgeReplay]) -- same split, same reasoning. */
+        /** Genuine new edge twist -- notifies [onTwistApplied], unlike [UndoRequest]/[RedoRequest]
+         * (which also cover undoing/redoing a [TwistRecord.Edge], resolved generically via
+         * [resolveUndo]/[resolveRedo] instead of a separate edge-shaped queue entry). */
         data class Edge(val cell: Cell4, val axis1: Axis4, val sign1: Int, val axis2: Axis4, val sign2: Int) : QueuedAction()
-        data class EdgeReplay(val cell: Cell4, val axis1: Axis4, val sign1: Int, val axis2: Axis4, val sign2: Int) : QueuedAction()
     }
 
     /** Key for [EDGE_TWIST_DECOMPOSITIONS]. [cellAxis] is the twisted cell's own native axis
@@ -1409,51 +1433,65 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
                         return
                     }
                 }
-                is QueuedAction.UndoRedo -> {
-                    if (applyTwistInternal(next.cell, next.fixAxis2, next.prime)) {
-                        onUndoRedoApplied?.invoke()
-                        return
-                    }
-                }
                 is QueuedAction.Edge -> {
                     if (applyEdgeTwistInternal(next.cell, next.axis1, next.sign1, next.axis2, next.sign2)) {
                         onTwistApplied?.invoke(TwistRecord.Edge(next.cell, next.axis1, next.sign1, next.axis2, next.sign2))
                         return
                     }
                 }
-                is QueuedAction.EdgeReplay -> {
-                    if (applyEdgeTwistInternal(next.cell, next.axis1, next.sign1, next.axis2, next.sign2)) {
-                        onUndoRedoApplied?.invoke()
-                        return
-                    }
-                }
+                QueuedAction.UndoRequest -> if (applyResolvedUndoRedo(resolveUndo)) return
+                QueuedAction.RedoRequest -> if (applyResolvedUndoRedo(resolveRedo)) return
             }
         }
         twistQueueMax = 0
         onQueueIdle?.invoke()
     }
 
-    /** Re-applies [cell]/[fixAxis2] with [prime] inverted -- for undo, where the caller
-     * (MainActivity's performUndo) has already stepped its own history index back optimistically,
-     * so unlike [requestTwist] this never notifies [onTwistApplied]: nothing here needs to append
-     * to history, just replay it. Applies immediately if idle, or queues behind
-     * [twistQueue] exactly like [requestTwist] otherwise -- see [QueuedAction]'s doc for why
-     * undo/redo share that same queue (and its dynamic speed-up) rather than a separate
-     * immediate-or-dropped path. */
-    fun requestUndo(cell: Cell4, fixAxis2: Axis4, prime: Boolean) = requestUndoOrRedo(cell, fixAxis2, !prime)
+    /** Shared by [requestUndo]/[requestRedo]'s immediate-apply branch and [drainTwistQueueIfIdle]'s
+     * queued one -- resolves via [resolver] right now (see [resolveUndo]'s doc for why this has to
+     * happen this late) and applies whichever [TwistRecord] kind comes back, or does nothing if
+     * null (nothing left to undo/redo). [onUndoRedoApplied] always fires once resolution is
+     * attempted, even on a null/rejected outcome, since MainActivity incremented
+     * `pendingUndoRedoCount` unconditionally when this was first requested and needs exactly one
+     * matching decrement regardless of how it resolves. Returns whether an animation actually
+     * started, so [drainTwistQueueIfIdle] knows whether to stop draining (matches every other
+     * branch there). */
+    private fun applyResolvedUndoRedo(resolver: (() -> TwistRecord?)?): Boolean {
+        val applied = when (val record = resolver?.invoke()) {
+            is TwistRecord.Ridge -> applyTwistInternal(record.cell, record.fixAxis2, record.prime)
+            is TwistRecord.Edge -> applyEdgeTwistInternal(record.cell, record.axis1, record.sign1, record.axis2, record.sign2)
+            null -> false
+        }
+        onUndoRedoApplied?.invoke()
+        return applied
+    }
 
-    /** Redo counterpart to [requestUndo] -- re-applies [cell]/[fixAxis2]/[prime] exactly as
-     * originally recorded (no inversion). See [requestUndo]'s doc for the shared queueing/
-     * speed-up behavior and why neither notifies [onTwistApplied]. */
-    fun requestRedo(cell: Cell4, fixAxis2: Axis4, prime: Boolean) = requestUndoOrRedo(cell, fixAxis2, prime)
-
-    private fun requestUndoOrRedo(cell: Cell4, fixAxis2: Axis4, prime: Boolean) {
+    /** Requests undoing whatever [resolveUndo] says is currently last -- deliberately not told
+     * which move that is by the caller (contrast [requestTwist], which takes fully-resolved
+     * params): see [resolveUndo]'s doc for why resolving it this late, rather than back when the
+     * button was pressed, is what closes a real bookkeeping race. Applies immediately if idle, or
+     * queues behind [twistQueue] exactly like [requestTwist] otherwise -- see [QueuedAction]'s doc
+     * for why undo/redo share that same queue (and its dynamic speed-up) rather than a separate
+     * immediate-or-dropped path. Never notifies [onTwistApplied]: nothing here needs to append to
+     * history, just replay it (MainActivity's [resolveUndo] callback does its own bookkeeping). */
+    fun requestUndo() {
         if (animating || roomAnimating) {
-            twistQueue.addLast(QueuedAction.UndoRedo(cell, fixAxis2, prime))
+            twistQueue.addLast(QueuedAction.UndoRequest)
             twistQueueMax = max(twistQueueMax, twistQueue.size)
             return
         }
-        if (applyTwistInternal(cell, fixAxis2, prime)) onUndoRedoApplied?.invoke()
+        applyResolvedUndoRedo(resolveUndo)
+    }
+
+    /** Redo counterpart to [requestUndo] -- see its doc and [resolveRedo]'s for why resolution is
+     * deferred to apply time here too. */
+    fun requestRedo() {
+        if (animating || roomAnimating) {
+            twistQueue.addLast(QueuedAction.RedoRequest)
+            twistQueueMax = max(twistQueueMax, twistQueue.size)
+            return
+        }
+        applyResolvedUndoRedo(resolveRedo)
     }
 
     private fun applyTwistInternal(cell: Cell4, fixAxis2: Axis4, prime: Boolean): Boolean {
@@ -1524,20 +1562,6 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         }
         if (!applyEdgeTwistInternal(cell, axis1, sign1, axis2, sign2)) return
         onTwistApplied?.invoke(TwistRecord.Edge(cell, axis1, sign1, axis2, sign2))
-    }
-
-    /** Replays [cell]/[axis1]/[sign1]/[axis2]/[sign2] without notifying [onTwistApplied] -- for
-     * undo *and* redo of a [TwistRecord.Edge] (MainActivity's performUndo/performRedo), since a
-     * 180-degree edge twist is its own inverse: unlike [requestUndo]/[requestRedo], there's only
-     * one direction to replay, so one function covers both callers. Same queue-or-apply-now
-     * behavior as [requestEdgeTwist] otherwise. */
-    fun requestEdgeReplay(cell: Cell4, axis1: Axis4, sign1: Int, axis2: Axis4, sign2: Int) {
-        if (animating || roomAnimating) {
-            twistQueue.addLast(QueuedAction.EdgeReplay(cell, axis1, sign1, axis2, sign2))
-            twistQueueMax = max(twistQueueMax, twistQueue.size)
-            return
-        }
-        if (applyEdgeTwistInternal(cell, axis1, sign1, axis2, sign2)) onUndoRedoApplied?.invoke()
     }
 
     private fun applyEdgeTwistInternal(cell: Cell4, axis1: Axis4, sign1: Int, axis2: Axis4, sign2: Int): Boolean {

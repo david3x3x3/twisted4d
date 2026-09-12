@@ -249,25 +249,29 @@ class MainActivity : AppCompatActivity() {
     // moves this back without deleting anything (so redo can move it forward again); a genuinely
     // new move made while this isn't already at moveHistory4D.size truncates the list back to it
     // first, discarding whatever redo branch was pending -- standard undo/redo-stack semantics.
-    // Always equal to moveHistory4D.size except mid-undo/redo. Written from the GL thread
-    // (onTwistApplied, for a genuinely new twist) and from the UI thread (performUndo/
-    // performRedo/onScramble/onReset), so @Volatile for the same reason as scrambleMoveCount4D.
+    // Always equal to moveHistory4D.size except mid-undo/redo. Written from the GL thread only --
+    // both for a genuinely new twist (onTwistApplied) and, since 2026-09-11, for undo/redo too
+    // (resolveUndo/resolveRedo, below) -- plus the UI thread for onScramble/onReset. @Volatile for
+    // the same reason as scrambleMoveCount4D.
     //
-    // performUndo/performRedo update this immediately/optimistically on the UI thread, at click
-    // time, *before* the GL thread has actually replayed the move -- a real repro (2026-07-30)
-    // shows why that used to be unsafe: 5 rapid undo presses (faster than the ~220ms twist
-    // animation) left historyIndex4D claiming "fully undone" while the puzzle was still visibly
-    // scrambled, because HypercubeRenderer.requestUndo/requestRedo used to apply-immediately-or-
-    // silently-drop (via applyTwistInternal's animating guard), so some of those undos never
-    // actually happened. That's fixed now (2026-08-09) by giving requestUndo/requestRedo a real
-    // queue, the same dynamic-speed one requestTwist already had (see HypercubeRenderer.
-    // QueuedAction's doc) -- a queued undo/redo is now guaranteed to eventually apply rather than
-    // silently drop, which is what makes updating historyIndex4D immediately here safe (and lets
-    // the turn counter/animation speed-up both react the instant the button is pressed, not one
-    // GL-thread round-trip later). The only thing that can still supersede a queued-but-not-yet-
-    // applied undo/redo is a scramble/reset (their own twistQueue.clear()) -- but those already
-    // overwrite historyIndex4D unconditionally themselves (see doScramble/doReset), so there's no
-    // window where a dropped queue entry leaves this field stale.
+    // performUndo/performRedo used to update this immediately/optimistically on the UI thread, at
+    // click time, before the GL thread had actually replayed the move -- 2026-08-09 made that
+    // *queue* safely (a queued undo/redo is guaranteed to eventually apply, never silently
+    // dropped, so a burst of rapid presses gets the same dynamic speed-up requestTwist's queue
+    // already had), but "safely queued" turned out not to mean "safe to bookkeep immediately": a
+    // real repro (2026-09-11, see the mc4d_export_bug_investigation-adjacent memory) showed a
+    // twist requested *earlier* but still sitting in HypercubeRenderer's twistQueue when undo was
+    // pressed could land *after* undo had already decremented this field -- that twist's own
+    // onTwistApplied then truncated/appended against a historyIndex4D that no longer matched
+    // reality, permanently diverging the live puzzle from the recorded history by exactly that
+    // twist's worth. Fixed by moving undo/redo's bookkeeping (this field's mutation, and picking
+    // which record to reverse/replay) out of performUndo/performRedo entirely and into
+    // HypercubeRenderer.resolveUndo/resolveRedo -- callbacks invoked on the GL thread at the exact
+    // moment an undo/redo actually applies (immediately or after draining ahead of it in
+    // twistQueue), the same way onTwistApplied already does for new twists. That guarantees every
+    // mutation of this field happens in the same real, GL-thread-serialized order native twists
+    // themselves apply in, so nothing can ever read/write it out of turn again. performUndo/
+    // performRedo now only increment pendingUndoRedoCount and queue the request -- see their doc.
     @Volatile private var historyIndex4D = 0
 
     // Debug instrumentation for the export round-trip checker (see checkExportRoundTrip's doc) --
@@ -726,66 +730,23 @@ class MainActivity : AppCompatActivity() {
          * undo at all. No longer guarded against overlapping presses (that guard, undoRedoInFlight,
          * used to just drop any undo press that arrived mid-animation instead of queuing it -- the
          * bug reported 2026-08-09: rapid undo clicks never sped the animation up the way rapid
-         * twists do, because they were never reaching a queue at all) -- each press now updates
-         * historyIndex4D and queues its own replay immediately, so a burst of rapid presses queues
-         * up and drains with the same dynamic speed-up [HypercubeRenderer.requestTwist] already
-         * has. */
+         * twists do, because they were never reaching a queue at all) -- each press queues its own
+         * replay immediately, so a burst of rapid presses queues up and drains with the same
+         * dynamic speed-up [HypercubeRenderer.requestTwist] already has. Doesn't touch
+         * [historyIndex4D]/[moveHistory4D] itself, or even decide which record to reverse -- see
+         * [historyIndex4D]'s doc for why that bookkeeping moved into [HypercubeRenderer.
+         * resolveUndo], called once this request actually reaches the front of the native queue,
+         * not here at press time. */
         fun performUndo() {
-            val targetIndex: Int
-            val record: TwistRecord
-            synchronized(moveHistory4D) {
-                if (historyIndex4D <= scrambleMoveCount4D) {
-                    logHistoryAction("undo: no-op (historyIndex4D=$historyIndex4D already at scrambleMoveCount4D=$scrambleMoveCount4D)")
-                    return
-                }
-                targetIndex = historyIndex4D - 1
-                record = moveHistory4D[targetIndex]
-                historyIndex4D = targetIndex
-            }
-            logHistoryAction("undo -> historyIndex4D=$historyIndex4D, reversing ${Notation.communityNotation(record)}")
-            updateTurnCount()
             pendingUndoRedoCount.incrementAndGet()
-            // Edge twists are self-inverse (see TwistRecord.Edge's doc) -- requestEdgeReplay just
-            // re-applies the same one, no separate "undo direction" the way a Ridge's requestUndo
-            // (invert prime) has.
-            when (record) {
-                is TwistRecord.Ridge ->
-                    surfaceView.queueEvent { renderer.requestUndo(record.cell, record.fixAxis2, record.prime) }
-                is TwistRecord.Edge ->
-                    surfaceView.queueEvent {
-                        renderer.requestEdgeReplay(record.cell, record.axis1, record.sign1, record.axis2, record.sign2)
-                    }
-            }
+            surfaceView.queueEvent { renderer.requestUndo() }
         }
 
-        /** Re-applies whatever move undo last stepped back over and advances [historyIndex4D]
-         * again -- see [performUndo]'s doc for the same immediate-update-then-queue reasoning,
-         * just in the opposite direction. A no-op once caught back up to the end of history
-         * (nothing to redo, either because nothing was undone or a new move already overwrote the
-         * abandoned branch). */
+        /** Redo counterpart to [performUndo] -- see its doc for the same queue-immediately/
+         * resolve-at-apply-time reasoning, just in the opposite direction. */
         fun performRedo() {
-            val targetIndex: Int
-            val record: TwistRecord
-            synchronized(moveHistory4D) {
-                if (historyIndex4D >= moveHistory4D.size) {
-                    logHistoryAction("redo: no-op (historyIndex4D=$historyIndex4D already at moveHistory4D.size=${moveHistory4D.size})")
-                    return
-                }
-                record = moveHistory4D[historyIndex4D]
-                targetIndex = historyIndex4D + 1
-                historyIndex4D = targetIndex
-            }
-            logHistoryAction("redo -> historyIndex4D=$historyIndex4D, replaying ${Notation.communityNotation(record)}")
-            updateTurnCount()
             pendingUndoRedoCount.incrementAndGet()
-            when (record) {
-                is TwistRecord.Ridge ->
-                    surfaceView.queueEvent { renderer.requestRedo(record.cell, record.fixAxis2, record.prime) }
-                is TwistRecord.Edge ->
-                    surfaceView.queueEvent {
-                        renderer.requestEdgeReplay(record.cell, record.axis1, record.sign1, record.axis2, record.sign2)
-                    }
-            }
+            surfaceView.queueEvent { renderer.requestRedo() }
         }
 
         // STICK (default): left stick (and/or d-pad, see GamepadInputHandler.onDpadStick)
@@ -1471,6 +1432,51 @@ class MainActivity : AppCompatActivity() {
         }
         renderer.onNativeApply = { description -> logHistoryAction("APPLIED: $description") }
         renderer.onUndoRedoApplied = { pendingUndoRedoCount.decrementAndGet() }
+
+        /** Resolves + applies undo's own bookkeeping at the exact moment (GL thread) it's really
+         * about to happen -- see [historyIndex4D]'s doc for the 2026-09-11 race this closes by
+         * living here instead of in [performUndo] at press time. Reads/mutates [historyIndex4D]/
+         * [moveHistory4D] fresh, right now, so it always sees whatever any earlier-queued twist
+         * already did, rather than a value captured before that twist's own turn came up. Returns
+         * the record to natively reverse (prime inverted for a [TwistRecord.Ridge]; a
+         * [TwistRecord.Edge] as-is, since a 180-degree edge twist is its own inverse), or null if
+         * there's nothing left to undo. */
+        renderer.resolveUndo = {
+            synchronized(moveHistory4D) {
+                if (historyIndex4D <= scrambleMoveCount4D) {
+                    logHistoryAction("undo: no-op (historyIndex4D=$historyIndex4D already at scrambleMoveCount4D=$scrambleMoveCount4D)")
+                    null
+                } else {
+                    val targetIndex = historyIndex4D - 1
+                    val record = moveHistory4D[targetIndex]
+                    historyIndex4D = targetIndex
+                    logHistoryAction("undo -> historyIndex4D=$historyIndex4D, reversing ${Notation.communityNotation(record)}")
+                    runOnUiThread { updateTurnCount() }
+                    when (record) {
+                        is TwistRecord.Ridge -> record.copy(prime = !record.prime)
+                        is TwistRecord.Edge -> record
+                    }
+                }
+            }
+        }
+
+        /** Redo counterpart to [resolveUndo] -- see its doc for the same resolve-at-apply-time
+         * reasoning. Returns the record to replay exactly as recorded (no inversion), or null once
+         * caught back up to the end of history. */
+        renderer.resolveRedo = {
+            synchronized(moveHistory4D) {
+                if (historyIndex4D >= moveHistory4D.size) {
+                    logHistoryAction("redo: no-op (historyIndex4D=$historyIndex4D already at moveHistory4D.size=${moveHistory4D.size})")
+                    null
+                } else {
+                    val record = moveHistory4D[historyIndex4D]
+                    historyIndex4D += 1
+                    logHistoryAction("redo -> historyIndex4D=$historyIndex4D, replaying ${Notation.communityNotation(record)}")
+                    runOnUiThread { updateTurnCount() }
+                    record
+                }
+            }
+        }
 
         // The big last-move notation display (e.g. "RU'") that used to live here was removed
         // 2026-08-01 -- it was only ever a cell-selection-debugging aid (see communityNotation's
