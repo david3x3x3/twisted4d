@@ -287,6 +287,15 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    // The full text of the most recent checkExportRoundTrip mismatch (same content as its Log.e
+    // call), kept so shareDebugLog can include it even without logcat access -- added after a real
+    // report (2026-09-11) where David could only recall tapping the red exportCheckText banner, not
+    // its mismatch-count/move-number text, and the shared debug log at the time carried neither
+    // (exportCheckText.text nor the richer Log.e description). @Volatile: written on the GL thread
+    // (checkExportRoundTrip runs from onTwistApplied/onQueueIdle), read from the UI thread
+    // (shareDebugLog).
+    @Volatile private var lastExportMismatch: String? = null
+
     // Closes a real race confirmed 2026-08-17 via a debug-log trace: HypercubeRenderer.onQueueIdle
     // fires whenever its own twistQueue is empty, but a just-submitted `surfaceView.queueEvent{...}`
     // Runnable (from performUndo/performRedo below) lives in *GLSurfaceView's own* separate event
@@ -1352,6 +1361,11 @@ class MainActivity : AppCompatActivity() {
                 appendLine()
                 appendLine("recent undo/redo/twist action trace (oldest first):")
                 appendLine(trace)
+                lastExportMismatch?.let {
+                    appendLine()
+                    appendLine("last export round-trip mismatch:")
+                    appendLine(it)
+                }
             }
             shareTwistLog(log)
         }
@@ -1407,12 +1421,12 @@ class MainActivity : AppCompatActivity() {
                 // a moveHistory4D snapshot alone (just the *result*) can't reconstruct.
                 val recentMoves = snapshot.takeLast(6).joinToString(" ") { Notation.communityNotation(it) }
                 val trace = synchronized(recentHistoryActions) { recentHistoryActions.joinToString("\n  ") }
-                Log.e(
-                    TAG,
+                val mismatchReport =
                     "EXPORT ROUND-TRIP MISMATCH ($context): live puzzle state diverges from the " +
                         "recorded move history at ${snapshot.size} moves (historyIndex4D=$historyIndex4D) -- " +
-                        "$description\nlast recorded moves: $recentMoves\nrecent action trace:\n  $trace",
-                )
+                        "$description\nlast recorded moves: $recentMoves\nrecent action trace:\n  $trace"
+                lastExportMismatch = mismatchReport
+                Log.e(TAG, mismatchReport)
                 runOnUiThread {
                     exportCheckText.text = "⚠ Export mismatch: $mismatches pieces, move ${snapshot.size}"
                     exportCheckText.visibility = View.VISIBLE
@@ -1503,6 +1517,7 @@ class MainActivity : AppCompatActivity() {
             // in practice every increment should always be matched by a decrement, but this is a
             // cheap, natural place to self-heal if that ever somehow didn't happen.
             exportCheckText.visibility = View.GONE
+            lastExportMismatch = null
             pendingUndoRedoCount.set(0)
             surfaceView.queueEvent {
                 // Scrambles have no button/room context of their own -- treat room as native
@@ -1533,6 +1548,7 @@ class MainActivity : AppCompatActivity() {
             resetSolveTimer()
             updateTimerText()
             exportCheckText.visibility = View.GONE
+            lastExportMismatch = null
             pendingUndoRedoCount.set(0)
         }
 
