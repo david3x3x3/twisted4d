@@ -1408,6 +1408,16 @@ class MainActivity : AppCompatActivity() {
          * - [doScramble] directly: a scramble applies instantly with no animation, so it never goes
          *   through the animating->onQueueIdle path at all. */
         fun checkExportRoundTrip(context: String) {
+            // Only the *first* mismatch since the last Scramble/Reset is worth capturing --
+            // lastExportMismatch (cleared alongside exportCheckText in doScramble/doReset) is the
+            // edge-trigger guard: without it, every later call here that still finds a mismatch
+            // (which stays true for the rest of the attempt, by design -- see exportCheckText's
+            // doc) would keep overwriting the report with an ever-later twist, burying the one
+            // twist that actually caused the divergence under whatever twist happened to be
+            // current when someone got around to tapping the banner. Confirmed a real loss of
+            // signal 2026-09-11: a mismatch first isolated to cell O's layer at twist #325 or #326
+            // was only ever captured at #342, 16 unrelated twists later.
+            if (lastExportMismatch != null) return
             val snapshot = synchronized(moveHistory4D) { moveHistory4D.take(historyIndex4D) }
             val shadow = ShadowCube4()
             snapshot.forEach { shadow.apply(it) }
