@@ -1645,12 +1645,13 @@ class MainActivity : AppCompatActivity() {
                         rebuildSettingsTiles()
                     }),
                     controllerToggleTile("Z Dir Right", { it.zDirRight }, { e, v -> e.zDirRight = v }),
-                    // Temporary debug tile for the export-round-trip-mismatch investigation (see
-                    // shareDebugLog's doc and the mc4d_export_bug_investigation memory) -- a
-                    // proactive way to grab the same trace exportCheckText's tap does, in case the
-                    // banner already scrolled out of mind. Remove once that investigation is
-                    // closed out -- not meant as a permanent tile.
-                    MenuTile("Debug Log", onSelect = { shareDebugLog() }),
+                    // The temporary "Debug Log" tile that used to sit here (a proactive way to
+                    // grab shareDebugLog's trace without waiting for exportCheckText's banner) was
+                    // removed 2026-09-14 once the export-round-trip-mismatch investigation closed
+                    // for good -- see the mc4d_export_bug_investigation memory. shareDebugLog()
+                    // itself stays: exportCheckText's own tap handler still calls it if a mismatch
+                    // ever does fire again.
+                    null,
                     MenuTile("Export Format\n${if (AppSettings.exportFormatIsMC4D) "MC4D" else "Log"}", onSelect = {
                         AppSettings.exportFormatIsMC4D = !AppSettings.exportFormatIsMC4D
                         saveAppSettings()
