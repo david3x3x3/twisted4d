@@ -964,7 +964,9 @@ class MainActivity : AppCompatActivity() {
 
         /** Live function content for [button], mirroring [handleRotationButton]'s exact
          * precedence (see MainControl.FaceDiamond's doc for the on-screen wording of this same
-         * order): Select-held room-rotation label, else a selected cell's live twist (shown as a
+         * order): a menu open (Confirm/Back, DOWN/RIGHT only -- see [handleRotationButton]'s own
+         * menu branch for why UP/LEFT do nothing there and so show nothing here either), else
+         * Select-held room-rotation label, else a selected cell's live twist (shown as a
          * [VirtualClusterView.FaceButtonContent.Icon] -- see TwistIcon's class doc for why this
          * one case gets a picture instead of RO/Rx-style text, per the 2026-09-07 HactarCE Discord
          * conversation), else the button-config's Button-C/plain mapping (still text). Pure and
@@ -972,8 +974,22 @@ class MainActivity : AppCompatActivity() {
          * of the GL-thread-only ones `handleRotationButton` itself uses inside `queueEvent`, so
          * this can be called directly from VirtualClusterView's repaint loop without racing the GL
          * thread. Never resolves a native twist (no `cell`/`fixAxis2`/`prime`) -- a label only
-         * needs the room-level community-notation intent. */
+         * needs the room-level community-notation intent.
+         *
+         * Confirm/Back show as plain "OK"/"Back" text rather than a checkmark/X icon (David's
+         * call, 2026-09-14) -- deliberately independent of Nintendo Layout: those two positions
+         * always mean confirm/back in a menu regardless of which letter's printed there (see
+         * [handleRotationButton]'s menu branch), so a word sidesteps the "which icon reads as
+         * cancel vs. back-a-level" ambiguity a glyph would raise, on top of avoiding yet another
+         * per-brand mapping question. */
         fun rotationButtonContent(button: RotationButton): VirtualClusterView.FaceButtonContent {
+            if (activeMenu() != null) {
+                return when (button) {
+                    RotationButton.DOWN -> VirtualClusterView.FaceButtonContent.Text("OK")
+                    RotationButton.RIGHT -> VirtualClusterView.FaceButtonContent.Text("Back")
+                    else -> VirtualClusterView.FaceButtonContent.Text("")
+                }
+            }
             if (GamepadVisualState.selectHeld) {
                 val spatialAxes = listOf(HypercubeRenderer.AXIS_X, HypercubeRenderer.AXIS_Y, HypercubeRenderer.AXIS_Z)
                 val (axisA, axisB) = spatialAxes.filter { it != button.literalAxis.nativeIndex }
@@ -2077,18 +2093,35 @@ class MainActivity : AppCompatActivity() {
             shoulderLeftRealHeld = { if (PerControllerSettings.current()?.zDirRight == true) GamepadVisualState.r2Held else GamepadVisualState.r1Held },
             shoulderRightRealHeld = { if (PerControllerSettings.current()?.zDirRight == true) GamepadVisualState.r1Held else GamepadVisualState.r2Held },
             mainControl = VirtualClusterView.MainControl.FaceDiamond(
-                topCaption = "Y", topLabel = { rotationButtonContent(RotationButton.UP) },
+                // Nintendo Layout swaps both which letter is printed at each position (caption)
+                // and which raw button held-flag belongs there (realHeld) -- Nintendo's physical
+                // layout is X top, Y left, A right, B bottom, vs. Xbox's Y/X/B/A -- see
+                // GamepadVisualState's doc for why resolving that here, at read time, rather than
+                // baking it into the held-flags themselves, is what fixes the stuck-highlight bug.
+                topCaption = { if (PerControllerSettings.current()?.nintendoLayout == true) "X" else "Y" },
+                topLabel = { rotationButtonContent(RotationButton.UP) },
                 onTopTap = virtualAction { handleRotationButton(RotationButton.UP) },
-                topRealHeld = { GamepadVisualState.yHeld },
-                leftCaption = "X", leftLabel = { rotationButtonContent(RotationButton.LEFT) },
+                topRealHeld = {
+                    if (PerControllerSettings.current()?.nintendoLayout == true) GamepadVisualState.xHeld else GamepadVisualState.yHeld
+                },
+                leftCaption = { if (PerControllerSettings.current()?.nintendoLayout == true) "Y" else "X" },
+                leftLabel = { rotationButtonContent(RotationButton.LEFT) },
                 onLeftTap = virtualAction { handleRotationButton(RotationButton.LEFT) },
-                leftRealHeld = { GamepadVisualState.xHeld },
-                rightCaption = "B", rightLabel = { rotationButtonContent(RotationButton.RIGHT) },
+                leftRealHeld = {
+                    if (PerControllerSettings.current()?.nintendoLayout == true) GamepadVisualState.yHeld else GamepadVisualState.xHeld
+                },
+                rightCaption = { if (PerControllerSettings.current()?.nintendoLayout == true) "A" else "B" },
+                rightLabel = { rotationButtonContent(RotationButton.RIGHT) },
                 onRightTap = virtualAction { handleRotationButton(RotationButton.RIGHT) },
-                rightRealHeld = { GamepadVisualState.bHeld },
-                bottomCaption = "A", bottomLabel = { rotationButtonContent(RotationButton.DOWN) },
+                rightRealHeld = {
+                    if (PerControllerSettings.current()?.nintendoLayout == true) GamepadVisualState.aHeld else GamepadVisualState.bHeld
+                },
+                bottomCaption = { if (PerControllerSettings.current()?.nintendoLayout == true) "B" else "A" },
+                bottomLabel = { rotationButtonContent(RotationButton.DOWN) },
                 onBottomTap = virtualAction { handleRotationButton(RotationButton.DOWN) },
-                bottomRealHeld = { GamepadVisualState.aHeld },
+                bottomRealHeld = {
+                    if (PerControllerSettings.current()?.nintendoLayout == true) GamepadVisualState.bHeld else GamepadVisualState.aHeld
+                },
             ),
         )
         rootLayout.addView(virtualClusterLeft, virtualClusterParams(startSide = true))

@@ -261,24 +261,38 @@ class GamepadInputHandler(
         // read it.
         PerControllerSettings.noteActiveDevice(event.device)
 
-        // Normalized once, up front, so every lookup/held-flag below sees the same
-        // Xbox-position-based keyCode regardless of whether the controller is actually reporting
-        // Nintendo-position button presses (see PerControllerSettings.Entry.nintendoLayout's
-        // doc). The raw event.keyCode is only used for the debug log line further down,
-        // deliberately -- that's meant to show exactly what the hardware sent, which is what
-        // you'd want when diagnosing a layout mismatch in the first place.
+        // Normalized once, up front, so every *action* lookup below (FACE_BUTTON_INDEX_MAP,
+        // ROTATION_BUTTON_MAP, NAVIGATION_BUTTON_MAP) sees the same Xbox-position-based keyCode
+        // regardless of whether the controller is actually reporting Nintendo-position button
+        // presses (see PerControllerSettings.Entry.nintendoLayout's doc). Safe to apply once here
+        // because every one of those lookups only ever fires on ACTION_DOWN (see the early return
+        // below) -- a single read per press, so it can't go stale mid-press the way the held-flag
+        // mirroring below could (see that block's own doc for the real bug this split fixed). The
+        // raw event.keyCode is only used for the debug log line further down, deliberately --
+        // that's meant to show exactly what the hardware sent, which is what you'd want when
+        // diagnosing a layout mismatch in the first place.
         val keyCode = layoutSwappedKeyCode(event.keyCode)
 
         if (keyCode == KeyEvent.KEYCODE_BUTTON_L2) {
             invertHeld = event.action == KeyEvent.ACTION_DOWN
         }
 
-        // Tracks true "currently held" state (both down and up) for GamepadOverlayView's debug
-        // display -- unlike the callbacks below, which only fire once per press and don't care
-        // about release, so they can't drive a light-stays-on-while-held indicator by themselves.
+        // Tracks true "currently held" state (both down and up), keyed by the *raw*, unswapped
+        // event.keyCode -- deliberately NOT the Nintendo-layout-swapped keyCode above. A real bug
+        // (2026-09-14): pressing the button that itself toggles Nintendo Layout (e.g. selecting
+        // that Settings tile) changes what layoutSwappedKeyCode returns for the *same physical
+        // button* between its own ACTION_DOWN (old setting value) and ACTION_UP (new value) --
+        // the DOWN set aHeld=true, but the UP, now swapped differently, cleared bHeld instead,
+        // stranding aHeld stuck true forever. Tracking raw presses here instead means a single
+        // physical button's down/up always agree with each other, no matter what changes in
+        // between. Readers needing the Nintendo-corrected *position* (which of these fields
+        // belongs at the top/left/right/bottom slot) resolve that themselves at read time instead
+        // -- see MainActivity's virtualClusterRight wiring and GamepadOverlayView.onDraw, both of
+        // which mirror this exact same already-safe pattern Z Dir Left/Right already used for the
+        // shoulder buttons.
         if (event.action == KeyEvent.ACTION_DOWN || event.action == KeyEvent.ACTION_UP) {
             val held = event.action == KeyEvent.ACTION_DOWN
-            when (keyCode) {
+            when (event.keyCode) {
                 KeyEvent.KEYCODE_BUTTON_Y -> GamepadVisualState.yHeld = held
                 KeyEvent.KEYCODE_BUTTON_A -> GamepadVisualState.aHeld = held
                 KeyEvent.KEYCODE_BUTTON_X -> GamepadVisualState.xHeld = held

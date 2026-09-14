@@ -12,6 +12,12 @@ object GamepadVisualState {
     @Volatile var rightStickX = 0f
     @Volatile var rightStickY = 0f
 
+    // Raw, unswapped face-button state -- which physical button labeled Y/A/X/B is held, not
+    // which *position* (top/left/right/bottom) that maps to (see GamepadInputHandler.
+    // handleKeyEvent's held-flag-mirroring doc for why: swapping at write time let a mid-press
+    // Nintendo Layout toggle desync a button's own down/up). Readers wanting a fixed on-screen
+    // position resolve PerControllerSettings.current()?.nintendoLayout themselves at read time --
+    // see MainActivity's virtualClusterRight wiring and GamepadOverlayView.onDraw.
     @Volatile var yHeld = false
     @Volatile var aHeld = false
     @Volatile var xHeld = false

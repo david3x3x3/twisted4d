@@ -104,26 +104,32 @@ class VirtualClusterView(
     sealed class MainControl {
         class Stick(val onChanged: (x: Float, y: Float) -> Unit) : MainControl()
 
-        /** [topCaption]/etc. are the fixed native button name (Y/X/B/A); [topLabel]/etc. are
-         * suppliers re-invoked every repaint for the currently-active function (see
-         * MainActivity.rotationButtonContent and friends -- the precedence is Select-held room
+        /** [topCaption]/etc. are suppliers for the native button name at that *position*
+         * (Y/X/B/A) -- a lambda, not a fixed string, since 2026-09-14: a Nintendo-layout
+         * controller has different letters printed at these same 4 positions (X top, Y left, A
+         * right, B bottom, vs. Xbox's Y/X/B/A), so this must be re-evaluated live against
+         * PerControllerSettings.current()?.nintendoLayout the same way [shoulderLeftCaption]/etc.
+         * already re-evaluate against Z Dir. [topLabel]/etc. are suppliers re-invoked every
+         * repaint for the currently-active function (see MainActivity.rotationButtonContent and
+         * friends -- the precedence is: a menu open (Confirm/Back), else Select-held room
          * rotation, then a selected cell's live twist, then the button-config's Button-C/plain
-         * mapping). [topRealHeld]/etc. mirror a real gamepad press of the same button (see
-         * GamepadVisualState) so the highlight isn't touch-only. */
+         * mapping). [topRealHeld]/etc. mirror a real gamepad press of the same *position* (see
+         * GamepadVisualState's doc for why resolving which raw button belongs at which position
+         * is the caller's job, same reasoning as the caption) so the highlight isn't touch-only. */
         class FaceDiamond(
-            val topCaption: String,
+            val topCaption: () -> String,
             val topLabel: () -> FaceButtonContent,
             val onTopTap: () -> Unit,
             val topRealHeld: () -> Boolean = { false },
-            val leftCaption: String,
+            val leftCaption: () -> String,
             val leftLabel: () -> FaceButtonContent,
             val onLeftTap: () -> Unit,
             val leftRealHeld: () -> Boolean = { false },
-            val rightCaption: String,
+            val rightCaption: () -> String,
             val rightLabel: () -> FaceButtonContent,
             val onRightTap: () -> Unit,
             val rightRealHeld: () -> Boolean = { false },
-            val bottomCaption: String,
+            val bottomCaption: () -> String,
             val bottomLabel: () -> FaceButtonContent,
             val onBottomTap: () -> Unit,
             val bottomRealHeld: () -> Boolean = { false },
@@ -432,10 +438,10 @@ class VirtualClusterView(
         val cy = mainRect.centerY()
         val spread = mainRect.width() * 0.27f
         val r = mainRect.width() * 0.16f
-        drawFaceButton(canvas, cx, cy - spread, r, control.topCaption, control.topLabel(), ("faceTop" in heldRegions) || control.topRealHeld())
-        drawFaceButton(canvas, cx - spread, cy, r, control.leftCaption, control.leftLabel(), ("faceLeft" in heldRegions) || control.leftRealHeld())
-        drawFaceButton(canvas, cx + spread, cy, r, control.rightCaption, control.rightLabel(), ("faceRight" in heldRegions) || control.rightRealHeld())
-        drawFaceButton(canvas, cx, cy + spread, r, control.bottomCaption, control.bottomLabel(), ("faceBottom" in heldRegions) || control.bottomRealHeld())
+        drawFaceButton(canvas, cx, cy - spread, r, control.topCaption(), control.topLabel(), ("faceTop" in heldRegions) || control.topRealHeld())
+        drawFaceButton(canvas, cx - spread, cy, r, control.leftCaption(), control.leftLabel(), ("faceLeft" in heldRegions) || control.leftRealHeld())
+        drawFaceButton(canvas, cx + spread, cy, r, control.rightCaption(), control.rightLabel(), ("faceRight" in heldRegions) || control.rightRealHeld())
+        drawFaceButton(canvas, cx, cy + spread, r, control.bottomCaption(), control.bottomLabel(), ("faceBottom" in heldRegions) || control.bottomRealHeld())
     }
 
     private fun drawFaceButton(canvas: Canvas, cx: Float, cy: Float, r: Float, caption: String, content: FaceButtonContent, held: Boolean) {

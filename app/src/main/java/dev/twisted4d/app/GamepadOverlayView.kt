@@ -95,17 +95,18 @@ class GamepadOverlayView(context: Context) : View(context) {
         val faceCx = w * 0.76f
         val faceCy = h * 0.42f
         val faceSpread = unit * 0.105f
-        // Screen position is fixed (top/left/right/bottom) and already lights up correctly either
-        // way, since the held-flags themselves were normalized upstream in
-        // GamepadInputHandler.handleKeyEvent -- only the printed letter changes here, to match
-        // whatever's actually printed on a Nintendo-layout controller (A/B and X/Y swapped
-        // relative to Xbox's positions; see PerControllerSettings.Entry.nintendoLayout's doc).
-        // Per-controller now, so this reflects whichever pad most recently sent input.
+        // Screen position is fixed (top/left/right/bottom), but which raw held-flag belongs at
+        // each one depends on Nintendo Layout (its physical positions are X top, Y left, A right,
+        // B bottom, vs. Xbox's Y/X/B/A) -- resolved here, at read time, same as the printed
+        // letter, rather than baked into the held-flags themselves (see GamepadVisualState's doc
+        // for why: normalizing at write time let a mid-press Nintendo Layout toggle strand a
+        // held-flag stuck true, fixed 2026-09-14). Per-controller now, so this reflects whichever
+        // pad most recently sent input.
         val nintendo = PerControllerSettings.current()?.nintendoLayout == true
-        drawFaceButton(canvas, faceCx, faceCy - faceSpread, faceR, GamepadVisualState.yHeld, if (nintendo) "X" else "Y")
-        drawFaceButton(canvas, faceCx - faceSpread, faceCy, faceR, GamepadVisualState.xHeld, if (nintendo) "Y" else "X")
-        drawFaceButton(canvas, faceCx + faceSpread, faceCy, faceR, GamepadVisualState.bHeld, if (nintendo) "A" else "B")
-        drawFaceButton(canvas, faceCx, faceCy + faceSpread, faceR, GamepadVisualState.aHeld, if (nintendo) "B" else "A")
+        drawFaceButton(canvas, faceCx, faceCy - faceSpread, faceR, if (nintendo) GamepadVisualState.xHeld else GamepadVisualState.yHeld, if (nintendo) "X" else "Y")
+        drawFaceButton(canvas, faceCx - faceSpread, faceCy, faceR, if (nintendo) GamepadVisualState.yHeld else GamepadVisualState.xHeld, if (nintendo) "Y" else "X")
+        drawFaceButton(canvas, faceCx + faceSpread, faceCy, faceR, if (nintendo) GamepadVisualState.aHeld else GamepadVisualState.bHeld, if (nintendo) "A" else "B")
+        drawFaceButton(canvas, faceCx, faceCy + faceSpread, faceR, if (nintendo) GamepadVisualState.bHeld else GamepadVisualState.aHeld, if (nintendo) "B" else "A")
         drawStick(canvas, w * 0.76f, h * 0.74f, unit * 0.135f, GamepadVisualState.rightStickX, GamepadVisualState.rightStickY)
     }
 
