@@ -28,6 +28,7 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
@@ -422,16 +423,44 @@ class MainActivity : AppCompatActivity() {
         if (activeMenu() != null) closeAllMenus() else openMainMenu()
     }
 
-    /** Back's gamepad binding, and the OS/hardware Back button's (see [onBackPressed]) -- steps
-     * up exactly one level of the menu hierarchy per the design doc's accessibility section
+    /** Back's gamepad binding, and the OS/hardware Back button's (see [backPressedCallback]) --
+     * steps up exactly one level of the menu hierarchy per the design doc's accessibility section
      * (submenu -> parent menu -> close menu -> resume puzzle), rather than closing everything at
      * once the way [toggleTopLevelMenu] does. */
     private fun goBackOneLevel() {
         if (filtersMenuView.isOpen || settingsMenuView.isOpen || buttonConfigMenuView.isOpen) openMainMenu() else closeAllMenus()
     }
 
+    /** OS/hardware Back (gesture, button, or a gamepad's BACK-aliased key -- see
+     * dispatchKeyEvent's doc on the Retroid's B-aliases-BACK quirk) steps up one menu level
+     * instead of exiting the app straight from a nested menu -- see the design doc's
+     * accessibility section and [goBackOneLevel]'s doc. Replaces the deprecated
+     * `Activity.onBackPressed()` override this used to be (removed 2026-09-14): confirmed via
+     * real-device testing (2026-08-13) that predictive back on Android 13+ bypasses that override
+     * entirely, exiting the app straight from a nested menu instead of calling it at all --
+     * `OnBackPressedCallback`/`OnBackPressedDispatcher` is the actual, non-deprecated interception
+     * point predictive back is built around, unlike the old override. Always enabled; falls
+     * through to default (app-exiting/predictive-back-animated) behavior by disabling itself and
+     * re-dispatching, rather than calling `finish()` directly, so the system's own predictive-back
+     * preview/animation still works correctly when no menu is open. Only checks [activeMenu] once
+     * `startMenuView` actually exists (before `onCreate` finishes building it, there's nothing to
+     * check) -- can't fire before then regardless, since nothing can press Back before `onCreate`
+     * registers this callback. */
+    private val backPressedCallback = object : OnBackPressedCallback(true) {
+        override fun handleOnBackPressed() {
+            if (::startMenuView.isInitialized && activeMenu() != null) {
+                goBackOneLevel()
+                return
+            }
+            isEnabled = false
+            onBackPressedDispatcher.onBackPressed()
+            isEnabled = true
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        onBackPressedDispatcher.addCallback(this, backPressedCallback)
 
         Log.i(TAG, "puzzle-core version: ${NativeLib.coreVersion()}")
 
@@ -2645,21 +2674,6 @@ class MainActivity : AppCompatActivity() {
             return true
         }
         return super.dispatchKeyEvent(event)
-    }
-
-    /** OS/hardware Back (gesture, button, or a gamepad's BACK-aliased key -- see dispatchKeyEvent's
-     * doc on the Retroid's B-aliases-BACK quirk) steps up one menu level instead of exiting the
-     * app straight from a nested menu -- see the design doc's accessibility section and
-     * [goBackOneLevel]'s doc. Falls through to default (app-exiting) behavior when no menu is
-     * open, and only once startMenuView actually exists (before onCreate finishes building it,
-     * there's nothing to check). */
-    @Suppress("DEPRECATION", "OverrideDeprecatedMigration")
-    override fun onBackPressed() {
-        if (::startMenuView.isInitialized && activeMenu() != null) {
-            goBackOneLevel()
-        } else {
-            super.onBackPressed()
-        }
     }
 
     override fun onResume() {
