@@ -824,11 +824,37 @@ class MainActivity : AppCompatActivity() {
         // holding the stick performed a twist nobody asked for.
         var menuWasOpenLastStick = false
 
+        // Which source last sent a *non-idle* stick reading -- null until either one has sent
+        // one this session. See handleLeftStickInput's fromVirtual doc for why this exists: a
+        // connected-but-untouched real gamepad still fires GamepadInputHandler.handleMotionEvent
+        // continuously (any joystick MotionEvent carries the left stick's current axis values,
+        // not just a changed one), so its deadzoned-to-(0,0) reading was clobbering whatever the
+        // virtual touch stick had just set, and vice versa -- confirmed via a real report,
+        // 2026-09-15: David saw the selection flicker to nothing/I even holding his finger
+        // perfectly still, traced it to a DualSense sitting untouched on his desk, and confirmed
+        // turning it off made the flicker stop.
+        var lastStickWasVirtual: Boolean? = null
+
         /** Left stick's continuous handling -- extracted (2026-08-01) so both the real gamepad's
          * onLeftStick wiring below and the portrait virtual controller's left-cluster stick (see
          * virtualClusterLeft further down) drive cell selection/menu highlight/RKT arm-disarm
-         * through the exact same code, rather than two copies that could silently drift apart. */
-        fun handleLeftStickInput(x: Float, y: Float) {
+         * through the exact same code, rather than two copies that could silently drift apart.
+         *
+         * [fromVirtual] distinguishes the on-screen touch stick from a real gamepad's, purely to
+         * arbitrate ownership of the shared selection state below -- see [lastStickWasVirtual]'s
+         * doc for the bug this fixes. A centered ((0,0)) reading from whichever source *isn't*
+         * currently driving the stick is discarded outright rather than processed as a release:
+         * an idle, untouched device has no business clearing a selection a completely different
+         * source just established. A centered reading from the source that *is* currently driving
+         * it still processes normally -- that's a genuine release. Any non-(0,0) reading always
+         * processes and claims (or keeps) ownership for its source, so switching from one input
+         * method to the other still works the instant the new one actually moves. */
+        fun handleLeftStickInput(x: Float, y: Float, fromVirtual: Boolean) {
+            if (x == 0f && y == 0f) {
+                if (lastStickWasVirtual != null && lastStickWasVirtual != fromVirtual) return
+            } else {
+                lastStickWasVirtual = fromVirtual
+            }
             val menu = activeMenu()
             if (menu != null) {
                 // Radial-style menu selection (see StartMenuView.setHighlightFromStick's
@@ -1255,7 +1281,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         gamepadInput = GamepadInputHandler(
-            onLeftStick = { x, y -> handleLeftStickInput(x, y) },
+            onLeftStick = { x, y -> handleLeftStickInput(x, y, fromVirtual = false) },
             onRightStick = { x, y -> renderer.stickX = x; renderer.stickY = y },
             // Lets controllers without a left stick still drive STICK mode's selection (and, while
             // a menu's open, the same radial highlight selection as the stick) -- always active
@@ -1736,7 +1762,7 @@ class MainActivity : AppCompatActivity() {
                     downRealHeld = { GamepadVisualState.dpadDownHeld },
                 )
             } else {
-                VirtualClusterView.MainControl.Stick(onChanged = virtualStickAction { x, y -> handleLeftStickInput(x, y) })
+                VirtualClusterView.MainControl.Stick(onChanged = virtualStickAction { x, y -> handleLeftStickInput(x, y, fromVirtual = true) })
             }
         }
         onMenuStateChangedForVirtualController = ::applyInputModeToVirtualController
@@ -2080,7 +2106,7 @@ class MainActivity : AppCompatActivity() {
             // physical key is actually held once the setting is on.
             shoulderLeftRealHeld = { if (PerControllerSettings.current()?.zDirLeft == true) GamepadVisualState.l2Held else GamepadVisualState.l1Held },
             shoulderRightRealHeld = { if (PerControllerSettings.current()?.zDirLeft == true) GamepadVisualState.l1Held else GamepadVisualState.l2Held },
-            mainControl = VirtualClusterView.MainControl.Stick(onChanged = virtualStickAction { x, y -> handleLeftStickInput(x, y) }),
+            mainControl = VirtualClusterView.MainControl.Stick(onChanged = virtualStickAction { x, y -> handleLeftStickInput(x, y, fromVirtual = true) }),
             // Current-input-mode readout (Stick/RKT) -- see drawStick's doc for why this renders
             // inside the stick's own corner rather than as a separate TextView. A live supplier
             // (read fresh every repaint tick), not a one-shot value, so toggling Mode from the
