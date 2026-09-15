@@ -16,6 +16,7 @@ import android.os.Handler
 import android.os.Looper
 import android.text.Html
 import android.util.Log
+import android.util.TypedValue
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.MotionEvent
@@ -125,13 +126,23 @@ class MainActivity : AppCompatActivity() {
     private var virtualClusterRight: VirtualClusterView? = null
     private var gamepadOverlay: GamepadOverlayView? = null
 
-    // Needs a class-level reference (not just a build4DScreen local, like most of its siblings)
-    // so updateControlVisibility can re-apply topStartParams() on every rotation --
-    // see that function's doc for why a fresh LayoutParams every time (not just at build time)
-    // matters: its landscape top margin depends on the virtual controller's current cluster
-    // height, which is meaningless (and would go stale) for whichever orientation was active when
-    // build4DScreen last ran. Null in 3D mode/before build4DScreen has run.
-    private var lastMoveColumn: LinearLayout? = null
+    // Needs class-level references (not just build4DScreen locals, like most of their siblings) so
+    // updateControlVisibility can re-apply statusLineParams() on every rotation -- see that
+    // function's doc for why a fresh LayoutParams every time (not just at build time) matters:
+    // it depends on the virtual controller's current cluster size/position, which is meaningless
+    // (and would go stale) for whichever orientation was active when build4DScreen last ran. Each
+    // sits directly above one of the two clusters -- see statusLineParams' own doc -- rather than
+    // in one shared column like the old lastMoveColumnView, so the puzzle's own reserved-viewport
+    // math (HypercubeRenderer.onSurfaceChanged) can guarantee real clearance from each line
+    // individually. The Stick/RKT mode label has no field here at all -- see virtualClusterLeft's
+    // stickCornerLabel param, drawn inside the cluster's own canvas instead of as a separate
+    // TextView, so it never needs a rotation-time layout reapply. Null in 3D mode/before
+    // build4DScreen has run.
+    private var turnCountTextView: TextView? = null
+    private var timerTextView: TextView? = null
+    private var filterStatusTextView: TextView? = null
+    private var batteryTextView: TextView? = null
+    private var exportCheckTextView: TextView? = null
 
     // Set by build4DScreen, read by sceneDumpReceiver -- lets an adb-triggered broadcast query
     // the live scene without any on-screen debug button (see sceneDumpReceiver's doc). Null in 3D
@@ -583,7 +594,10 @@ class MainActivity : AppCompatActivity() {
         val statusText = statusTextView(initiallySolved)
         statusTextLabel = statusText
         renderer.onStateChanged = { solved ->
-            runOnUiThread { statusText.text = if (solved) SOLVED_LABEL else "" }
+            runOnUiThread {
+                statusText.text = if (solved) SOLVED_LABEL else ""
+                statusText.visibility = if (solved) View.VISIBLE else View.GONE
+            }
         }
 
         renderer.onTwistApplied = { face, prime -> moveHistory3D.add(face to prime) }
@@ -715,11 +729,7 @@ class MainActivity : AppCompatActivity() {
         // ahead of gamepadInput below, so the Select-held undo/redo gamepad binding can call
         // performUndo/performRedo directly; the on-screen Undo button (in utilityColumn, further
         // down) uses the exact same two functions, so there's only one undo/redo implementation.
-        val turnCountText = TextView(this).apply {
-            textSize = 14f
-            alpha = 0.6f
-            setPadding(24, 8, 24, 0)
-        }
+        val turnCountText = clusterStatusTextView()
         fun updateTurnCount() {
             turnCountText.text = "Turns: ${(historyIndex4D - scrambleMoveCount4D).coerceAtLeast(0)}"
         }
@@ -730,11 +740,7 @@ class MainActivity : AppCompatActivity() {
         // doReset clears it). Always visible (never GONE), same convention as turnCountText just
         // above -- both are per-attempt stats meant to be glanceable at all times, unlike the
         // GONE-when-empty fields further down (batteryText etc.).
-        val timerText = TextView(this).apply {
-            textSize = 14f
-            alpha = 0.6f
-            setPadding(24, 8, 24, 0)
-        }
+        val timerText = clusterStatusTextView()
         fun updateTimerText() {
             timerText.text = formatTimerText()
         }
@@ -788,8 +794,8 @@ class MainActivity : AppCompatActivity() {
         var inputMode = GamepadInputMode.STICK
 
         // Bridges handleNavigateButton (defined below, at 884ish) to toggleInputMode (defined much
-        // further down, once updateInputModeText/applyInputModeToVirtualController/
-        // rebuildStartMenuTiles all exist) -- Kotlin local functions can't forward-reference each
+        // further down, once applyInputModeToVirtualController/rebuildStartMenuTiles both exist)
+        // -- Kotlin local functions can't forward-reference each
         // other the way class members can (see updateFilterStatusText's doc for the same
         // constraint), so this is assigned its real implementation later and invoked through here
         // in the meantime, same trick onMenuStateChangedForVirtualController already uses to bridge
@@ -1052,12 +1058,7 @@ class MainActivity : AppCompatActivity() {
         // of the on-screen status labels are built, since handleNavigateButton just below needs
         // to call updateFilterStatusText after Select+L1/L2 steps a filter -- Kotlin local
         // functions, unlike class members, can't forward-reference each other.
-        val filterStatusText = TextView(this).apply {
-            textSize = 14f
-            alpha = 0.6f
-            setPadding(24, 0, 24, 8)
-            visibility = View.GONE
-        }
+        val filterStatusText = clusterStatusTextView().apply { visibility = View.GONE }
         fun updateFilterStatusText() {
             // Shows the *filter's* name (e.g. "left cross"), not the filter-set's (e.g.
             // "3block") -- per David: as stepping crosses from one filter into the next within a
@@ -1284,16 +1285,10 @@ class MainActivity : AppCompatActivity() {
         // Polled, not event-driven -- see GamepadInputHandler.currentGamepadBatteryFraction's
         // doc. GONE (not just blank text) when nothing to show, matching statusText's own
         // empty-when-nothing-to-say convention -- most controllers connected over USB, or devices
-        // below API 31, will simply never populate this. GONE rather than merely-blank per
-        // feedback (2026-08-01): a LinearLayout child with empty text still reserves its own
-        // line height, leaving a visible gap and pushing inputModeText down for no reason --
-        // every conditionally-blank field in lastMoveColumn below follows the same GONE pattern.
-        val batteryText = TextView(this).apply {
-            textSize = 14f
-            alpha = 0.6f
-            setPadding(24, 8, 24, 0)
-            visibility = View.GONE
-        }
+        // below API 31, will simply never populate this. filterStatusText follows the same GONE
+        // pattern -- each sits at its own fixed statusLineParams position now (see that function's
+        // doc), so going GONE just leaves that one slot blank rather than collapsing a column.
+        val batteryText = clusterStatusTextView().apply { visibility = View.GONE }
         val pollBattery = object : Runnable {
             override fun run() {
                 val fraction = gamepadInput.currentGamepadBatteryFraction()
@@ -1317,25 +1312,18 @@ class MainActivity : AppCompatActivity() {
             if (solved) stopSolveTimer() else if (timerArmed) startSolveTimer()
             runOnUiThread {
                 statusText.text = if (solved) SOLVED_LABEL else ""
+                statusText.visibility = if (solved) View.VISIBLE else View.GONE
                 updateTimerText()
             }
         }
 
         // Added once the Start Menu's Stick Mode/RKT Mode tiles stopped showing an active-state
         // color (per feedback that the green indicator was confusing) -- without this, there was
-        // no on-screen way at all to tell which input mode is currently active.
-        val inputModeText = TextView(this).apply {
-            textSize = 14f
-            alpha = 0.6f
-            setPadding(24, 0, 24, 8)
-        }
-        fun updateInputModeText() {
-            inputModeText.text = "Mode: " + when (inputMode) {
-                GamepadInputMode.STICK -> "Stick"
-                GamepadInputMode.RKT -> "RKT"
-            }
-        }
-        updateInputModeText()
+        // no on-screen way at all to tell which input mode is currently active. Moved 2026-09-15
+        // to render *inside* virtualClusterLeft's own stick control (see its stickCornerLabel
+        // param/VirtualClusterView.drawStick's doc) rather than as a separate TextView -- a live
+        // supplier redrawn by the cluster's own repaint tick, so nothing here needs to push
+        // updates to it on toggle.
 
         // Debug instrumentation for the real-MC4D-export-doesn't-solve bug (2026-08 investigation,
         // see the mc4d_export_bug_investigation memory): visible, persistent (until Reset/Scramble)
@@ -1376,10 +1364,9 @@ class MainActivity : AppCompatActivity() {
             shareTwistLog(log)
         }
 
-        val exportCheckText = TextView(this).apply {
-            textSize = 14f
+        val exportCheckText = clusterStatusTextView().apply {
             setTextColor(Color.RED)
-            setPadding(24, 0, 24, 8)
+            alpha = 1f
             visibility = View.GONE
             setOnClickListener { shareDebugLog() }
         }
@@ -1527,18 +1514,14 @@ class MainActivity : AppCompatActivity() {
         // 2026-08-01 -- it was only ever a cell-selection-debugging aid (see communityNotation's
         // doc history) and David confirmed it's no longer needed day-to-day. Every remaining
         // field here is GONE (not just blank) when it has nothing to say -- see batteryText's doc
-        // -- so this column always sits flush at the very top-left with no dead gaps between
-        // whichever fields currently have content.
-        val lastMoveColumnView = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            addView(turnCountText)
-            addView(timerText)
-            addView(filterStatusText)
-            addView(inputModeText)
-            addView(batteryText)
-            addView(exportCheckText)
-        }
-        lastMoveColumn = lastMoveColumnView
+        // -- and since each now sits at its own fixed position (statusLineParams) rather than a
+        // stacking LinearLayout, going GONE just leaves that one slot blank instead of collapsing
+        // the whole column.
+        turnCountTextView = turnCountText
+        timerTextView = timerText
+        filterStatusTextView = filterStatusText
+        batteryTextView = batteryText
+        exportCheckTextView = exportCheckText
 
         /** Shared by the utility column's "MC4D" button and the Start Menu's "Export" tile (see
          * the menu design doc: Export always runs whichever format Settings specifies, which for
@@ -1842,7 +1825,6 @@ class MainActivity : AppCompatActivity() {
         fun toggleInputMode() {
             inputMode = if (inputMode == GamepadInputMode.STICK) GamepadInputMode.RKT else GamepadInputMode.STICK
             surfaceView.queueEvent { renderer.setInputMode(inputMode) }
-            updateInputModeText()
             applyInputModeToVirtualController()
             rebuildStartMenuTiles()
         }
@@ -2003,7 +1985,16 @@ class MainActivity : AppCompatActivity() {
 
         rootLayout.addView(surfaceView)
         rootLayout.addView(statusText, topCenterParams())
-        rootLayout.addView(lastMoveColumnView, topStartParams())
+        // See statusLineParams'/exportWarningParams' docs for why each of these sits at its own
+        // fixed position now instead of one stacking lastMoveColumnView -- filter/
+        // battery pair above the left cluster, turns/time pair above the right, and the (rare)
+        // export-mismatch warning floating unreserved above all of it. The Stick/RKT input-mode
+        // label isn't here at all any more -- see virtualClusterLeft's stickCornerLabel param.
+        rootLayout.addView(exportCheckText, exportWarningParams())
+        rootLayout.addView(filterStatusText, statusLineParams(startSide = true, near = false))
+        rootLayout.addView(batteryText, statusLineParams(startSide = true, near = true))
+        rootLayout.addView(turnCountText, statusLineParams(startSide = false, near = false))
+        rootLayout.addView(timerText, statusLineParams(startSide = false, near = true))
         // GamepadOverlayView is no longer built here (retired 4D-mode-only -- see
         // updateControlVisibility's doc): the always-visible virtual controls below now show
         // real-gamepad state directly via each button's realHeld lambda, so a separate status HUD
@@ -2090,6 +2081,16 @@ class MainActivity : AppCompatActivity() {
             shoulderLeftRealHeld = { if (PerControllerSettings.current()?.zDirLeft == true) GamepadVisualState.l2Held else GamepadVisualState.l1Held },
             shoulderRightRealHeld = { if (PerControllerSettings.current()?.zDirLeft == true) GamepadVisualState.l1Held else GamepadVisualState.l2Held },
             mainControl = VirtualClusterView.MainControl.Stick(onChanged = virtualStickAction { x, y -> handleLeftStickInput(x, y) }),
+            // Current-input-mode readout (Stick/RKT) -- see drawStick's doc for why this renders
+            // inside the stick's own corner rather than as a separate TextView. A live supplier
+            // (read fresh every repaint tick), not a one-shot value, so toggling Mode from the
+            // Start Menu needs no explicit push here.
+            stickCornerLabel = {
+                when (inputMode) {
+                    GamepadInputMode.STICK -> "Stick"
+                    GamepadInputMode.RKT -> "RKT"
+                }
+            },
         )
         virtualClusterRight = VirtualClusterView(
             context = this,
@@ -2207,6 +2208,18 @@ class MainActivity : AppCompatActivity() {
         text = if (initiallySolved) SOLVED_LABEL else ""
         textSize = 18f
         setPadding(24, 16, 24, 16)
+        // Translucent backing added 2026-09-15: this sits dead-center at the very top regardless
+        // of orientation, which the puzzle's own top cell now reaches close to (or past) now that
+        // HypercubeRenderer's default zoom maximizes fill within its dedicated square (see its
+        // onSurfaceChanged/distance docs) -- unlike the always-on Turns/Time/mode status lines,
+        // this is rare/momentary enough not to deserve its own permanent reserved space (that
+        // would shrink the puzzle for everyone to dodge something most sessions never see while
+        // playing), so instead it just stays legible over whatever's behind it. GONE (not just
+        // empty text) while unsolved -- a background color still paints even with no text, which
+        // otherwise left a plain black rectangle floating over the puzzle at all times (confirmed
+        // via a real report, 2026-09-15) instead of only appearing on an actual solve.
+        setBackgroundColor(Color.argb(160, 0, 0, 0))
+        visibility = if (initiallySolved) View.VISIBLE else View.GONE
     }
 
     private fun modeToggleButton(): Button = Button(this).apply {
@@ -2349,26 +2362,15 @@ class MainActivity : AppCompatActivity() {
         Gravity.TOP or Gravity.CENTER_HORIZONTAL,
     ).apply { topMargin = 24 + systemBarInsets.top }
 
-    /** In landscape, the virtual controller's left cluster is vertically centered (see
-     * [virtualClusterParams]) and tall enough (~68% of a typical landscape height) that pushing
-     * this text below its full height would waste most of the screen -- so instead of dodging
-     * vertically, this text starts to the *right* of the cluster's own right edge in landscape,
-     * keeping its normal top-left position otherwise (confirmed via emulator screenshot that the
-     * puzzle itself starts well to the right of that point too, so this doesn't create a new
-     * overlap there either). An earlier attempt pushed this down by the cluster's top-edge
-     * position instead -- looked right on paper but still overlapped the cluster's top-row pills
-     * in practice, since clearing just the cluster's top *edge* isn't the same as clearing the
-     * pills' own height. The left cluster is now always visible in landscape (see
-     * [updateControlVisibility]'s doc -- it no longer hides behind a real gamepad connecting), so
-     * this always clears space for it in landscape regardless of connection state; checking
-     * [GamepadInputHandler.anyGamepadConnected] here too (as an earlier version did, back when a
-     * connected gamepad hid the cluster in favor of a small status HUD) is exactly what let this
-     * column collapse to the small margin and sit underneath/covered by the still-visible cluster
-     * once a real controller connected -- confirmed via a real report (2026-09-07). Portrait
-     * doesn't need any of this: the cluster sits at the bottom there, nowhere near this corner.
-     * Harmless for build3DScreen's modeToggleButton (this function's other caller) too -- 3D mode
-     * has no virtual controller to clear, so this just nudges that button right slightly in
-     * landscape for no real reason, not a problem worth special-casing around. */
+    /** Used today only by build3DScreen's modeToggleButton (3D mode has no virtual controller to
+     * clear, so the landscape cluster-width offset below just nudges that button right slightly
+     * for no real reason -- not a problem worth special-casing around). build4DScreen's own
+     * top-left field, the old lastMoveColumnView, was retired 2026-09-15 in favor of
+     * [statusLineParams]/[exportWarningParams] -- its clearance from the
+     * cluster/puzzle here was only ever incidental (confirmed via emulator screenshot on one
+     * aspect ratio), which broke on a real, less-stretched device (see HypercubeRenderer.
+     * onSurfaceChanged's doc); the replacements instead derive their position from the cluster's
+     * actual current geometry. */
     private fun topStartParams(): FrameLayout.LayoutParams {
         val params = FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.WRAP_CONTENT,
@@ -2459,7 +2461,12 @@ class MainActivity : AppCompatActivity() {
      * 2026-08-01): left/right-edge-anchored instead, vertically centered -- the direct rotation
      * of the same idea, edge-anchored on the axis the two clusters *aren't* spread along either
      * way (bottom in portrait, since they're spread left-right; vertically centered in landscape,
-     * since they're spread by being on opposite edges, not stacked). */
+     * since they're spread by being on opposite edges, not stacked). Both clusters always share
+     * the exact same margins regardless of [startSide] -- an earlier version gave the left cluster
+     * extra bottom clearance in portrait to make room for a Stick/RKT label below it, which threw
+     * the two clusters' shoulder-button rows out of vertical alignment with each other (confirmed
+     * via a real report, 2026-09-15); that label now draws *inside* virtualClusterLeft's own stick
+     * control instead (see its stickCornerLabel param), so this needs no special case for it. */
     private fun virtualClusterParams(startSide: Boolean): FrameLayout.LayoutParams {
         val portrait = resources.configuration.orientation == Configuration.ORIENTATION_PORTRAIT
         val marginPx = (12 * resources.displayMetrics.density).toInt()
@@ -2472,6 +2479,77 @@ class MainActivity : AppCompatActivity() {
             leftMargin = marginPx + systemBarInsets.left
             rightMargin = marginPx + systemBarInsets.right
             if (portrait) bottomMargin = marginPx + systemBarInsets.bottom
+        }
+    }
+
+    /** A single small status line (Turns/Time/filter/battery), styled and sized purely off the
+     * current cluster width -- see VirtualClusterView.statusLineTextSizePx's doc for why raw
+     * pixels (not sp), the same reasoning as its own caption/label Paints. Used for every status
+     * line built in build4DScreen so they all agree on size, and HypercubeRenderer's reserved-
+     * viewport math (which assumes this exact sizing) stays accurate. */
+    private fun clusterStatusTextView(): TextView = TextView(this).apply {
+        setTextSize(TypedValue.COMPLEX_UNIT_PX, VirtualClusterView.statusLineTextSizePx(clusterWidthPx()))
+        alpha = 0.6f
+        gravity = Gravity.CENTER
+    }
+
+    /** One of the two above-cluster status lines (2 per side: filter+battery on the left, turns+
+     * time on the right -- see build4DScreen's addView calls) -- [near] true for the line directly
+     * above the cluster, false for the one above *that*. Replaces the old lastMoveColumnView,
+     * whose clearance from the puzzle was pure incidental luck (see HypercubeRenderer.
+     * onSurfaceChanged's doc) -- these instead sit at an exact offset from the cluster's own real
+     * position, matching the same reservation the renderer carves out, so the two can never drift
+     * out of sync. Portrait stacks bottom-up above the bottom-anchored cluster; landscape stacks
+     * top-down above the vertically-centered one -- both share the same per-line height/gap
+     * formulas (VirtualClusterView.statusBlockHeightForWidth/STACK_GAP_FRACTION/LINE_GAP_FRACTION)
+     * the renderer uses for its own reservedBottom/reservedSide math. The gap from the cluster to
+     * the *near* line uses STACK_GAP_FRACTION (separating the header from the buttons); the gap
+     * between the near and far lines uses the smaller LINE_GAP_FRACTION instead -- single-spaced
+     * per David's 2026-09-15 ask, so the two lines read as one tight block rather than two
+     * separately-padded pills. */
+    private fun statusLineParams(startSide: Boolean, near: Boolean): FrameLayout.LayoutParams {
+        val portrait = resources.configuration.orientation == Configuration.ORIENTATION_PORTRAIT
+        val clusterWidth = clusterWidthPx()
+        val clusterHeight = VirtualClusterView.heightForWidth(clusterWidth)
+        val lineHeight = VirtualClusterView.statusBlockHeightForWidth(clusterWidth, 1)
+        val gapPx = clusterWidth * VirtualClusterView.STACK_GAP_FRACTION
+        val lineGapPx = clusterWidth * VirtualClusterView.LINE_GAP_FRACTION
+        val marginPx = (12 * resources.displayMetrics.density).toInt()
+        val params = FrameLayout.LayoutParams(
+            clusterWidth.toInt(),
+            lineHeight.toInt(),
+            (if (portrait) Gravity.BOTTOM else Gravity.TOP) or (if (startSide) Gravity.START else Gravity.END),
+        )
+        params.leftMargin = marginPx + systemBarInsets.left
+        params.rightMargin = marginPx + systemBarInsets.right
+        if (portrait) {
+            val nearMargin = marginPx + systemBarInsets.bottom + clusterHeight + gapPx
+            params.bottomMargin = (if (near) nearMargin else nearMargin + lineHeight + lineGapPx).toInt()
+        } else {
+            val screenHeight = resources.displayMetrics.heightPixels.toFloat()
+            val clusterTop = (screenHeight - clusterHeight) / 2f
+            val nearMargin = clusterTop - gapPx - lineHeight
+            params.topMargin = (if (near) nearMargin else nearMargin - lineHeight - lineGapPx)
+                .toInt().coerceAtLeast(systemBarInsets.top)
+        }
+        return params
+    }
+
+    /** The rare red export-round-trip-mismatch warning -- deliberately *not* part of
+     * [statusLineParams]'s reserved 2-line stack (see HypercubeRenderer.onSurfaceChanged's doc:
+     * the renderer's dedicated-area math never budgets space for this), so it can't grow the
+     * puzzle's normal reserved footprint for something that almost never shows. Just flush
+     * top-left, same as the old lastMoveColumnView's own top edge -- when it does appear it may
+     * sit close to (or slightly over) the puzzle's own edge; accepted since it's debug-only. */
+    private fun exportWarningParams(): FrameLayout.LayoutParams {
+        val marginPx = (12 * resources.displayMetrics.density).toInt()
+        return FrameLayout.LayoutParams(
+            clusterWidthPx().toInt(),
+            FrameLayout.LayoutParams.WRAP_CONTENT,
+            Gravity.TOP or Gravity.START,
+        ).apply {
+            topMargin = 24 + systemBarInsets.top
+            leftMargin = marginPx + systemBarInsets.left
         }
     }
 
@@ -2600,7 +2678,11 @@ class MainActivity : AppCompatActivity() {
         // bug via emulator screenshot (2026-08-01): the build-number label and gamepadOverlay
         // both stayed put even after systemBarInsets became correctly non-zero elsewhere, since
         // nothing had ever told *them* to recompute.
-        lastMoveColumn?.layoutParams = topStartParams()
+        exportCheckTextView?.layoutParams = exportWarningParams()
+        filterStatusTextView?.layoutParams = statusLineParams(startSide = true, near = false)
+        batteryTextView?.layoutParams = statusLineParams(startSide = true, near = true)
+        turnCountTextView?.layoutParams = statusLineParams(startSide = false, near = false)
+        timerTextView?.layoutParams = statusLineParams(startSide = false, near = true)
         statusTextLabel?.layoutParams = topCenterParams()
         buildNumberLabelView?.layoutParams = bottomEndParams()
         gamepadOverlay?.layoutParams = bottomStartParams()

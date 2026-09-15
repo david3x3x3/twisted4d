@@ -18,6 +18,7 @@ import kotlin.math.max
 import kotlin.math.roundToInt
 import kotlin.math.sin
 import kotlin.math.sqrt
+import kotlin.math.tan
 
 /**
  * Renders a 3^4 hypercube using a genuine 4D->3D perspective projection, the same style
@@ -79,7 +80,13 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
     // Retuned for the true-4D-projection geometry's much smaller natural scale (cells now sit
     // within roughly +-1.5 units of the room's center, vs. the old flat net's ROOM_HALF=6) --
     // see MIN_DISTANCE/MAX_DISTANCE below, retuned to match.
-    @Volatile private var distance = 8.5f
+    //
+    // Was 8.5f -- tightened 2026-09-15 alongside the reserved-dedicated-area viewport rework
+    // (onSurfaceChanged's doc): 8.5 left the puzzle filling only ~68% of its square viewport
+    // (confirmed via a real screenshot on the Retroid Pocket 3 Plus), well short of "maximize the
+    // filled percentage of its dedicated area" once that area became an exact, guaranteed square
+    // instead of whatever incidental space a wide aspect ratio happened to leave free.
+    @Volatile private var distance = 6.4f
 
     // Ordinary 3D-feeling rotation input (touch-drag / left stick) -> XZ/YZ planes.
     @Volatile var stickX: Float = 0f
@@ -1020,50 +1027,95 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         applyScreenRelativeRotation(0f, INITIAL_PITCH_DEG)
     }
 
-    /** In landscape (or square), the puzzle renders into the *whole* surface at that surface's
-     * actual aspect ratio -- a wide surface with a fixed 24-degree *vertical* FOV naturally
-     * leaves horizontal margins on both sides (that's the entire mechanism behind the puzzle
-     * looking "centered in a square with side space" today -- there's no explicit square crop,
-     * it falls out of the fixed-vertical-FOV/wide-aspect combination for free).
+    /** The puzzle always renders into a *square* GL viewport, centered within whatever
+     * "dedicated area" is left over once the virtual controller (and its above/below-cluster
+     * status lines -- see MainActivity.statusLineParams' doc) reserve their own real estate --
+     * squareSize = min(dedicated width, dedicated height), so the puzzle fills that area as much
+     * as it can without ever needing to know the actual device's aspect ratio. This replaced a
+     * landscape-only "fill the whole surface, let the wide aspect leave side margins for free"
+     * approach that only worked by *coincidence*: on a squarer/less-stretched display than
+     * whatever this was tuned on (confirmed via a real Retroid Pocket 3 Plus, 2026-09-15 -- see
+     * the mc4d_export_bug-style investigation notes) that incidental margin shrank enough for the
+     * puzzle to actually collide with the status text sitting in the corner. Reserving real,
+     * guaranteed space up front (mirroring how portrait already reserved a bottom strip for the
+     * controller) fixes that for any aspect ratio, not just the ones actually tested.
      *
-     * In portrait (taller than wide -- see the [android:screenOrientation] change that made this
-     * reachable at all), that same trick would do the opposite of what's wanted: a fixed vertical
-     * FOV filling the *whole* tall height would render the puzzle tiny and vertically centered
-     * across the *entire* surface, when portrait's virtual controller only needs the puzzle
-     * centered in whatever's left *above* it -- the control bar (ordinary Android views, not GL
-     * content) occupies a known, fixed-fraction-of-width strip at the bottom (see
-     * VirtualClusterView.heightForWidth/WIDTH_FRACTION_OF_SCREEN, the same formula
-     * MainActivity.menuOverlayParams uses to reserve that same strip for the Start Menu). So
-     * portrait uses a real square GL viewport (side length = surface width, the constraining
-     * dimension) centered in the surface height *minus* that reserved strip -- initially pinned
-     * flush to the very top of the surface instead, which real-device testing (2026-08-01,
-     * David's Pixel) confirmed looked wrong: crowded against the top edge with all the slack
-     * dumped below, rather than evenly framed in the space actually available above the controls.
-     * glViewport's y is measured from the bottom in GL's window-coordinate convention, hence
-     * `height - squareSize - topGap`, not `height - squareSize`, with the projection's aspect
-     * fixed at 1.0 to match that viewport's actual shape. Portrait vs. landscape is decided purely
-     * from the surface's own reported dimensions (taller-than-wide), not a separate orientation
-     * flag threaded in from MainActivity, so this adapts correctly on its own the moment the
-     * device actually rotates and onSurfaceChanged fires again.
+     * Portrait reserves a *bottom* strip (full width) for the bottom-anchored control bar plus
+     * its now-above-it status lines; landscape reserves *left/right* strips (full height) for the
+     * two edge-anchored clusters plus their own headers. Either way the numbers below must exactly
+     * match VirtualClusterView.WIDTH_FRACTION_OF_SCREEN/STACK_GAP_FRACTION/
+     * EDGE_MARGIN_SAFETY_FRACTION and MainActivity's *Params functions built on them, or the two
+     * sides drift out of sync again. Portrait vs. landscape is decided purely from the surface's
+     * own reported dimensions (taller-than-wide), not a separate orientation flag threaded in from
+     * MainActivity, so this adapts correctly on its own the moment the device actually rotates and
+     * onSurfaceChanged fires again.
      */
     override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
-        val aspect: Float
+        val clusterWidth = minOf(width, height) * VirtualClusterView.WIDTH_FRACTION_OF_SCREEN
+        val clusterHeight = VirtualClusterView.heightForWidth(clusterWidth)
+        val gapPx = clusterWidth * VirtualClusterView.STACK_GAP_FRACTION
+        val edgeMargin = clusterWidth * VirtualClusterView.EDGE_MARGIN_SAFETY_FRACTION
+
+        val dedicatedX: Float
+        val dedicatedY: Float
+        val dedicatedW: Float
+        val dedicatedH: Float
         if (height > width) {
-            val squareSize = width
-            val reservedBottom = VirtualClusterView.heightForWidth(width * VirtualClusterView.WIDTH_FRACTION_OF_SCREEN)
-            val availableHeight = (height - reservedBottom).coerceAtLeast(squareSize.toFloat())
-            val topGap = ((availableHeight - squareSize) / 2f).coerceAtLeast(0f).toInt()
-            GLES30.glViewport(0, height - squareSize - topGap, squareSize, squareSize)
-            aspect = 1f
+            // Bottom-anchored stack, top to bottom: status header (2 lines) / cluster. Both
+            // clusters share the same reserved strip height. The Stick/RKT mode label isn't
+            // budgeted here at all -- it draws inside the left cluster's own stick control (see
+            // VirtualClusterView.drawStick's stickCornerLabel doc), adding no extra height.
+            //
+            // The header is 2 *separately positioned* single-line TextViews (MainActivity.
+            // statusLineParams stacks each at statusBlockHeightForWidth(width, 1)), not one
+            // statusBlockHeightForWidth(width, 2) block -- that 2-line formula bakes in only one
+            // shared top/bottom padding pair, not each line's own. Must exactly mirror
+            // statusLineParams' own margin math: one STACK_GAP_FRACTION gap from the cluster up to
+            // the near line, then the near and far lines separated by the smaller
+            // LINE_GAP_FRACTION (single-spaced per David's 2026-09-15 ask) -- getting this out of
+            // sync previously let the far (filter/turns) line sit UNDER the puzzle's own edge
+            // (confirmed via a real screenshot, 2026-09-15).
+            val lineHeight = VirtualClusterView.statusBlockHeightForWidth(clusterWidth, 1)
+            val lineGapPx = clusterWidth * VirtualClusterView.LINE_GAP_FRACTION
+            val reservedBottom = clusterHeight + gapPx + 2 * lineHeight + lineGapPx + edgeMargin
+            dedicatedX = 0f
+            dedicatedY = reservedBottom
+            dedicatedW = width.toFloat()
+            dedicatedH = (height - reservedBottom).coerceAtLeast(1f)
         } else {
-            GLES30.glViewport(0, 0, width, height)
-            aspect = width.toFloat() / height.toFloat()
+            val reservedSide = clusterWidth + edgeMargin
+            dedicatedX = reservedSide
+            dedicatedY = 0f
+            dedicatedW = (width - reservedSide * 2f).coerceAtLeast(1f)
+            dedicatedH = height.toFloat()
         }
+        val squareSize = minOf(dedicatedW, dedicatedH)
+        val viewportX = dedicatedX + (dedicatedW - squareSize) / 2f
+        val viewportY = dedicatedY + (dedicatedH - squareSize) / 2f
+        GLES30.glViewport(viewportX.toInt(), viewportY.toInt(), squareSize.toInt(), squareSize.toInt())
         // A narrower FOV (was 40f) than CubeRenderer's, paired with a proportionally longer
         // camera distance below, flattens the perspective -- less size difference between the
         // near and far walls (e.g. F/R vs. their opposite B/L) -- closer to an isometric look
-        // without going fully orthographic.
-        Matrix.perspectiveM(projMatrix, 0, 24f, aspect, 0.1f, 150f)
+        // without going fully orthographic. Built via frustumM (an asymmetric frustum), not the
+        // simpler perspectiveM, purely to apply VERTICAL_CONTENT_SHIFT_FRACTION below -- see its
+        // own doc.
+        val near = 0.1f
+        val halfHeight = near * tan(Math.toRadians(24.0 / 2.0)).toFloat()
+        // Small vertical "lens shift" -- at the app's fixed default view angle (INITIAL_YAW_DEG/
+        // INITIAL_PITCH_DEG), the U cell (top of the unfolded net) sits measurably closer to the
+        // camera than the D cell (bottom) does, so it renders larger and the room reads as top-
+        // heavy: U was touching the square viewport's own top edge while D still had real
+        // clearance at the bottom (confirmed via a real screenshot, 2026-09-15). The camera itself
+        // (Matrix.setLookAtM below) stays perfectly level -- shearing the frustum's near-plane
+        // window up by a small amount shifts every cell's on-screen position down by the same NDC
+        // amount regardless of its depth (unlike translating the scene in view-space, which would
+        // shift near/far cells by different amounts) -- exactly the lens-shift technique real
+        // cameras/architectural photography use to reframe without moving the camera. Positive
+        // shifts the window *up* in camera space, which reads as the rendered content moving
+        // *down* on screen -- tuned empirically against that screenshot's ~0px top / ~26px bottom
+        // clearance (on a 752px-tall square viewport) to split the difference evenly.
+        val shift = halfHeight * VERTICAL_CONTENT_SHIFT_FRACTION
+        Matrix.frustumM(projMatrix, 0, -halfHeight, halfHeight, -halfHeight + shift, halfHeight + shift, near, 150f)
     }
 
     /** Accumulates an "ordinary" 3D-feeling touch-drag delta (degrees), applied next frame. */
@@ -2185,6 +2237,13 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
 
         private const val MIN_DISTANCE = 3f
         private const val MAX_DISTANCE = 25f
+
+        // See onSurfaceChanged's frustumM doc -- fraction of the near-plane half-height to shear
+        // the projection window by, to visually recenter the default view's top-heavy rendering
+        // (U cell bigger/closer than D). Tuned empirically against a real screenshot; revisit if
+        // INITIAL_YAW_DEG/INITIAL_PITCH_DEG or the room's own geometry ever change, since either
+        // could shift which cell ends up closer to the camera.
+        private const val VERTICAL_CONTENT_SHIFT_FRACTION = 0.09f
 
         const val AXIS_X = 0
         const val AXIS_Y = 1

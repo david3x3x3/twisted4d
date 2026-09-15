@@ -79,6 +79,10 @@ class VirtualClusterView(
     private val topRightRealHeld: () -> Boolean = { false },
     private val shoulderLeftRealHeld: () -> Boolean = { false },
     private val shoulderRightRealHeld: () -> Boolean = { false },
+    // Small live readout drawn inside the stick's own corner (see drawStick's doc) -- e.g.
+    // MainActivity's Stick/RKT input-mode label on the left cluster. null (the default) draws
+    // nothing; only meaningful for a Stick mainControl, the only one drawStick ever handles.
+    private val stickCornerLabel: (() -> String)? = null,
 ) : View(context) {
 
     /** [Stick]'s [onChanged] fires continuously while dragging (and once more with (0,0) on
@@ -207,6 +211,12 @@ class VirtualClusterView(
         color = Color.argb(190, 210, 220, 235)
         textAlign = Paint.Align.CENTER
     }
+    // [stickCornerLabel]'s Paint -- left-aligned (unlike every other Paint here, all CENTER) since
+    // it's anchored at mainRect's own corner, not a fixed center point -- see drawStick's doc.
+    private val stickCornerLabelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(175, 170, 180, 200)
+        textAlign = Paint.Align.LEFT
+    }
     private val arrowFillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL
         color = Color.argb(210, 220, 225, 235)
@@ -282,7 +292,62 @@ class VirtualClusterView(
         // Menu above them) and HypercubeRenderer (centering the puzzle's own viewport in the
         // leftover space above the control bar). All three need to agree on the same fraction or
         // their reserved-space math would drift out of sync with each other.
-        const val WIDTH_FRACTION_OF_SCREEN = 0.45f
+        //
+        // Was 0.45f -- shrunk 2026-09-15 alongside the above-cluster status-line redesign (see
+        // MainActivity.statusLineParams' doc): each cluster now shares its edge column with a
+        // 2-line status header (and, on the left, a below-cluster mode label), so a slightly
+        // smaller cluster buys that column room without the header pushing off-screen, and the
+        // puzzle's own dedicated area gets a bit more room in the bargain.
+        const val WIDTH_FRACTION_OF_SCREEN = 0.40f
+
+        // Gap between a cluster and the status header stacked above/below it -- a fraction of
+        // cluster width rather than a dp value, so HypercubeRenderer's reserved-viewport math (no
+        // Context/density access) can reproduce MainActivity's real layout exactly. See
+        // statusBlockHeightForWidth. Deliberately bigger than LINE_GAP_FRACTION just below --
+        // this one separates the header from the buttons, which wants a bit more breathing room
+        // than the two header lines want from *each other*.
+        const val STACK_GAP_FRACTION = 0.035f
+
+        // Gap between the two stacked status lines themselves (e.g. Turns/Time) -- single-spaced
+        // per David's 2026-09-15 ask ("i'd rather have those extra pixels for puzzle space") in
+        // preference to STACK_GAP_FRACTION's wider cluster-separating gap. See its own doc for why
+        // this is a separate, smaller constant rather than just reusing that one.
+        const val LINE_GAP_FRACTION = 0.012f
+
+        // Stand-in for MainActivity's own cluster-to-screen-edge margin (12dp + system-bar inset)
+        // -- the renderer can't compute that exactly (no density/inset access), so this
+        // deliberately errs generous (reserves a bit more room than that margin typically is)
+        // rather than risk under-reserving and letting the puzzle creep behind a cluster's edge.
+        // Was 0.05f -- bumped 2026-09-15 alongside the header-stacking reservedBottom fix (see
+        // HypercubeRenderer.onSurfaceChanged's doc): 0.05f (~15px on a real Retroid Pocket 3 Plus)
+        // undershot that device's actual marginPx+insets.bottom (~20px), a smaller contributor to
+        // the same under-reservation bug.
+        const val EDGE_MARGIN_SAFETY_FRACTION = 0.07f
+
+        // Font size for the above/below-cluster status lines (Turns/Time/filter/battery/mode) --
+        // a fraction of cluster width, matching this class's own caption/label text (see
+        // onSizeChanged's labelPaint/captionPaint sizing just below) rather than sp, so it too
+        // stays in sync with the renderer's reserved-space math regardless of device density.
+        const val STATUS_LINE_TEXT_SIZE_FRACTION = 0.062f
+        // Both tightened 2026-09-15 (were 1.35f/0.02f) alongside LINE_GAP_FRACTION -- single-
+        // spacing the status lines per David's ask, reclaiming the freed pixels for the puzzle's
+        // own dedicated area. 1.15f still leaves enough leading for descenders (e.g. "Filter:
+        // pieces" -- see clusterStatusTextView's CENTER gravity, which needs a little slack above/
+        // below the glyphs themselves to avoid clipping).
+        private const val STATUS_LINE_SPACING_MULT = 1.15f
+        private const val STATUS_LINE_PADDING_FRACTION = 0.006f
+
+        fun statusLineTextSizePx(clusterWidth: Float): Float = clusterWidth * STATUS_LINE_TEXT_SIZE_FRACTION
+
+        /** Reserved height for a stack of [lineCount] status lines at this cluster width --
+         * shared between MainActivity (sizing the actual TextViews) and HypercubeRenderer (the
+         * puzzle's reserved-viewport math), same heightForWidth reasoning: both need to agree on
+         * the same footprint without the renderer waiting on real view measurement. */
+        fun statusBlockHeightForWidth(clusterWidth: Float, lineCount: Int): Float {
+            val lineHeight = statusLineTextSizePx(clusterWidth) * STATUS_LINE_SPACING_MULT
+            val padding = clusterWidth * STATUS_LINE_PADDING_FRACTION
+            return lineHeight * lineCount + padding * 2f
+        }
 
         // Wedge 0..7 room-slot letters, mirroring HypercubeRenderer.updateCell4Selection's own
         // wedge table exactly (~HypercubeRenderer.kt:1308-1317) -- wedge 0 = right = I's slot,
@@ -338,6 +403,7 @@ class VirtualClusterView(
         captionPaint.textSize = width * 0.05f
         pillLabelPaint.textSize = width * 0.075f
         stickLabelPaint.textSize = width * 0.055f
+        stickCornerLabelPaint.textSize = width * 0.045f
 
         if (topLeftCaption != null) {
             drawShoulderPill(canvas, topLeftRect, topLeftCaption, FaceButtonContent.Text(topLeftLabel), "topLeft" in heldRegions)
@@ -426,6 +492,31 @@ class VirtualClusterView(
         // (0,0) with no gamepad connected, same as an untouched virtual stick.
         val (dotX, dotY) = if (stickPointerId != -1) currentStickOffset else GamepadVisualState.leftStickX to GamepadVisualState.leftStickY
         canvas.drawCircle(cx + dotX * r * 0.7f, cy + dotY * r * 0.7f, r * 0.22f, stickDotPaint)
+        drawMainRectCornerLabel(canvas)
+    }
+
+    /** Optional small readout (e.g. MainActivity's Stick/RKT mode label) tucked into mainRect's
+     * own bottom-left corner -- the one spot on this whole control that's guaranteed empty:
+     * mainRect is exactly as wide/tall as [drawStick]'s circle diameter, so that inscribed circle
+     * touches each edge only at its midpoint, leaving all 4 corners genuinely free (the DPad/
+     * FaceDiamond's 4 smaller buttons leave even more room there). Drawn here, inside the existing
+     * mainRect bounds, rather than as MainActivity reserving extra space below/around the cluster
+     * for it -- an earlier reserved-space version threw the left/right clusters' shoulder-button
+     * rows out of vertical alignment with each other (confirmed via a real report, 2026-09-15).
+     * Small enough (0.045x width, vs. e.g. stickLabelPaint's 0.055x) and close enough to the
+     * corner to clear drawStick's F wedge label above it, which sits inset from the corner at 0.8x
+     * radius. Called from both [drawStick] and [drawDpad] -- the left cluster's mainControl swaps
+     * between the two on a STICK/RKT mode toggle (see MainActivity.applyInputModeToVirtualController),
+     * and the label needs to keep showing either way; a version that only drew it inside drawStick
+     * made the label vanish the instant RKT mode switched the control to a DPad (confirmed via a
+     * real report, 2026-09-15) -- exactly backwards, since that's the one moment it's most useful. */
+    private fun drawMainRectCornerLabel(canvas: Canvas) {
+        stickCornerLabel?.invoke()?.let { label ->
+            if (label.isNotEmpty()) {
+                val pad = stickCornerLabelPaint.textSize * 0.3f
+                canvas.drawText(label, mainRect.left + pad, mainRect.bottom - pad, stickCornerLabelPaint)
+            }
+        }
     }
 
     // Kept purely so onDraw can redraw the dot at its live dragged position -- updated in
@@ -468,6 +559,7 @@ class VirtualClusterView(
         drawArrowButton(canvas, cx - spread, cy, r, DiamondDirection.LEFT, control.leftLabel, ("faceLeft" in heldRegions) || control.leftRealHeld())
         drawArrowButton(canvas, cx + spread, cy, r, DiamondDirection.RIGHT, control.rightLabel, ("faceRight" in heldRegions) || control.rightRealHeld())
         drawArrowButton(canvas, cx, cy + spread, r, DiamondDirection.DOWN, control.downLabel, ("faceBottom" in heldRegions) || control.downRealHeld())
+        drawMainRectCornerLabel(canvas)
     }
 
     private fun drawArrowButton(canvas: Canvas, cx: Float, cy: Float, r: Float, direction: DiamondDirection, label: String, held: Boolean) {
