@@ -1,15 +1,17 @@
 # twisted4d
 
-A native Android app that simulates 3D and 4D Rubik's-cube-style twisty puzzles — a standard
-3x3x3 cube, and a 3⁴ hypercube (tesseract) rendered with a true 4D→3D perspective projection
-(tapered, MC4D-style cells, not a flat unfolded net). The UI/app layer is Kotlin; the 4D puzzle
-math and twist logic live in a native Rust core.
+A native Android app that simulates a 4D Rubik's-cube-style twisty puzzle — a 3⁴ hypercube
+(tesseract) rendered with a true 4D→3D perspective projection (tapered, MC4D-style cells, not a
+flat unfolded net). The UI/app layer is Kotlin; the 4D puzzle math and twist logic live in a
+native Rust core.
 
 twisted4d is built gamepad-first — cell selection and twisting feel most precise with a physical
-controller, and the in-app Help screen documents a full gamepad control scheme for both 3D and 4D
-modes. A full on-screen touch controller is also built in for 4D mode (portrait and landscape), so
-no gamepad is required to play — it mirrors the physical control scheme directly, mode for mode
-and button for button.
+controller, and the in-app Help screen documents the full gamepad control scheme. A full on-screen
+touch controller is also built in (portrait and landscape), so no gamepad is required to play — it
+mirrors the physical control scheme directly, mode for mode and button for button.
+
+(An ordinary 3D Rubik's cube mode also exists in the codebase — it predates the 4D puzzle and
+isn't currently exposed in the UI.)
 
 The project was inspired by [Hyperspeedcube](https://github.com/HactarCE/Hyperspeedcube) and its
 predecessor, [MagicCube4D](https://superliminal.com/cube/); see the in-app Help screen for full
@@ -33,7 +35,7 @@ all. The app runs on any Android device running API 26+ (Android 8.0 or later).
 
 See the in-app Help screen (tap the Help tile in the Start Menu, or the virtual controller's About
 button for a short introduction) for the full control scheme, covering the on-screen virtual
-controller, 3D-mode gamepad controls, and 4D mode's Stick/RKT gamepad input schemes.
+controller and the gamepad's Stick/RKT input schemes.
 
 ## Credits and originality
 

@@ -1374,10 +1374,25 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
      * to center clears the last selection rather than leaving it live-but-unhighlighted, so a
      * twist right after release falls back to [effectiveCell4]'s per-axis default instead of
      * silently reusing whatever was last selected (2026-08-02 design change).
+     *
+     * That "below the threshold" check is hysteresis (a lower [SELECTION_RELEASE_MAGNITUDE] once
+     * [hasSelection] is already true), not one flat cutoff -- added 2026-09-15 after a real screen
+     * recording showed the virtual (touch-drag) stick's selection flickering to "nothing" mid-
+     * sweep, between two wedges, even though the touch point never came anywhere near true center.
+     * A free-form touch-drag circle's radius wobbles far more than a spring-loaded physical
+     * stick's does (which stays close to full deflection throughout a sweep, so this never showed
+     * up there) -- with a single 0.5 threshold, a momentary dip to e.g. 0.45 mid-sweep dropped the
+     * selection entirely instead of just crossing to the neighboring wedge, exactly the "hard
+     * break between cells" this is supposed to give. Once selected, the stick now only has to stay
+     * outside [SELECTION_RELEASE_MAGNITUDE] (the same magnitude [GamepadInputHandler]'s own plain
+     * deadzone treats as "centered") to keep tracking wedge changes; a fresh selection still needs
+     * to clear the higher [SIGNIFICANT_STICK_MAGNITUDE] bar so tiny idle noise can't select
+     * anything on its own.
      */
     fun updateCell4Selection(x: Float, y: Float) {
-        val isSignificant = hypot(x, y) > SIGNIFICANT_STICK_MAGNITUDE
-        if (!isSignificant) {
+        val magnitude = hypot(x, y)
+        val armThreshold = if (hasSelection) SELECTION_RELEASE_MAGNITUDE else SIGNIFICANT_STICK_MAGNITUDE
+        if (magnitude <= armThreshold) {
             lastStickWedge = -1
             hasSelection = false
             publishLabelSnapshot()
@@ -2253,8 +2268,17 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         /** How far off-center (0..1 stick magnitude) counts as "moving significantly" for
          * [updateCell4Selection]'s snap-on-deflect trigger -- higher than the plain deadzone
          * [GamepadInputHandler] already applies, so a small/incidental deflection can still
-         * select a cell without yanking the view around every time. */
+         * select a cell without yanking the view around every time. Only gates *entering* a fresh
+         * selection -- see [SELECTION_RELEASE_MAGNITUDE] for what it takes to drop one already
+         * active. */
         private const val SIGNIFICANT_STICK_MAGNITUDE = 0.5f
+
+        /** How far off-center a stick has to fall to *drop* an already-active selection -- see
+         * updateCell4Selection's hysteresis doc. Deliberately the same magnitude
+         * [GamepadInputHandler.DEADZONE] treats as "centered" for a real stick, not
+         * [SIGNIFICANT_STICK_MAGNITUDE] -- that higher bar is only meant to keep idle noise from
+         * *starting* a selection, not to police one already in progress. */
+        private const val SELECTION_RELEASE_MAGNITUDE = 0.15f
 
         /** Column-major indices of the 3x3 rotation part within a 4x4 GL matrix (see
          * [lerpAndOrthonormalizeRotation]). */

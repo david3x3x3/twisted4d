@@ -95,11 +95,21 @@ android {
         // icon (TwistIcon) instead of RO/Rx-style notation. Z Dir Left/Right now only swaps which
         // native-name caption is shown at a fixed screen position, never the function itself. A
         // d-pad-driven cell selection now also moves the on-screen stick dot, matching the real
-        // analog stick.
-        // Still not 1.0: whether Fire TV is even a 1.0 target remains undecided, and Settings is
-        // still missing its D-pad-assignment rows.
-        versionCode = 12
-        versionName = "0.8.1"
+        // analog stick. This is also the version currently public (non-testing) on Play Store as
+        // of 0.9.0's release.
+        // 0.9.0 (2026-09-15): the last planned testing release before 1.0 -- David confirmed 3D
+        // mode stays hidden for 1.0 (it's not going away, just not a promoted 1.0 feature) and the
+        // remaining open "future" items (settable rotation speed, right-stick 4D rotation, Fire TV,
+        // Select+D-pad bindings, etc.) are explicitly not 1.0 blockers. Landscape/portrait puzzle
+        // rendering now reserves a real, guaranteed-clear viewport for itself instead of relying on
+        // incidental margin from a wide aspect ratio (was overlapping the status text on a squarer
+        // screen -- confirmed on a real Retroid Pocket 3 Plus), the default view is recentered and
+        // zoomed to better fill that space, and the above-cluster status lines are single-spaced
+        // and individually positioned instead of one stacking column. Also fixes the virtual
+        // (touch-drag) stick's cell selection flickering to "nothing" mid-sweep between two wedges
+        // -- see HypercubeRenderer.updateCell4Selection's hysteresis doc.
+        versionCode = 13
+        versionName = "0.9.0"
         buildConfigField("String", "GIT_VERSION", "\"$gitVersion\"")
     }
 
