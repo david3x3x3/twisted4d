@@ -1388,6 +1388,15 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
      * deadzone treats as "centered") to keep tracking wedge changes; a fresh selection still needs
      * to clear the higher [SIGNIFICANT_STICK_MAGNITUDE] bar so tiny idle noise can't select
      * anything on its own.
+     *
+     * The *wedge* boundaries get the same hysteresis treatment ([WEDGE_HYSTERESIS_DEG]), for a
+     * distinct symptom: the first recording (above) had the selection flickering to nothing;
+     * David's follow-up description of a second recording was specifically the selection
+     * flickering to I while sweeping toward the remotest, hardest-to-reach stretch of the virtual
+     * stick's circular range (e.g. toward B, one wedge-width from I). That's boundary jitter, not
+     * a magnitude dip: a touch tracing an imprecise circle wobbles right at the 45-degree line
+     * between two wedges, and with a bare boundary check every wobble flipped the selection back
+     * and forth across it. See [WEDGE_HYSTERESIS_DEG]'s own doc for the fix.
      */
     fun updateCell4Selection(x: Float, y: Float) {
         val magnitude = hypot(x, y)
@@ -1405,7 +1414,28 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
         // 45-degree compass wedges, centered on 0/45/90/.../315 (so e.g. wedge 0 spans
         // [-22.5, 22.5) -- matches the boundaries the old direct deg comparisons used exactly).
         val deg = (Math.toDegrees(atan2(-y.toDouble(), x.toDouble())) + 360.0) % 360.0
-        val wedge = (((deg + 22.5) / 45.0).toInt()) % 8
+        val rawWedge = (((deg + 22.5) / 45.0).toInt()) % 8
+
+        // Angular hysteresis around the wedge boundaries, same idea as SELECTION_RELEASE_MAGNITUDE
+        // above but for angle instead of magnitude -- added 2026-09-15 after a real screen
+        // recording showed the *virtual* stick's selection flickering specifically to I while
+        // being swept toward the remotest, hardest-to-reach stretch of its circular range (e.g.
+        // toward B, one wedge-width from I): a touch tracing that arc with a thumb wobbles a
+        // little right at the 45-degree boundary between two wedges, and with a bare boundary
+        // check (no margin), every wobble flips the selection back and forth across it -- a real
+        // physical stick's spring-loaded gimbal doesn't wander like that at the same spot, which
+        // is why this never showed up there. Once a wedge is selected, the touch now has to move
+        // WEDGE_HYSTERESIS_DEG past that wedge's own boundary (not just barely across it) before
+        // a neighboring wedge is accepted, so a wobble that re-crosses back the way it came stays
+        // inside the current wedge's now-wider retention zone instead of registering as a switch.
+        val wedge = if (lastStickWedge in 0..7 && rawWedge != lastStickWedge) {
+            var delta = deg - lastStickWedge * 45.0
+            if (delta > 180.0) delta -= 360.0
+            if (delta < -180.0) delta += 360.0
+            if (abs(delta) < 22.5 + WEDGE_HYSTERESIS_DEG) lastStickWedge else rawWedge
+        } else {
+            rawWedge
+        }
         if (wedge != lastStickWedge) {
             snapViewToNearestCardinalOrientation()
             lastStickWedge = wedge
@@ -2279,6 +2309,14 @@ class HypercubeRenderer : GLSurfaceView.Renderer {
          * [SIGNIFICANT_STICK_MAGNITUDE] -- that higher bar is only meant to keep idle noise from
          * *starting* a selection, not to police one already in progress. */
         private const val SELECTION_RELEASE_MAGNITUDE = 0.15f
+
+        /** Extra degrees a touch must move *past* the current wedge's own 45-degree boundary
+         * before a neighboring wedge is accepted -- see updateCell4Selection's angular-hysteresis
+         * doc. Widens each wedge's retention zone from 45deg to 45+2*this once it's the active
+         * one, so a touch wobbling right at a boundary (tracing an imprecise circle, especially
+         * near the stick's hardest-to-reach stretch) doesn't flip the selection back and forth on
+         * every wobble. Small enough not to make a deliberate move to the next wedge feel laggy. */
+        private const val WEDGE_HYSTERESIS_DEG = 7.0
 
         /** Column-major indices of the 3x3 rotation part within a 4x4 GL matrix (see
          * [lerpAndOrthonormalizeRotation]). */
