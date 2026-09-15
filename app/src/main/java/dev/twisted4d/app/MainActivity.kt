@@ -419,12 +419,28 @@ class MainActivity : AppCompatActivity() {
         updateMenuButtonLabel()
     }
 
+    /** Closing (from any depth) fully hands stick input back to [HypercubeRenderer.
+     * updateCell4Selection] -- but while a menu is open, handleLeftStickInput's `menu != null`
+     * branch routes *every* stick reading (including the stick returning to center) to the menu's
+     * own highlight instead, never touching the puzzle's own hasSelection/selectedRoomAxis at all.
+     * So if the stick was deflected right before the menu opened and then released while the menu
+     * (or a dialog opened from a tile, e.g. Help) was still up, the puzzle's last real selection
+     * sits frozen through the whole excursion -- there's no *further* stick event once it's back
+     * at rest to ever clear it. Confirmed via a real report, 2026-09-15: David held the stick
+     * toward the Help tile, confirmed with a face button, released while reading, and came back to
+     * find the room's D cell still emphasized (and the HUD's stick indicator still showing
+     * deflected) even though the physical stick was centered and untouched -- only moving it again
+     * refreshed the selection. Explicitly resetting here (equivalent to the stick genuinely
+     * centering) closes that gap: if it's actually still held in some direction the instant this
+     * runs, the very next real motion event corrects it immediately, same as any other release. */
     private fun closeAllMenus() {
+        val wasMenuOpen = activeMenu() != null
         startMenuView.close()
         filtersMenuView.close()
         settingsMenuView.close()
         buttonConfigMenuView.close()
         updateMenuButtonLabel()
+        if (wasMenuOpen) glSurfaceView?.queueEvent { hypercubeRenderer?.updateCell4Selection(0f, 0f) }
     }
 
     /** Start's gamepad binding: opens the Start Menu from fully closed, or closes everything
