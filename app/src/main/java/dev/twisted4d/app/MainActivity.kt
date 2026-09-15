@@ -2298,7 +2298,37 @@ class MainActivity : AppCompatActivity() {
      * doc) -- this can still be reached directly (build3DScreen's own Help button), so its doc
      * staying generic/mode-agnostic rather than assuming 4D is intentional, not an oversight. */
     private fun showHelpDialog() {
-        val scroll = ScrollView(this)
+        val scroll = ScrollView(this).apply {
+            // A real gamepad's stick still being held (e.g. toward the Start Menu's Help tile,
+            // which is how this dialog is normally reached) drives ScrollView's own built-in
+            // joystick-to-scroll handling the instant it gains focus -- confirmed via a real
+            // report, 2026-09-15: the dialog opens already auto-scrolling downward. That handling
+            // lives in ScrollView itself, entirely outside this app's own dispatchGenericMotionEvent
+            // (which the rest of the app's gamepad handling goes through), so it has to be dealt
+            // with here rather than in this app's usual gamepad-handling code.
+            //
+            // Unconditionally swallowing every such event (an earlier version of this fix) stopped
+            // the stale-deflection auto-scroll, but also permanently blocked genuine stick-driven
+            // scrolling for the rest of the dialog's lifetime -- confirmed via a real report,
+            // 2026-09-15, as a real regression against the "fully controller-playable" design goal.
+            // What's actually wrong is only the *stale* reading still in flight from before the
+            // dialog opened; a fresh deflection after that is exactly what scrolling the Help text
+            // by controller is supposed to be. So this only swallows events until the stick is
+            // first seen back near center -- after that one release, it stops intercepting
+            // entirely and every further event reaches ScrollView's own default handling normally,
+            // for as long as this dialog stays open.
+            var stickHasReturnedToCenter = false
+            setOnGenericMotionListener { _, event ->
+                if (stickHasReturnedToCenter) {
+                    false
+                } else {
+                    val x = event.getAxisValue(MotionEvent.AXIS_X)
+                    val y = event.getAxisValue(MotionEvent.AXIS_Y)
+                    if (abs(x) < 0.15f && abs(y) < 0.15f) stickHasReturnedToCenter = true
+                    true
+                }
+            }
+        }
         val textView = TextView(this).apply {
             text = Html.fromHtml(HELP_HTML, Html.FROM_HTML_MODE_LEGACY)
             textSize = 15f
@@ -2809,6 +2839,32 @@ class MainActivity : AppCompatActivity() {
         super.onPause()
         glSurfaceView?.onPause()
         saveState()
+    }
+
+    /** A modal AlertDialog (Help/About/Scramble-confirm/Reset-confirm) takes window focus away
+     * from the main window while it's shown -- confirmed via a real debug-logged repro,
+     * 2026-09-15: while the Help dialog has focus, *zero* joystick motion events reach
+     * [dispatchGenericMotionEvent] at all, no matter how long the stick sits released. So a real
+     * gamepad's stick release that happens while a dialog is up is completely invisible to the
+     * app, leaving both [HypercubeRenderer.hasSelection] and [GamepadVisualState]'s stick fields
+     * stuck at whatever they were the instant the dialog opened -- there's no *later* event once
+     * it's back at rest to ever correct them. Regaining focus (dialog closed) resets both: the
+     * puzzle's own selection, and the HUD/virtual-controller's stick-position readout, which reads
+     * [GamepadVisualState.leftStickX]/[leftStickY] directly and was still stuck pointing in the
+     * held direction even after the first fix here only reset the renderer's own selection state
+     * (confirmed via a real report, 2026-09-15). If the stick is actually still held in some
+     * direction the instant this runs, the very next real motion event corrects everything
+     * immediately, same as any other release -- this only matters for the case where it's already
+     * back at rest with nothing further to correct it. */
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) {
+            GamepadVisualState.leftStickX = 0f
+            GamepadVisualState.leftStickY = 0f
+            GamepadVisualState.rightStickX = 0f
+            GamepadVisualState.rightStickY = 0f
+            glSurfaceView?.queueEvent { hypercubeRenderer?.updateCell4Selection(0f, 0f) }
+        }
     }
 
     /** [AppSettings]' fields aren't per-controller (compare [PerControllerSettings], which
