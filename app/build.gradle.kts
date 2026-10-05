@@ -108,8 +108,15 @@ android {
         // and individually positioned instead of one stacking column. Also fixes the virtual
         // (touch-drag) stick's cell selection flickering to "nothing" mid-sweep between two wedges
         // -- see HypercubeRenderer.updateCell4Selection's hysteresis doc.
-        versionCode = 13
-        versionName = "0.9.0"
+        // 1.0.0 (2026-10-04): first 1.0 release. Folds in two post-0.9.0 fixes that never got
+        // their own tagged release -- stale puzzle-cell selection surviving a Start Menu/Help
+        // round-trip (604c851), and a stale HUD stick-indicator plus a scroll-suppression
+        // regression in Help (021ccf7) -- both found via screen recordings and live on-device
+        // log-watching on a real Retroid Pocket 3 Plus. No other code changes; this is the
+        // version bump that was deferred while David's Play Console access was blocked on
+        // Google's identity/address verification.
+        versionCode = 14
+        versionName = "1.0.0"
         buildConfigField("String", "GIT_VERSION", "\"$gitVersion\"")
     }
 

@@ -15,20 +15,31 @@ shipped, what's committed-but-unreleased, what's explicitly been decided as out 
 anything a fresh session would otherwise waste a turn rediscovering. Prune finished items rather
 than marking them done and leaving them.
 
-## Current status (as of 2026-09-15)
+## Current status (as of 2026-10-04)
 
-- **Released:** `v0.9.0` is tagged and pushed to GitHub (with a signed release APK attached to the
-  release). Not yet submitted to Play Store — the last version actually live there is `0.8.1`.
-- **Committed on `master` but deliberately NOT yet folded into a release** (David asked to hold
-  off on releasing further for now):
+- **Released:** `v1.0.0` is tagged and pushed to GitHub (with a signed release APK attached to
+  the release). Note: `v0.9.0`'s tag/release were left as-is (historical) — they do NOT include
+  the two fixes below; `v1.0.0` is a fresh tag off `master`, not a move of the old one. Not yet
+  submitted to Play Store — that's still a manual Play Console step for David. The last version
+  actually live there is `0.8.1`.
+- **Folded into `v1.0.0`** (committed on `master` since `v0.9.0`, never previously tagged/released):
   - `604c851` — fix stale puzzle-cell selection surviving a Start Menu/Help round-trip
   - `021ccf7` — fix stale HUD stick-indicator + a scroll-suppression regression in Help
   - Together these close out a real chain of controller-input bugs found via screen recordings
     and live on-device log-watching (real gamepad interference, dialog window-focus stealing all
     generic motion events). All confirmed fixed on a real Retroid Pocket 3 Plus.
+- **Investigated, no action taken:** a native SIGSEGV crash reported on the Retroid (2026-09-16,
+  `dumpsys dropbox` tombstone), first occurrence. Backtrace is 100% inside ART's own
+  ConcurrentCopying GC on the `HeapTaskDaemon` thread — no app or Rust/JNI frames present, and
+  `native/puzzle-core/src/lib.rs`'s JNI boundary looks clean (safe `jni` crate array wrappers
+  throughout, nothing held across calls). No actionable lead from this dump; treating as a
+  possible vendor/GC-level one-off on this device (UNISOC ums512, Android 11) unless it recurs —
+  if it does, re-pull the tombstone via `adb shell dumpsys dropbox --print` and compare.
 - **1.0 scope, decided:** 3D mode stays hidden from the UI for 1.0 (code intact, just unreachable
-  — not changing). Explicitly deferred, not 1.0 blockers: settable rotation speed, right-stick 4D
-  rotation, Select+D-pad free bindings, Fire TV support, Linux build support, `.hsc` file import.
+  — not changing). Stats/timer-screen polish stays a deferred v2 feature per the original spec
+  (not a 1.0 blocker). Explicitly deferred, not 1.0 blockers: settable rotation speed, right-stick
+  4D rotation, Select+D-pad free bindings, Fire TV support, Linux build support, `.hsc` file
+  import.
 - **Testing setup:** Retroid Pocket 3 Plus over adb (serial `85530475449896`) is the primary
   real-device target; it periodically needs re-authorizing ("Allow USB debugging?") after being
   idle — if `adb devices` shows it `offline` or missing, ask David to check the device screen. A
