@@ -19,9 +19,9 @@ than marking them done and leaving them.
 
 - **Released:** `v1.0.0` is tagged and pushed to GitHub (with a signed release APK attached to
   the release). Note: `v0.9.0`'s tag/release were left as-is (historical) — they do NOT include
-  the two fixes below; `v1.0.0` is a fresh tag off `master`, not a move of the old one. Not yet
-  submitted to Play Store — that's still a manual Play Console step for David. The last version
-  actually live there is `0.8.1`.
+  the two fixes below; `v1.0.0` is a fresh tag off `master`, not a move of the old one.
+  **Submitted to Play Store** (David, 2026-10-05) — pending Google's review. The last version
+  actually live there is still `0.8.1` until this clears.
 - **Folded into `v1.0.0`** (committed on `master` since `v0.9.0`, never previously tagged/released):
   - `604c851` — fix stale puzzle-cell selection surviving a Start Menu/Help round-trip
   - `021ccf7` — fix stale HUD stick-indicator + a scroll-suppression regression in Help
